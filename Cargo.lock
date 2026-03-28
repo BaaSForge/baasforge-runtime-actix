@@ -642,6 +642,7 @@ dependencies = [
  "reqwest 0.13.1",
  "ring",
  "rust-s3",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
