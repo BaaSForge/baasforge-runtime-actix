@@ -1,0 +1,27 @@
+services:
+  nats:
+    image: nats:alpine3.22
+    container_name: baal-runtime-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+      - "6222:6222"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+  loadbalancer:
+    image: nginx:stable-alpine3.23-perl
+    container_name: baal-runtime-lb
+    ports:
+      - "1500:1500"
+    volumes:
+      - ./nginx.dev.conf:/etc/nginx/nginx.conf:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

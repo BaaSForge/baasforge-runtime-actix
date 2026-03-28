@@ -1,0 +1,9 @@
+/target
+
+/target-local
+
+.DS_Store
+
+.env.local
+
+.dev
