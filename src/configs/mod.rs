@@ -36,6 +36,10 @@ pub struct Settings {
     pub redis_url: String,
     pub nats_url: Option<String>,
     pub nats_subject_release: Option<String>,
+    /// JetStream stream name (must not contain `.`). Used by the `release_listener` binary.
+    pub nats_jetstream_stream_release: Option<String>,
+    /// Durable pull consumer name shared by all `release_listener` replicas (queue-style load balancing).
+    pub nats_jetstream_consumer_release: Option<String>,
 }
 
 impl Settings {
@@ -77,6 +81,15 @@ impl Settings {
             }
         }
 
+        let nats_jetstream_stream_release = env::var("NATS_JETSTREAM_STREAM_RELEASE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let nats_jetstream_consumer_release = env::var("NATS_JETSTREAM_CONSUMER_RELEASE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Settings {
             port,
             app_environment,
@@ -86,6 +99,8 @@ impl Settings {
             redis_url,
             nats_url,
             nats_subject_release,
+            nats_jetstream_stream_release,
+            nats_jetstream_consumer_release,
         })
     }
 }

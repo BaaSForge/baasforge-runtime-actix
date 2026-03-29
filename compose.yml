@@ -7,12 +7,17 @@ services:
       - "8222:8222"
       - "6222:6222"
     command:
+      - "-js"
+      - "-sd"
+      - "/data"
       - "-m"
       - "8222"
       - "--user"
       - "runtime_nats"
       - "--pass"
       - "z2TBGYR8dF1uX2"
+    volumes:
+      - .dev/nats-jetstream:/data
     logging:
       driver: "json-file"
       options:

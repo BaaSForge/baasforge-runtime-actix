@@ -31,8 +31,8 @@ impl AppContext {
 
 pub async fn start_server() -> Result<(), Box<dyn Error>> {
     use actix_web::{App, HttpServer};
-    
-    tracing_subscriber::fmt::init();
+
+    crate::init_tracing();
 
     let settings = Settings::new()?;
     let port = settings

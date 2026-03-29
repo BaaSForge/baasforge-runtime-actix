@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Stop local dev processes: API ports (see dev-scaled.sh / dev.sh), runtime worker binary, cargo watch.
+# Stop local dev processes: API ports (see dev-scaled.sh / dev.sh), runtime/release worker binaries, cargo watch.
 set -u
 
 PORTS=(1501 1502 1503 1504)
@@ -26,6 +26,11 @@ done
 echo "==> Stopping runtime worker processes..."
 pkill -x runtime_worker 2>/dev/null && echo "    pkill -x runtime_worker" || true
 pkill -f 'run --bin runtime_worker' 2>/dev/null && echo "    pkill -f 'run --bin runtime_worker'" || true
+
+# Binary name from Cargo.toml: [[bin]] name = "release_listener" (path src/bin/release_listener.rs)
+echo "==> Stopping release listener processes..."
+pkill -x release_listener 2>/dev/null && echo "    pkill -x release_listener" || true
+pkill -f 'run --bin release_listener' 2>/dev/null && echo "    pkill -f 'run --bin release_listener'" || true
 
 echo "==> Stopping cargo watch..."
 # dev.sh / dev-runtime-worker.sh use `cargo watch` (installed binary is often `cargo-watch`)

@@ -1,12 +1,13 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::{establish_pool, SharedRedisConn};
+use baal_runtime_actix::init_tracing;
 use baal_runtime_actix::services::release_listener::run_release_deploy_listener;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt::init();
+    init_tracing();
 
     let settings = Settings::new().map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
         e.to_string().into()
@@ -23,6 +24,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             std::process::exit(1);
         }
     };
+
+    let jetstream_stream = settings
+        .nats_jetstream_stream_release
+        .clone()
+        .unwrap_or_else(|| "RUNTIME_RELEASE".to_string());
+    let jetstream_consumer = settings
+        .nats_jetstream_consumer_release
+        .clone()
+        .unwrap_or_else(|| "release_deploy".to_string());
 
     let pool = establish_pool(
         settings.pg_database_url.clone(),
@@ -47,5 +57,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
-    run_release_deploy_listener(pool, redis_conn, nats_url, nats_subject).await
+    run_release_deploy_listener(
+        pool,
+        redis_conn,
+        nats_url,
+        nats_subject,
+        jetstream_stream,
+        jetstream_consumer,
+    )
+    .await
 }

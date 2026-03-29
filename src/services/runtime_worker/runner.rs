@@ -1,11 +1,12 @@
 use crate::configs::Settings;
-use crate::database::{establish_pool};
+use crate::database::establish_pool;
+use crate::init_tracing;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::info;
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    tracing_subscriber::fmt::init();
+    init_tracing();
 
     let settings = Settings::new()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
