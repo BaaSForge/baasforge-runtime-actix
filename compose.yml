@@ -6,6 +6,13 @@ services:
       - "4222:4222"
       - "8222:8222"
       - "6222:6222"
+    command:
+      - "-m"
+      - "8222"
+      - "--user"
+      - "runtime_nats"
+      - "--pass"
+      - "z2TBGYR8dF1uX2"
     logging:
       driver: "json-file"
       options:

@@ -7,9 +7,13 @@
 
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 pub type DbPool = Pool<ConnectionManager<PgConnection>>;
+
+pub type SharedRedisConn = Option<Arc<Mutex<redis::aio::MultiplexedConnection>>>;
 
 pub type PooledConn = diesel::r2d2::PooledConnection<ConnectionManager<PgConnection>>;
 
@@ -102,7 +106,7 @@ pub fn establish_pool(database_url: String, max_size: u32, connection_timeout_se
         );
     }
 
-    log::info!("Database pool connected successfully");
+    tracing::info!("database pool connected successfully");
     pool
 }
 

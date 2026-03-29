@@ -9,5 +9,7 @@ trap cleanup SIGINT SIGTERM
 ./dev.sh 1502 &
 ./dev-runtime-worker.sh &
 ./dev-runtime-worker.sh &
+./dev-release-listener.sh &
+./dev-release-listener.sh &
 
 wait

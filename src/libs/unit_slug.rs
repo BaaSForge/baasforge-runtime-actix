@@ -10,6 +10,8 @@ pub fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && SLUG_RE.is_match(s)
 }
 
+/// Builds the canonical **full unit id** (five segments). The four-segment *unit path* is
+/// [`UnitPath`] / everything here except `revision`; see [`crate::models::projects::ProjectUnitRow::id`].
 pub fn compose_unit_id(
     context_slug: &str,
     module_slug: &str,

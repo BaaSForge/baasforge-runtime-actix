@@ -34,6 +34,8 @@ pub struct Settings {
     pub database_pool_size: u32,
     pub database_connection_timeout_secs: u64,
     pub redis_url: String,
+    pub nats_url: Option<String>,
+    pub nats_subject_release: Option<String>,
 }
 
 impl Settings {
@@ -56,6 +58,25 @@ impl Settings {
             .expect("DATABASE_CONNECTION_TIMEOUT_SECS must be a valid u64");
         let redis_url = env::var("REDIS_URL").expect("REDIS_URL must be set");
 
+        let nats_url = env::var("NATS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let nats_subject_release = env::var("NATS_SUBJECT_RELEASE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        match (&nats_url, &nats_subject_release) {
+            (Some(_), Some(_)) | (None, None) => {}
+            _ => {
+                return Err(
+                    "NATS_URL and NATS_SUBJECT_RELEASE must both be set or both omitted"
+                        .into(),
+                );
+            }
+        }
+
         Ok(Settings {
             port,
             app_environment,
@@ -63,6 +84,8 @@ impl Settings {
             database_pool_size,
             database_connection_timeout_secs,
             redis_url,
+            nats_url,
+            nats_subject_release,
         })
     }
 }
