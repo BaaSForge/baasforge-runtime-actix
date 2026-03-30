@@ -5,11 +5,9 @@
 //! `release_listener` processes; each message is delivered to at most one replica.
 
 use crate::database::{DbPool, SharedRedisConn};
-use crate::services::project_release::{
-    load_live_release_revision_for_runtime, load_project_release_by_revision, LiveReleaseRevisionSource,
-};
+use crate::services::project_release::load_project_release_by_id;
 use crate::services::project_runtime_cache::{
-    clear_project_runtime_cache_full, clear_project_runtime_cache_on_deploy, ProjectRuntimeCacheScope,
+    clear_project_runtime_cache_on_deploy, ProjectRuntimeCacheScope,
 };
 use async_nats::jetstream;
 use async_nats::jetstream::consumer::pull;
@@ -28,19 +26,21 @@ pub enum ReleaseDeployEnvironment {
 
 /// Payload published when a runtime’s live release changes (upgrade, rollback, or first deploy).
 ///
-/// [`ReleaseDeployEvent::deployed_revision`] absent or `null` means the live release was detached; all Redis
-/// keys for that runtime scope are removed. When set, the previous live revision is inferred from
-/// [`project_runtimes::live_release_revision`] at handle time. If it already equals `deployed_revision`, the
-/// event is treated as a duplicate (late delivery) and ignored.
+/// [`ReleaseDeployEvent::deployed_release_id`] absent or `null` means the live release was detached.
+/// [`ReleaseDeployEvent::previous_release_id`] identifies the row that was live before this deploy (for selective
+/// Redis invalidation vs the deployed release). Omit or `null` when there was no prior live release (first deploy).
 #[derive(Debug, Deserialize)]
 pub struct ReleaseDeployEvent {
     pub project_id: Uuid,
     pub environment: ReleaseDeployEnvironment,
     #[serde(default)]
     pub runtime_id: Option<Uuid>,
-    /// `None` / missing: detached — flush Redis for this runtime scope.
+    /// `None` / missing: detached.
     #[serde(default)]
-    pub deployed_revision: Option<i32>,
+    pub deployed_release_id: Option<Uuid>,
+    /// Primary key of the release row that was live before this deploy (`project_releases.id`).
+    #[serde(default)]
+    pub previous_release_id: Option<Uuid>,
 }
 
 async fn handle_release_deploy_event(
@@ -60,17 +60,15 @@ async fn handle_release_deploy_event(
         project_id = %event.project_id,
         ?event.environment,
         runtime_id = ?event.runtime_id,
-        deployed_revision = ?event.deployed_revision,
+        deployed_release_id = ?event.deployed_release_id,
+        previous_release_id = ?event.previous_release_id,
         "[nats] release deploy event received"
     );
 
     let is_stage = matches!(event.environment, ReleaseDeployEnvironment::Stage);
 
-    let (scope, rev_source) = match event.environment {
-        ReleaseDeployEnvironment::Production => (
-            ProjectRuntimeCacheScope::Prod,
-            LiveReleaseRevisionSource::Production,
-        ),
+    let scope = match event.environment {
+        ReleaseDeployEnvironment::Production => ProjectRuntimeCacheScope::Prod,
         ReleaseDeployEnvironment::Stage => {
             let Some(runtime_id) = event.runtime_id else {
                 tracing::warn!(
@@ -79,57 +77,36 @@ async fn handle_release_deploy_event(
                 );
                 return;
             };
-            (
-                ProjectRuntimeCacheScope::Stage { runtime_id },
-                LiveReleaseRevisionSource::Stage { runtime_id },
-            )
+            ProjectRuntimeCacheScope::Stage { runtime_id }
         }
     };
 
-    let Some(deployed_revision) = event.deployed_revision else {
-        if let Err(e) = clear_project_runtime_cache_full(redis, event.project_id, scope).await {
-            tracing::error!(error = %e, "[nats] redis full cache clear (detach) failed");
-            return;
-        }
+    let Some(deployed_id) = event.deployed_release_id else {
         tracing::info!(
             project_id = %event.project_id,
             ?scope,
-            "[nats] live release detached; runtime cache cleared"
+            "[nats] live release detached; skipping cache invalidation"
         );
         return;
     };
 
-    let db_live_rev = match load_live_release_revision_for_runtime(pool, event.project_id, rev_source).await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                project_id = %event.project_id,
-                "[nats] failed to read live_release_revision from project_runtimes"
-            );
-            return;
-        }
-    };
-
-    if db_live_rev == Some(deployed_revision) {
-        tracing::info!(
-            project_id = %event.project_id,
-            deployed_revision,
-            ?scope,
-            "[nats] DB already at deployed_revision; ignoring duplicate deploy event"
-        );
-        return;
-    }
-
-    let live_row = if let Some(prev) = db_live_rev {
-        match load_project_release_by_revision(pool, event.project_id, is_stage, prev).await {
-            Ok(r) => r,
+    let live_row = if let Some(prev_id) = event.previous_release_id {
+        match load_project_release_by_id(pool, event.project_id, is_stage, prev_id).await {
+            Ok(Some(r)) => Some(r),
+            Ok(None) => {
+                tracing::warn!(
+                    project_id = %event.project_id,
+                    previous_release_id = %prev_id,
+                    "[nats] previous_release_id not found; continuing without prior release row"
+                );
+                None
+            }
             Err(e) => {
                 tracing::error!(
                     error = %e,
                     project_id = %event.project_id,
-                    previous_revision = prev,
-                    "[nats] failed to load prior live release row"
+                    previous_release_id = %prev_id,
+                    "[nats] failed to load previous release by id"
                 );
                 return;
             }
@@ -138,19 +115,12 @@ async fn handle_release_deploy_event(
         None
     };
 
-    let target_row = match load_project_release_by_revision(
-        pool,
-        event.project_id,
-        is_stage,
-        deployed_revision,
-    )
-    .await
-    {
+    let target_row = match load_project_release_by_id(pool, event.project_id, is_stage, deployed_id).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             tracing::warn!(
                 project_id = %event.project_id,
-                revision = deployed_revision,
+                deployed_release_id = %deployed_id,
                 is_stage,
                 "[nats] deployed release row not found"
             );
@@ -160,7 +130,7 @@ async fn handle_release_deploy_event(
             tracing::error!(
                 error = %e,
                 project_id = %event.project_id,
-                revision = deployed_revision,
+                deployed_release_id = %deployed_id,
                 "[nats] failed to load deployed release"
             );
             return;
@@ -182,8 +152,9 @@ async fn handle_release_deploy_event(
 
     tracing::info!(
         project_id = %event.project_id,
-        deployed_revision,
-        db_live_revision_before = ?db_live_rev,
+        deployed_release_id = %deployed_id,
+        deployed_revision = target_row.revision,
+        previous_release_id = ?event.previous_release_id,
         ?scope,
         "[nats] release deploy cache invalidated"
     );

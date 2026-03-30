@@ -20,7 +20,7 @@ use redis::AsyncCommands;
 use serde::Serialize;
 use uuid::Uuid;
 
-/// How to resolve which release row to load: production (first prod runtime’s `live_release_revision`) or a specific stage runtime.
+/// How to resolve which release row to load: production (first prod runtime) or a specific stage runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProjectRuntimeReleaseSource {
     /// First `project_runtimes` row with [`PlatformEnvironmentType::Prod`] for this project.
@@ -29,7 +29,7 @@ enum ProjectRuntimeReleaseSource {
     Stage { runtime_id: Uuid },
 }
 
-/// Which runtime row to read [`project_runtimes::live_release_revision`] from (NATS deploy handler, etc.).
+/// Which runtime row to read [`project_runtimes::live_release_id`] from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveReleaseRevisionSource {
     /// First `project_runtimes` row with [`PlatformEnvironmentType::Prod`] for this project.
@@ -37,13 +37,17 @@ pub enum LiveReleaseRevisionSource {
     Stage { runtime_id: Uuid },
 }
 
-/// Reads `project_runtimes.live_release_revision` for prod or a stage runtime (no Redis).
+/// Reads the live release’s numeric revision for prod or a stage runtime (no Redis).
+///
+/// Uses [`project_runtimes::live_release_id`] only; the revision value comes from [`project_releases::revision`].
 pub async fn load_live_release_revision_for_runtime(
     pool: &DbPool,
     project_id: Uuid,
     source: LiveReleaseRevisionSource,
 ) -> Result<Option<i32>, ServiceError> {
-    match source {
+    let is_stage = matches!(source, LiveReleaseRevisionSource::Stage { .. });
+
+    let runtime_live = match source {
         LiveReleaseRevisionSource::Production => {
             let prod_runtime_id = block_on_db(pool, move |conn| {
                 project_runtimes::table
@@ -58,29 +62,77 @@ pub async fn load_live_release_revision_for_runtime(
             let Some(prod_rid) = prod_runtime_id else {
                 return Ok(None);
             };
-            let lr_row = block_on_db(pool, move |conn| {
+            block_on_db(pool, move |conn| {
                 project_runtimes::table
                     .filter(project_runtimes::id.eq(prod_rid))
-                    .select(project_runtimes::live_release_revision)
-                    .first::<Option<i32>>(conn)
+                    .select(project_runtimes::live_release_id)
+                    .first::<Option<Uuid>>(conn)
                     .optional()
             })
-            .await?;
-            Ok(lr_row.flatten())
+            .await?
         }
         LiveReleaseRevisionSource::Stage { runtime_id } => {
-            let lr_row = block_on_db(pool, move |conn| {
+            block_on_db(pool, move |conn| {
                 project_runtimes::table
                     .filter(project_runtimes::id.eq(runtime_id))
                     .filter(project_runtimes::project_id.eq(project_id))
-                    .select(project_runtimes::live_release_revision)
-                    .first::<Option<i32>>(conn)
+                    .select(project_runtimes::live_release_id)
+                    .first::<Option<Uuid>>(conn)
                     .optional()
             })
-            .await?;
-            Ok(lr_row.flatten())
+            .await?
         }
-    }
+    };
+
+    let Some(live_release_id) = runtime_live else {
+        match &source {
+            LiveReleaseRevisionSource::Production => {
+                tracing::warn!(
+                    %project_id,
+                    "[unit trigger] no release: project_runtimes row missing for prod runtime"
+                );
+            }
+            LiveReleaseRevisionSource::Stage { runtime_id } => {
+                tracing::warn!(
+                    %project_id,
+                    %runtime_id,
+                    "[unit trigger] no release: project_runtimes row missing (filters: project_id, id = runtime_id)"
+                );
+            }
+        }
+        return Ok(None);
+    };
+
+    let Some(release_id) = live_release_id else {
+        match &source {
+            LiveReleaseRevisionSource::Production => {
+                tracing::warn!(
+                    %project_id,
+                    "[unit trigger] no release: project_runtimes.live_release_id is NULL"
+                );
+            }
+            LiveReleaseRevisionSource::Stage { runtime_id } => {
+                tracing::warn!(
+                    %project_id,
+                    %runtime_id,
+                    "[unit trigger] no release: project_runtimes.live_release_id is NULL"
+                );
+            }
+        }
+        return Ok(None);
+    };
+
+    let row = load_project_release_by_id(pool, project_id, is_stage, release_id).await?;
+    let Some(out) = row else {
+        tracing::warn!(
+            %project_id,
+            is_stage,
+            live_release_id = %release_id,
+            "[unit trigger] project_releases row not found for live_release_id"
+        );
+        return Ok(None);
+    };
+    Ok(Some(out.revision))
 }
 
 async fn redis_get_json<T: serde::de::DeserializeOwned>(
@@ -112,8 +164,7 @@ async fn redis_set_json<T: Serialize>(
     Ok(())
 }
 
-/// Loads the release row for a project using [`project_runtimes::live_release_revision`] when set, else the latest
-/// release for that mode (`is_stage` false for production, true for stage).
+/// Loads the live [`project_releases`] row for this runtime from [`project_runtimes::live_release_id`] only.
 async fn load_latest_release_for_project_runtime(
     pool: &DbPool,
     redis: &SharedRedisConn,
@@ -133,7 +184,7 @@ async fn load_latest_release_for_project_runtime(
 
     let is_stage = matches!(source, ProjectRuntimeReleaseSource::Stage { .. });
 
-    let live_rev: i32 = match source {
+    let runtime_live = match source {
         ProjectRuntimeReleaseSource::Production => {
             let prod_runtime_id = block_on_db(pool, move |conn| {
                 project_runtimes::table
@@ -153,81 +204,74 @@ async fn load_latest_release_for_project_runtime(
                 );
                 return Ok(None);
             };
-            let lr_row = block_on_db(pool, move |conn| {
+            block_on_db(pool, move |conn| {
                 project_runtimes::table
                     .filter(project_runtimes::id.eq(prod_rid))
-                    .select(project_runtimes::live_release_revision)
-                    .first::<Option<i32>>(conn)
+                    .select(project_runtimes::live_release_id)
+                    .first::<Option<Uuid>>(conn)
                     .optional()
             })
-            .await?;
-            match lr_row {
-                None => {
-                    tracing::warn!(
-                        runtime_id = %prod_rid,
-                        "[unit trigger] no release: project_runtimes row missing (filter: id = runtime_id)"
-                    );
-                    return Ok(None);
-                }
-                Some(None) => {
-                    tracing::warn!(
-                        runtime_id = %prod_rid,
-                        "[unit trigger] no release: project_runtimes.live_release_revision is NULL (filter: id = runtime_id)"
-                    );
-                    return Ok(None);
-                }
-                Some(Some(rev)) => rev,
-            }
+            .await?
         }
         ProjectRuntimeReleaseSource::Stage { runtime_id } => {
-            let lr_row = block_on_db(pool, move |conn| {
+            block_on_db(pool, move |conn| {
                 project_runtimes::table
                     .filter(project_runtimes::id.eq(runtime_id))
                     .filter(project_runtimes::project_id.eq(project_id))
-                    .select(project_runtimes::live_release_revision)
-                    .first::<Option<i32>>(conn)
+                    .select(project_runtimes::live_release_id)
+                    .first::<Option<Uuid>>(conn)
                     .optional()
             })
-            .await?;
-            match lr_row {
-                None => {
-                    tracing::warn!(
-                        %project_id,
-                        %runtime_id,
-                        "[unit trigger] no release: project_runtimes row missing (filters: project_id, id = runtime_id)"
-                    );
-                    return Ok(None);
-                }
-                Some(None) => {
-                    tracing::warn!(
-                        %project_id,
-                        %runtime_id,
-                        "[unit trigger] no release: project_runtimes.live_release_revision is NULL (filters: project_id, id = runtime_id)"
-                    );
-                    return Ok(None);
-                }
-                Some(Some(rev)) => rev,
-            }
+            .await?
         }
     };
 
-    let row = block_on_db(pool, move |conn| {
-        project_releases::table
-            .filter(project_releases::project_id.eq(project_id))
-            .filter(project_releases::is_stage.eq(is_stage))
-            .filter(project_releases::revision.eq(live_rev))
-            .select(ProjectReleaseRow::as_select())
-            .first::<ProjectReleaseRow>(conn)
-            .optional()
-    })
-    .await?;
+    let Some(live_release_id) = runtime_live else {
+        match &source {
+            ProjectRuntimeReleaseSource::Production => {
+                tracing::warn!(
+                    %project_id,
+                    "[unit trigger] no release: project_runtimes row missing for prod runtime"
+                );
+            }
+            ProjectRuntimeReleaseSource::Stage { runtime_id } => {
+                tracing::warn!(
+                    %project_id,
+                    %runtime_id,
+                    "[unit trigger] no release: project_runtimes row missing (filters: project_id, id = runtime_id)"
+                );
+            }
+        }
+        return Ok(None);
+    };
+
+    let Some(release_id) = live_release_id else {
+        match &source {
+            ProjectRuntimeReleaseSource::Production => {
+                tracing::warn!(
+                    %project_id,
+                    "[unit trigger] no release: project_runtimes.live_release_id is NULL"
+                );
+            }
+            ProjectRuntimeReleaseSource::Stage { runtime_id } => {
+                tracing::warn!(
+                    %project_id,
+                    %runtime_id,
+                    "[unit trigger] no release: project_runtimes.live_release_id is NULL"
+                );
+            }
+        }
+        return Ok(None);
+    };
+
+    let row = load_project_release_by_id(pool, project_id, is_stage, release_id).await?;
 
     let Some(out) = row else {
         tracing::warn!(
             %project_id,
             is_stage,
-            revision = live_rev,
-            "[unit trigger] no release: project_releases row missing (filters: project_id, is_stage, revision)"
+            live_release_id = %release_id,
+            "[unit trigger] project_releases row not found for live_release_id"
         );
         return Ok(None);
     };
@@ -339,7 +383,7 @@ async fn load_unit_for_path_with_release(
     let (_, revision) = path_and_revision_from_full_unit_id(&full_unit_id)
         .ok_or(ServiceError::InvalidUnitIdInMetadata)?;
 
-    let cache_key = redis_key_unit(project_id, cache_scope, &full_unit_id);
+    let cache_key = redis_key_unit(project_id, cache_scope, chat_session_id, &full_unit_id);
     if let Some(cached) = redis_get_json::<ProjectUnitRow>(redis, &cache_key).await? {
         return Ok(Some(cached));
     }
@@ -425,18 +469,18 @@ pub async fn load_unit_for_path_stage(
     .await
 }
 
-/// Loads a release row by project, stage flag, and revision (deploy handlers, NATS, etc.).
-pub async fn load_project_release_by_revision(
+/// Loads a release row by primary key, scoped to project and stage flag (NATS deploy previous release).
+pub async fn load_project_release_by_id(
     pool: &DbPool,
     project_id: Uuid,
     is_stage: bool,
-    revision: i32,
+    release_id: Uuid,
 ) -> Result<Option<ProjectReleaseRow>, ServiceError> {
     let row = block_on_db(pool, move |conn| {
         project_releases::table
             .filter(project_releases::project_id.eq(project_id))
             .filter(project_releases::is_stage.eq(is_stage))
-            .filter(project_releases::revision.eq(revision))
+            .filter(project_releases::id.eq(release_id))
             .select(ProjectReleaseRow::as_select())
             .first::<ProjectReleaseRow>(conn)
             .optional()
