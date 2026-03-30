@@ -44,7 +44,7 @@ pub async fn load_live_release_revision_for_runtime(
     pool: &DbPool,
     project_id: Uuid,
     source: LiveReleaseRevisionSource,
-) -> Result<Option<i32>, ServiceError> {
+) -> Result<Option<f64>, ServiceError> {
     let is_stage = matches!(source, LiveReleaseRevisionSource::Stage { .. });
 
     let runtime_live = match source {
