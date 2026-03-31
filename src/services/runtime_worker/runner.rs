@@ -10,12 +10,16 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let settings = Settings::new()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
-    let redis_client = redis::Client::open(settings.redis_url.as_str())?;
-    let redis_conn = redis_client.get_multiplexed_async_connection().await?;
-    let redis_conn = Arc::new(Mutex::new(redis_conn));
-    info!("Connected to Redis for streaming chunks");
+    if settings.redis_cache_enabled {
+        let redis_client = redis::Client::open(settings.redis_url.as_str())?;
+        let _redis_conn = redis_client.get_multiplexed_async_connection().await?;
+        let _redis_conn = Arc::new(Mutex::new(_redis_conn));
+        info!("Connected to Redis for streaming chunks");
+    } else {
+        info!("Redis skipped (REDIS_CACHE_ENABLED=false)");
+    }
 
-    let pool = establish_pool(
+    let _pool = establish_pool(
         settings.pg_database_url.clone(),
         settings.database_pool_size,
         settings.database_connection_timeout_secs,

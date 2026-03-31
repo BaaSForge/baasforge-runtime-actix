@@ -40,20 +40,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         settings.database_connection_timeout_secs,
     );
 
-    let redis_conn: SharedRedisConn = match redis::Client::open(settings.redis_url.as_str()) {
-        Ok(client) => match client.get_multiplexed_async_connection().await {
-            Ok(conn) => {
-                tracing::info!("[redis] connected (release_listener)");
-                Some(Arc::new(Mutex::new(conn)))
-            }
+    let redis_conn: SharedRedisConn = if !settings.redis_cache_enabled {
+        tracing::info!("[redis] cache disabled (REDIS_CACHE_ENABLED=false); skipping connection");
+        None
+    } else {
+        match redis::Client::open(settings.redis_url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    tracing::info!("[redis] connected (release_listener)");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[redis] connection failed");
+                    None
+                }
+            },
             Err(e) => {
-                tracing::warn!(error = %e, "[redis] connection failed");
+                tracing::warn!(error = %e, "[redis] client open failed");
                 None
             }
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, "[redis] client open failed");
-            None
         }
     };
 

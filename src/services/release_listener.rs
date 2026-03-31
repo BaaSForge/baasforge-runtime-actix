@@ -96,6 +96,16 @@ async fn handle_release_deploy_event(
         return;
     };
 
+    if redis.is_none() {
+        tracing::info!(
+            project_id = %event.project_id,
+            deployed_release_id = %deployed_id,
+            ?scope,
+            "[nats] redis unavailable; skipping cache invalidation"
+        );
+        return;
+    }
+
     let live_row = if let Some(prev_id) = event.previous_release_id {
         match load_project_release_by_id(pool, event.project_id, is_stage, prev_id).await {
             Ok(Some(r)) => Some(r),

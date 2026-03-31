@@ -45,20 +45,25 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         settings.database_pool_size,
         settings.database_connection_timeout_secs,
     );
-    let redis_conn: SharedRedisConn = match redis::Client::open(settings.redis_url.as_str()) {
-        Ok(client) => match client.get_multiplexed_async_connection().await {
-            Ok(conn) => {
-                tracing::info!("[redis] publish connection connected");
-                Some(Arc::new(Mutex::new(conn)))
-            }
+    let redis_conn: SharedRedisConn = if !settings.redis_cache_enabled {
+        tracing::info!("[redis] cache disabled (REDIS_CACHE_ENABLED=false); skipping connection");
+        None
+    } else {
+        match redis::Client::open(settings.redis_url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    tracing::info!("[redis] publish connection connected");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[redis] publish connection failed");
+                    None
+                }
+            },
             Err(e) => {
-                tracing::warn!(error = %e, "[redis] publish connection failed");
+                tracing::warn!(error = %e, "[redis] client open failed");
                 None
             }
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, "[redis] client open failed");
-            None
         }
     };
     let app_context = AppContext::new(

@@ -34,6 +34,8 @@ pub struct Settings {
     pub database_pool_size: u32,
     pub database_connection_timeout_secs: u64,
     pub redis_url: String,
+    /// When false, no Redis connection is opened for cache (API / release_listener); all project release/unit paths hit Postgres only.
+    pub redis_cache_enabled: bool,
     pub nats_url: Option<String>,
     pub nats_subject_release: Option<String>,
     /// JetStream stream name (must not contain `.`). Used by the `release_listener` binary.
@@ -60,6 +62,12 @@ impl Settings {
             .expect("DATABASE_CONNECTION_TIMEOUT_SECS must be set")
             .parse()
             .expect("DATABASE_CONNECTION_TIMEOUT_SECS must be a valid u64");
+
+        let redis_cache_enabled = match env::var("REDIS_CACHE_ENABLED") {
+            Ok(s) => parse_env_bool(&s).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
+            Err(_) => true,
+        };
+
         let redis_url = env::var("REDIS_URL").expect("REDIS_URL must be set");
 
         let nats_url = env::var("NATS_URL")
@@ -97,6 +105,7 @@ impl Settings {
             database_pool_size,
             database_connection_timeout_secs,
             redis_url,
+            redis_cache_enabled,
             nats_url,
             nats_subject_release,
             nats_jetstream_stream_release,
