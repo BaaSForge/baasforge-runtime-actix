@@ -5,7 +5,7 @@
 **Domain rule:** each project is expected to have **at most one production runtime**. Runtime-scoped Redis caches are split by *scope* only (not by iterating every runtime):
 
 - **Production:** keys under `{project_id}:prod:` (single namespace per project for live prod release + units).
-- **Stage:** keys under `{project_id}:stage:{runtime_id}:` per stage runtime.
+- **Stage:** keys under `{runtime_id}:` per stage runtime.
 
 When the `release_listener` process receives a JetStream **release deploy** message, it calls `clear_project_runtime_cache_on_deploy` with **exactly one** scope: either `Prod` or `Stage { runtime_id }` from the event. That routine deletes only (1) the cached release JSON for that scope and (2) per-unit keys that appeared in the previously live release but not in the newly deployed release’s `combinedUnitIDs`. It does **not** flush Redis, pattern-scan keys, or invalidate other stage runtimes or production when only one environment/runtime changed.
 

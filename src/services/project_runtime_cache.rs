@@ -2,8 +2,9 @@
 //!
 //! **Scope:** Keys are namespaced per *environment slice* — one `{project_id}:prod:` tree for the project’s
 //! single production runtime (domain rule: at most one prod runtime per project), and separate
-//! `{project_id}:stage:{runtime_id}:` trees per stage runtime. Callers must pass the correct
-//! [`ProjectRuntimeCacheScope`]; routines here never invalidate sibling runtimes or the whole project.
+//! `{runtime_id}:` trees per stage runtime (runtime id is globally unique; project id is not part of the key).
+//! Callers must pass the correct [`ProjectRuntimeCacheScope`]; routines here never invalidate sibling runtimes
+//! or the whole project.
 //!
 //! On deploy, the cached release row must always be dropped. Per-unit keys are removed only for entries
 //! (chat session + full unit id) that were part of the previously live release but not in the target
@@ -17,7 +18,7 @@ use redis::AsyncCommands;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-/// Redis cache scope: production (`{project_id}:prod:*`) or one stage runtime (`{project_id}:stage:{runtime_id}:*`).
+/// Redis cache scope: production (`{project_id}:prod:*`) or one stage runtime (`{runtime_id}:*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectRuntimeCacheScope {
     Prod,
@@ -27,9 +28,7 @@ pub enum ProjectRuntimeCacheScope {
 pub(crate) fn redis_scope_prefix(project_id: Uuid, scope: ProjectRuntimeCacheScope) -> String {
     match scope {
         ProjectRuntimeCacheScope::Prod => format!("{project_id}:prod:"),
-        ProjectRuntimeCacheScope::Stage { runtime_id } => {
-            format!("{project_id}:stage:{runtime_id}:")
-        }
+        ProjectRuntimeCacheScope::Stage { runtime_id } => format!("{runtime_id}:"),
     }
 }
 
