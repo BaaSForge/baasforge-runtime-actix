@@ -1,5 +1,23 @@
 //! Latest project release loading (Redis + Postgres) and unit resolution from release metadata.
 //!
+//! ## Unit API resolution order (prod and stage)
+//!
+//! Runtime unit endpoints must never treat `project_units.id` (the full dotted id) as unique per project: the same
+//! string can exist on multiple [`crate::schema::project_units`].`chat_session_id` rows. Resolution is therefore:
+//!
+//! 1. **Live release** — Load the production or stage runtime’s current release (from
+//!    [`crate::schema::project_runtimes`].`live_release_id`), with Redis caching under
+//!    [`crate::services::project_runtime_cache::redis_key_release`].
+//! 2. **Release metadata membership** — Map the request’s logical *unit path* (four segments, no revision) to a
+//!    `(full_unit_id, chat_session_id)` pair using only [`crate::models::projects::UnitsMetadata::combined_unit_ids`].
+//!    If the path is absent from that set, return not found **without querying** `project_units` (the unit is not
+//!    part of the live release).
+//! 3. **Per-unit Redis** — Read-through cache at [`crate::services::project_runtime_cache::redis_key_unit`], whose
+//!    key always includes `chat_session_id` alongside scope (`{project_id}:prod:` or `{runtime_id}:`) so duplicate
+//!    full ids across sessions never collide in cache.
+//! 4. **Database** — Load by `project_id`, `chat_session_id`, full `id`, and `revision`. Omitting
+//!    `chat_session_id` could return the wrong row when ids are duplicated across sessions.
+//!
 //! **Full unit id vs unit path:** A *full unit id* is
 //! `context_slug.module_slug.unit_type_slug.unit_name_slug.revision` (five dot-separated segments; the last
 //! segment is the numeric revision). A *unit path* omits that final segment (four segments). APIs and release
@@ -338,19 +356,31 @@ fn path_and_revision_from_full_unit_id(full_unit_id: &str) -> Option<(String, i3
 /// deploy ([`crate::services::project_runtime_cache::clear_project_runtime_cache_on_deploy`]). Entries that
 /// appear only in `new_unit_ids` or `previous_unit_ids` are not loaded or cached so we do not store redundant
 /// rows in Redis.
+///
+/// If more than one entry shares the same logical path (same four-segment prefix), the first match wins and a
+/// warning is logged; publishers should avoid ambiguous `combinedUnitIDs` for a single release.
 fn resolve_unit_from_release_metadata(
     release: &ProjectReleaseRow,
     unit_path: &str,
 ) -> Option<(String, Uuid)> {
     let meta = release.units_metadata.as_ref()?;
+    let mut resolved: Option<(String, Uuid)> = None;
     for e in &meta.combined_unit_ids {
-        if let Some((path_from_full_id, _rev)) = path_and_revision_from_full_unit_id(&e.unit_id) {
-            if path_from_full_id == unit_path {
-                return Some((e.unit_id.clone(), e.chat_session_id));
+        if let Some((path_from_full_id, _rev)) = path_and_revision_from_full_unit_id(&e.unit_id)
+            && path_from_full_id == unit_path
+        {
+            if resolved.is_some() {
+                tracing::warn!(
+                    %unit_path,
+                    release_id = %release.id,
+                    "[unit trigger] multiple combined_unit_ids entries share the same logical unit path; using first match"
+                );
+                return resolved;
             }
+            resolved = Some((e.unit_id.clone(), e.chat_session_id));
         }
     }
-    None
+    resolved
 }
 
 /// Loads a unit row using a logical path and an already-resolved release (avoids extra Redis/DB for the release).
@@ -420,7 +450,8 @@ async fn load_unit_for_path_with_release(
     Ok(Some(out))
 }
 
-/// Loads latest production release, then the unit for `unit_path`.
+/// Loads the project’s live **production** release, then resolves `unit_path` via that release’s
+/// [`UnitsMetadata::combined_unit_ids`] before cache/DB (see module docs).
 pub async fn load_unit_for_path_production(
     pool: &DbPool,
     redis: &SharedRedisConn,
@@ -443,7 +474,8 @@ pub async fn load_unit_for_path_production(
     .await
 }
 
-/// Loads stage release for runtime, then the unit for `unit_path`.
+/// Loads the **stage** runtime’s live release, then resolves `unit_path` via that release’s
+/// [`UnitsMetadata::combined_unit_ids`] before cache/DB (see module docs).
 pub async fn load_unit_for_path_stage(
     pool: &DbPool,
     redis: &SharedRedisConn,

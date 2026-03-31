@@ -1,3 +1,8 @@
+//! HTTP handlers for runtime unit triggers. Resolution is implemented in
+//! [`crate::services::project_release`]: each request loads the **live** prod or stage release, checks that the
+//! unit path appears in that release’s `combinedUnitIDs` metadata (with `chatSessionId`), then uses Redis + Postgres
+//! with **cache and DB keys scoped by chat session** so duplicate full unit ids across sessions cannot cross-talk.
+
 use crate::libs::api_response::{api_error, api_success};
 use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::ProjectUnitType;

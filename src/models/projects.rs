@@ -125,6 +125,10 @@ pub struct ProjectReleaseRow {
 }
 
 /// Row from [`project_units`](crate::schema::project_units). **Unit identity** is easy to mix up: see [`id`].
+///
+/// `id` (full dotted unit id) may match another row for the same `project_id` when `chat_session_id` differs.
+/// Load/update paths must always filter by `chat_session_id` from the live release’s [`UnitsMetadata`], not only
+/// by `id`, to avoid returning the wrong session’s row.
 #[derive(Debug, Clone, Serialize, Deserialize, Queryable, Selectable)]
 #[diesel(table_name = project_units)]
 pub struct ProjectUnitRow {

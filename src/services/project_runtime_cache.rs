@@ -8,9 +8,10 @@
 //!
 //! On deploy, the cached release row must always be dropped. Per-unit keys are removed only for entries
 //! (chat session + full unit id) that were part of the previously live release but not in the target
-//! release’s [`crate::models::projects::UnitsMetadata::combined_unit_ids`]. Unit keys include
-//! [`crate::models::projects::UnitIdEntry::chat_session_id`] so the same full unit id string in different
-//! stage chat sessions does not share one Redis entry.
+//! release’s [`crate::models::projects::UnitsMetadata::combined_unit_ids`]. **Prod and stage:** every per-unit
+//! key includes [`crate::models::projects::UnitIdEntry::chat_session_id`] because `project_units.id` (full dotted
+//! id) is not unique per project—two chat sessions may reuse the same id string—so cache entries must not be keyed
+//! by full id alone.
 
 use crate::database::SharedRedisConn;
 use crate::models::projects::ProjectReleaseRow;
