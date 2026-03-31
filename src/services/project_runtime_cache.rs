@@ -1,5 +1,10 @@
 //! Redis cache layout for project runtime scope (prod or stage runtime) and selective invalidation on deploy.
 //!
+//! **Scope:** Keys are namespaced per *environment slice* — one `{project_id}:prod:` tree for the project’s
+//! single production runtime (domain rule: at most one prod runtime per project), and separate
+//! `{project_id}:stage:{runtime_id}:` trees per stage runtime. Callers must pass the correct
+//! [`ProjectRuntimeCacheScope`]; routines here never invalidate sibling runtimes or the whole project.
+//!
 //! On deploy, the cached release row must always be dropped. Per-unit keys are removed only for entries
 //! (chat session + full unit id) that were part of the previously live release but not in the target
 //! release’s [`crate::models::projects::UnitsMetadata::combined_unit_ids`]. Unit keys include

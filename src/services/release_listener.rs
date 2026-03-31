@@ -1,4 +1,10 @@
-//! NATS JetStream: release deploy notifications drive Redis cache invalidation for the affected runtime.
+//! NATS JetStream: release deploy notifications drive **scoped** Redis cache invalidation for one runtime only.
+//!
+//! Invalidation is limited to a single Redis namespace: production (`{project_id}:prod:`) or one stage
+//! runtime (`{project_id}:stage:{runtime_id}:`). A deploy event never walks every runtime for a project,
+//! never uses `FLUSHDB` / `KEYS`, and does not clear other stage runtimes when production changes (or vice
+//! versa). **Product assumption:** one production runtime per project; prod cache keys are shared for that
+//! project’s lone prod scope.
 //!
 //! **Publishers** must use JetStream (`jetstream.publish` / the JS API), not core NATS publish, so messages
 //! are persisted and match the stream. **Consumers**: a single durable pull consumer is shared by all
@@ -137,6 +143,7 @@ async fn handle_release_deploy_event(
         }
     };
 
+    // Single scope only: prod XOR one stage runtime — see `ProjectRuntimeCacheScope`.
     if let Err(e) = clear_project_runtime_cache_on_deploy(
         redis,
         event.project_id,

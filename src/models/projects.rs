@@ -131,7 +131,6 @@ pub struct ProjectUnitRow {
     pub project_id: Uuid,
     pub code: Option<String>,
     pub explanation: Option<String>,
-    pub is_draft: bool,
     pub chat_session_id: Uuid,
     pub unit_type: ProjectUnitType,
     pub is_deleted: bool,
