@@ -4,11 +4,13 @@
  * Exercises every feature a typical Node.js backend project relies on.
  * Run against QuickJS to discover which capabilities are present, broken, or missing.
  *
- * GET  /       — full health report: `summary`, grouped `sections`, and flat `tests`
- * POST /echo   — echo parsed JSON body back (tests body reading)
+ * GET / — single endpoint that returns a full health report containing
+ *         `summary`, grouped `sections`, and flat `tests` arrays.
  *
- * There is no separate route per section; only GET / returns section breakdowns.
- * Flat `tests` uses prefixed names (e.g. `crypto: createHash (SHA-256)`).
+ * All checks (including self-fetch round-trips) are triggered by the
+ * single GET / call.  Internal test helpers are dispatched via the
+ * `_t` query parameter (e.g. `/?_t=json`) and are not meant to be
+ * called directly.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -18,7 +20,6 @@ import { URL } from "node:url";
 import * as crypto from "node:crypto";
 import { Buffer } from "node:buffer";
 import { TextEncoder, TextDecoder } from "node:util";
-import { EventEmitter } from "node:events";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 
 // ---------------------------------------------------------------------------
@@ -419,39 +420,116 @@ function checkURL(): GroupedTests {
 
 function checkEncoding(): GroupedTests {
   return group([
-    runTest("TextEncoder exists", () => {
-      assert(typeof TextEncoder === "function");
-    }),
-
-    runTest("TextEncoder.encode", () => {
+    runTest("TextEncoder.encode basic", () => {
       const enc = new TextEncoder();
       const bytes = enc.encode("hello");
       assert(bytes instanceof Uint8Array);
       assert(bytes.length === 5);
-      assert(bytes[0] === 0x68); // 'h'
+      assert(bytes[0] === 0x68 && bytes[1] === 0x65 && bytes[4] === 0x6f);
     }),
 
-    runTest("TextDecoder exists", () => {
-      assert(typeof TextDecoder === "function");
+    runTest("TextEncoder.encodeInto", () => {
+      const enc = new TextEncoder();
+      const dest = new Uint8Array(10);
+      const result = enc.encodeInto("hello", dest);
+      assert(result.read === 5);
+      assert(result.written === 5);
+      assert(dest[0] === 0x68);
     }),
 
-    runTest("TextDecoder.decode", () => {
+    runTest("TextEncoder.encodeInto partial write (small buffer)", () => {
+      const enc = new TextEncoder();
+      const dest = new Uint8Array(3);
+      const result = enc.encodeInto("hello", dest);
+      assert(result.written === 3);
+      assert(result.read === 3);
+      assert(dest[0] === 0x68 && dest[1] === 0x65 && dest[2] === 0x6c);
+    }),
+
+    runTest("TextDecoder.decode basic", () => {
       const dec = new TextDecoder();
       const result = dec.decode(new Uint8Array([104, 101, 108, 108, 111]));
       assert(result === "hello");
     }),
 
-    runTest("TextEncoder/TextDecoder roundtrip", () => {
-      const original = "Hello 🌍 — special chars: àéîõü";
+    runTest("TextEncoder/TextDecoder UTF-8 roundtrip (ASCII)", () => {
       const enc = new TextEncoder();
       const dec = new TextDecoder();
+      const original = "The quick brown fox jumps over the lazy dog";
       assert(dec.decode(enc.encode(original)) === original);
     }),
 
-    runTest("TextDecoder with UTF-8 label", () => {
+    runTest("TextEncoder/TextDecoder roundtrip (multi-byte / emoji)", () => {
+      const enc = new TextEncoder();
+      const dec = new TextDecoder();
+      const original = "Hello 🌍🎉💻 — special chars: àéîõü ñ 中文 日本語";
+      const encoded = enc.encode(original);
+      assert(encoded.length > original.length);
+      assert(dec.decode(encoded) === original);
+    }),
+
+    runTest("TextEncoder multi-byte byte lengths", () => {
+      const enc = new TextEncoder();
+      assert(enc.encode("A").length === 1);
+      assert(enc.encode("é").length === 2);
+      assert(enc.encode("中").length === 3);
+      assert(enc.encode("🌍").length === 4);
+    }),
+
+    runTest("TextEncoder/TextDecoder large payload roundtrip (100KB)", () => {
+      const enc = new TextEncoder();
+      const dec = new TextDecoder();
+      const large = "abcdefghij".repeat(10000);
+      const encoded = enc.encode(large);
+      assert(encoded.length === 100000);
+      assert(dec.decode(encoded) === large);
+    }),
+
+    runTest("TextDecoder with explicit UTF-8 label", () => {
       const dec = new TextDecoder("utf-8");
       const result = dec.decode(new Uint8Array([0xC3, 0xA9])); // é
       assert(result === "é");
+    }),
+
+    runTest("TextDecoder with fatal option rejects invalid bytes", () => {
+      const dec = new TextDecoder("utf-8", { fatal: true });
+      let threw = false;
+      try {
+        dec.decode(new Uint8Array([0xFF, 0xFE]));
+      } catch {
+        threw = true;
+      }
+      assert(threw, "expected fatal TextDecoder to throw on invalid UTF-8 bytes");
+    }),
+
+    runTest("TextDecoder BOM handling", () => {
+      const bom = new Uint8Array([0xEF, 0xBB, 0xBF, 0x68, 0x69]); // UTF-8 BOM + "hi"
+      const dec = new TextDecoder("utf-8");
+      const result = dec.decode(bom);
+      assert(result === "hi" || result === "\uFEFFhi");
+    }),
+
+    runTest("TextEncoder empty string", () => {
+      const enc = new TextEncoder();
+      assert(enc.encode("").length === 0);
+    }),
+
+    runTest("TextDecoder empty buffer", () => {
+      const dec = new TextDecoder();
+      assert(dec.decode(new Uint8Array(0)) === "");
+    }),
+
+    runTest("TextDecoder from ArrayBuffer", () => {
+      const buf = new ArrayBuffer(5);
+      const view = new Uint8Array(buf);
+      view.set([72, 69, 76, 76, 79]);
+      const dec = new TextDecoder();
+      assert(dec.decode(buf) === "HELLO");
+    }),
+
+    runTest("TextDecoder.encoding property", () => {
+      const dec = new TextDecoder("utf-8");
+      assert(dec.encoding === "utf-8");
     }),
   ]);
 }
@@ -506,22 +584,18 @@ function checkBase64(): GroupedTests {
 
 function checkBuffer(): GroupedTests {
   return group([
-    runTest("Buffer exists", () => {
-      assert(typeof Buffer === "function");
-    }),
-
     runTest("Buffer.from (string, utf-8)", () => {
       const buf = Buffer.from("hello", "utf-8");
       assert(buf.length === 5);
       assert(buf[0] === 0x68);
     }),
 
-    runTest("Buffer.from (base64)", () => {
+    runTest("Buffer.from (base64) → toString(utf-8)", () => {
       const buf = Buffer.from("aGVsbG8=", "base64");
       assert(buf.toString("utf-8") === "hello");
     }),
 
-    runTest("Buffer.from (hex)", () => {
+    runTest("Buffer.from (hex) → toString(utf-8)", () => {
       const buf = Buffer.from("48656c6c6f", "hex");
       assert(buf.toString("utf-8") === "Hello");
     }),
@@ -536,10 +610,20 @@ function checkBuffer(): GroupedTests {
       assert(buf.toString("hex") === "68656c6c6f");
     }),
 
-    runTest("Buffer.alloc", () => {
+    runTest("Buffer.alloc zeroed", () => {
       const buf = Buffer.alloc(10, 0);
       assert(buf.length === 10);
-      assert(buf[0] === 0 && buf[9] === 0);
+      for (let i = 0; i < 10; i++) assert(buf[i] === 0);
+    }),
+
+    runTest("Buffer.alloc with fill value", () => {
+      const buf = Buffer.alloc(5, 0xAB);
+      for (let i = 0; i < 5; i++) assert(buf[i] === 0xAB);
+    }),
+
+    runTest("Buffer.allocUnsafe", () => {
+      const buf = Buffer.allocUnsafe(16);
+      assert(buf.length === 16);
     }),
 
     runTest("Buffer.concat", () => {
@@ -549,15 +633,159 @@ function checkBuffer(): GroupedTests {
       assert(c.toString() === "hello");
     }),
 
+    runTest("Buffer.concat with totalLength", () => {
+      const a = Buffer.from("abc");
+      const b = Buffer.from("def");
+      const c = Buffer.concat([a, b], 4);
+      assert(c.length === 4);
+      assert(c.toString() === "abcd");
+    }),
+
     runTest("Buffer.isBuffer", () => {
       assert(Buffer.isBuffer(Buffer.from("x")) === true);
       assert(Buffer.isBuffer("x") === false);
+      assert(Buffer.isBuffer(new Uint8Array(1)) === false);
     }),
 
-    runTest("Buffer slice / subarray", () => {
+    runTest("Buffer.byteLength", () => {
+      assert(Buffer.byteLength("hello") === 5);
+      assert(Buffer.byteLength("🌍") === 4);
+      assert(Buffer.byteLength("aGVsbG8=", "base64") === 5);
+    }),
+
+    runTest("Buffer slice / subarray shares memory", () => {
       const buf = Buffer.from("hello world");
       const sub = buf.subarray(0, 5);
       assert(sub.toString() === "hello");
+      sub[0] = 0x48; // 'H'
+      assert(buf[0] === 0x48);
+    }),
+
+    runTest("Buffer.compare", () => {
+      const a = Buffer.from("abc");
+      const b = Buffer.from("abc");
+      const c = Buffer.from("abd");
+      assert(Buffer.compare(a, b) === 0);
+      assert(Buffer.compare(a, c) < 0);
+      assert(Buffer.compare(c, a) > 0);
+    }),
+
+    runTest("buf.equals", () => {
+      const a = Buffer.from("hello");
+      const b = Buffer.from("hello");
+      const c = Buffer.from("world");
+      assert(a.equals(b) === true);
+      assert(a.equals(c) === false);
+    }),
+
+    runTest("buf.fill", () => {
+      const buf = Buffer.alloc(5);
+      buf.fill(0x41); // 'A'
+      assert(buf.toString() === "AAAAA");
+    }),
+
+    runTest("buf.indexOf / buf.includes", () => {
+      const buf = Buffer.from("hello world");
+      assert(buf.indexOf("world") === 6);
+      assert(buf.indexOf("xyz") === -1);
+      assert(buf.includes("hello") === true);
+      assert(buf.includes("xyz") === false);
+    }),
+
+    runTest("buf.copy", () => {
+      const src = Buffer.from("hello");
+      const dst = Buffer.alloc(5);
+      src.copy(dst);
+      assert(dst.toString() === "hello");
+    }),
+
+    runTest("buf.copy with offsets", () => {
+      const src = Buffer.from("hello");
+      const dst = Buffer.from("XXXXXXXXXX");
+      src.copy(dst, 3, 0, 5);
+      assert(dst.toString() === "XXXhelloXX");
+    }),
+
+    runTest("buf.write", () => {
+      const buf = Buffer.alloc(10);
+      const written = buf.write("hi", 0, "utf-8");
+      assert(written === 2);
+      assert(buf[0] === 0x68 && buf[1] === 0x69);
+    }),
+
+    runTest("buf.readUInt8 / writeUInt8", () => {
+      const buf = Buffer.alloc(2);
+      buf.writeUInt8(255, 0);
+      buf.writeUInt8(0, 1);
+      assert(buf.readUInt8(0) === 255);
+      assert(buf.readUInt8(1) === 0);
+    }),
+
+    runTest("buf.readUInt16BE / writeUInt16BE", () => {
+      const buf = Buffer.alloc(2);
+      buf.writeUInt16BE(0x0102, 0);
+      assert(buf[0] === 0x01 && buf[1] === 0x02);
+      assert(buf.readUInt16BE(0) === 0x0102);
+    }),
+
+    runTest("buf.readUInt16LE / writeUInt16LE", () => {
+      const buf = Buffer.alloc(2);
+      buf.writeUInt16LE(0x0102, 0);
+      assert(buf[0] === 0x02 && buf[1] === 0x01);
+      assert(buf.readUInt16LE(0) === 0x0102);
+    }),
+
+    runTest("buf.readUInt32BE / writeUInt32BE", () => {
+      const buf = Buffer.alloc(4);
+      buf.writeUInt32BE(0xDEADBEEF, 0);
+      assert(buf.readUInt32BE(0) === 0xDEADBEEF);
+    }),
+
+    runTest("buf.readInt8 / writeInt8", () => {
+      const buf = Buffer.alloc(2);
+      buf.writeInt8(-128, 0);
+      buf.writeInt8(127, 1);
+      assert(buf.readInt8(0) === -128);
+      assert(buf.readInt8(1) === 127);
+    }),
+
+    runTest("buf.readInt16BE / writeInt16BE", () => {
+      const buf = Buffer.alloc(2);
+      buf.writeInt16BE(-1, 0);
+      assert(buf.readInt16BE(0) === -1);
+    }),
+
+    runTest("buf.readFloatBE / writeFloatBE", () => {
+      const buf = Buffer.alloc(4);
+      buf.writeFloatBE(3.14, 0);
+      assert(Math.abs(buf.readFloatBE(0) - 3.14) < 0.001);
+    }),
+
+    runTest("buf.readDoubleBE / writeDoubleBE", () => {
+      const buf = Buffer.alloc(8);
+      buf.writeDoubleBE(Math.PI, 0);
+      assert(Math.abs(buf.readDoubleBE(0) - Math.PI) < 1e-15);
+    }),
+
+    runTest("Buffer.from(ArrayBuffer)", () => {
+      const ab = new ArrayBuffer(4);
+      const view = new Uint8Array(ab);
+      view.set([1, 2, 3, 4]);
+      const buf = Buffer.from(ab);
+      assert(buf[0] === 1 && buf[3] === 4);
+    }),
+
+    runTest("Buffer.from(Buffer) creates copy", () => {
+      const original = Buffer.from("hello");
+      const copy = Buffer.from(original);
+      copy[0] = 0x48;
+      assert(original[0] === 0x68);
+      assert(copy[0] === 0x48);
+    }),
+
+    runTest("Buffer.from(array)", () => {
+      const buf = Buffer.from([0x48, 0x49]);
+      assert(buf.toString() === "HI");
     }),
 
     runTest("Buffer JSON roundtrip", () => {
@@ -567,9 +795,26 @@ function checkBuffer(): GroupedTests {
       assert(parsed.type === "Buffer" && parsed.data.length === 5);
     }),
 
-    runTest("Buffer.byteLength", () => {
-      assert(Buffer.byteLength("hello") === 5);
-      assert(Buffer.byteLength("🌍") === 4);
+    runTest("Buffer encoding roundtrip (utf8 → base64 → utf8)", () => {
+      const original = "Hello 🌍 Baal!";
+      const b64 = Buffer.from(original, "utf-8").toString("base64");
+      const back = Buffer.from(b64, "base64").toString("utf-8");
+      assert(back === original);
+    }),
+
+    runTest("Buffer encoding roundtrip (utf8 → hex → utf8)", () => {
+      const original = "Binary safe: \x00\x01\xFF";
+      const hex = Buffer.from(original, "latin1").toString("hex");
+      const back = Buffer.from(hex, "hex").toString("latin1");
+      assert(back === original);
+    }),
+
+    runTest("Buffer.isEncoding", () => {
+      assert(Buffer.isEncoding("utf-8") === true);
+      assert(Buffer.isEncoding("hex") === true);
+      assert(Buffer.isEncoding("base64") === true);
+      assert(Buffer.isEncoding("latin1") === true);
+      assert(Buffer.isEncoding("nonsense") === false);
     }),
   ]);
 }
@@ -584,28 +829,43 @@ function checkCrypto(): GroupedTests {
       assert(typeof crypto !== "undefined");
     }),
 
-    runTest("crypto.randomUUID", () => {
+    runTest("crypto.randomUUID format", () => {
       const uuid = crypto.randomUUID();
-      assert(typeof uuid === "string");
       assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid));
       return uuid;
     }),
 
+    runTest("crypto.randomUUID uniqueness", () => {
+      const uuids = new Set(Array.from({ length: 100 }, () => crypto.randomUUID()));
+      assert(uuids.size === 100, "100 UUIDs should all be unique");
+    }),
+
     runTest("crypto.randomBytes", () => {
-      const bytes = crypto.randomBytes(16);
-      assert(bytes.length === 16);
-      return `hex: ${bytes.toString("hex")}`;
+      const bytes = crypto.randomBytes(32);
+      assert(bytes.length === 32);
+      assert(Buffer.isBuffer(bytes));
+      const allZero = bytes.every((b) => b === 0);
+      assert(!allZero, "random bytes should not all be zero");
+      return `hex: ${bytes.toString("hex").slice(0, 32)}...`;
     }),
 
     runTest("crypto.randomInt", () => {
-      const n = crypto.randomInt(0, 100);
-      assert(n >= 0 && n < 100);
+      for (let i = 0; i < 50; i++) {
+        const n = crypto.randomInt(10, 20);
+        assert(n >= 10 && n < 20, `randomInt out of range: ${n}`);
+      }
     }),
 
-    runTest("crypto.createHash (SHA-256)", () => {
+    runTest("crypto.randomFillSync", () => {
+      const buf = Buffer.alloc(16);
+      crypto.randomFillSync(buf);
+      const allZero = buf.every((b) => b === 0);
+      assert(!allZero, "randomFillSync should fill with random data");
+    }),
+
+    runTest("crypto.createHash (SHA-256) known vector", () => {
       const hash = crypto.createHash("sha256").update("hello").digest("hex");
       assert(hash === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
-      return hash;
     }),
 
     runTest("crypto.createHash (SHA-512)", () => {
@@ -613,18 +873,41 @@ function checkCrypto(): GroupedTests {
       assert(hash.length === 128);
     }),
 
-    runTest("crypto.createHash (MD5)", () => {
+    runTest("crypto.createHash (SHA-384)", () => {
+      const hash = crypto.createHash("sha384").update("hello").digest("hex");
+      assert(hash.length === 96);
+    }),
+
+    runTest("crypto.createHash (MD5) known vector", () => {
       const hash = crypto.createHash("md5").update("hello").digest("hex");
       assert(hash === "5d41402abc4b2a76b9719d911017c592");
     }),
 
-    runTest("crypto.createHmac (SHA-256)", () => {
-      const hmac = crypto.createHmac("sha256", "secret-key").update("message").digest("hex");
-      assert(typeof hmac === "string" && hmac.length === 64);
-      return hmac;
+    runTest("crypto.createHash (SHA-1)", () => {
+      const hash = crypto.createHash("sha1").update("hello").digest("hex");
+      assert(hash.length === 40);
     }),
 
-    runTest("crypto hash multi-update", () => {
+    runTest("crypto.createHash digest as Buffer", () => {
+      const buf = crypto.createHash("sha256").update("hello").digest();
+      assert(Buffer.isBuffer(buf));
+      assert(buf.length === 32);
+    }),
+
+    runTest("crypto.createHash digest as base64", () => {
+      const b64 = crypto.createHash("sha256").update("hello").digest("base64");
+      assert(typeof b64 === "string");
+      const backToHex = Buffer.from(b64, "base64").toString("hex");
+      assert(backToHex === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    }),
+
+    runTest("crypto.createHash with Buffer input", () => {
+      const buf = Buffer.from("hello");
+      const hash = crypto.createHash("sha256").update(buf).digest("hex");
+      assert(hash === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+    }),
+
+    runTest("crypto.createHash multi-update equals single update", () => {
       const h = crypto.createHash("sha256");
       h.update("hello");
       h.update(" ");
@@ -634,10 +917,45 @@ function checkCrypto(): GroupedTests {
       assert(combined === single);
     }),
 
+    runTest("crypto.createHash empty input", () => {
+      const hash = crypto.createHash("sha256").update("").digest("hex");
+      assert(hash === "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    }),
+
+    runTest("crypto.createHmac (SHA-256)", () => {
+      const hmac = crypto.createHmac("sha256", "secret-key").update("message").digest("hex");
+      assert(typeof hmac === "string" && hmac.length === 64);
+      const hmac2 = crypto.createHmac("sha256", "secret-key").update("message").digest("hex");
+      assert(hmac === hmac2, "same input should produce same HMAC");
+    }),
+
+    runTest("crypto.createHmac (SHA-1)", () => {
+      const hmac = crypto.createHmac("sha1", "key").update("data").digest("hex");
+      assert(hmac.length === 40);
+    }),
+
+    runTest("crypto.createHmac (SHA-512)", () => {
+      const hmac = crypto.createHmac("sha512", "key").update("data").digest("hex");
+      assert(hmac.length === 128);
+    }),
+
+    runTest("crypto.createHmac with Buffer key", () => {
+      const key = Buffer.from("secret-key");
+      const hmac = crypto.createHmac("sha256", key).update("message").digest("hex");
+      const hmacStr = crypto.createHmac("sha256", "secret-key").update("message").digest("hex");
+      assert(hmac === hmacStr, "Buffer key and string key should produce same result");
+    }),
+
+    runTest("crypto.createHmac different keys produce different output", () => {
+      const h1 = crypto.createHmac("sha256", "key1").update("data").digest("hex");
+      const h2 = crypto.createHmac("sha256", "key2").update("data").digest("hex");
+      assert(h1 !== h2);
+    }),
+
     runTest("crypto.createCipheriv / createDecipheriv (AES-256-CBC)", () => {
       const key = crypto.randomBytes(32);
       const iv = crypto.randomBytes(16);
-      const plaintext = "secret message for encryption test";
+      const plaintext = "secret message for encryption test — with unicode: 🔒";
 
       const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
       let encrypted = cipher.update(plaintext, "utf8", "hex");
@@ -651,7 +969,7 @@ function checkCrypto(): GroupedTests {
       return `encrypted length: ${encrypted.length}`;
     }),
 
-    runTest("crypto.createCipheriv (AES-256-GCM)", () => {
+    runTest("crypto.createCipheriv (AES-256-GCM) with authTag", () => {
       const key = crypto.randomBytes(32);
       const iv = crypto.randomBytes(12);
       const plaintext = "authenticated encryption test";
@@ -660,6 +978,7 @@ function checkCrypto(): GroupedTests {
       let encrypted = cipher.update(plaintext, "utf8", "hex");
       encrypted += cipher.final("hex");
       const authTag = cipher.getAuthTag();
+      assert(authTag.length === 16);
 
       const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
       decipher.setAuthTag(authTag);
@@ -669,10 +988,54 @@ function checkCrypto(): GroupedTests {
       assert(decrypted === plaintext);
     }),
 
+    runTest("crypto AES-256-GCM wrong authTag fails", () => {
+      const key = crypto.randomBytes(32);
+      const iv = crypto.randomBytes(12);
+
+      const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+      let encrypted = cipher.update("data", "utf8", "hex");
+      encrypted += cipher.final("hex");
+      cipher.getAuthTag();
+
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+      decipher.setAuthTag(crypto.randomBytes(16));
+      decipher.update(encrypted, "hex", "utf8");
+      let threw = false;
+      try {
+        decipher.final("utf8");
+      } catch {
+        threw = true;
+      }
+      assert(threw, "wrong authTag should cause decryption to fail");
+    }),
+
+    runTest("crypto.createCipheriv (AES-128-CBC)", () => {
+      const key = crypto.randomBytes(16);
+      const iv = crypto.randomBytes(16);
+
+      const cipher = crypto.createCipheriv("aes-128-cbc", key, iv);
+      let encrypted = cipher.update("test", "utf8", "hex");
+      encrypted += cipher.final("hex");
+
+      const decipher = crypto.createDecipheriv("aes-128-cbc", key, iv);
+      let decrypted = decipher.update(encrypted, "hex", "utf8");
+      decrypted += decipher.final("utf8");
+
+      assert(decrypted === "test");
+    }),
+
     runTest("crypto.pbkdf2Sync", () => {
       const derived = crypto.pbkdf2Sync("password", "salt", 100000, 64, "sha512");
       assert(derived.length === 64);
+      const derived2 = crypto.pbkdf2Sync("password", "salt", 100000, 64, "sha512");
+      assert(derived.equals(derived2), "deterministic derivation");
       return `hex: ${derived.toString("hex").slice(0, 32)}...`;
+    }),
+
+    runTest("crypto.pbkdf2Sync different passwords differ", () => {
+      const d1 = crypto.pbkdf2Sync("pass1", "salt", 1000, 32, "sha256");
+      const d2 = crypto.pbkdf2Sync("pass2", "salt", 1000, 32, "sha256");
+      assert(!d1.equals(d2));
     }),
 
     runTest("crypto.scryptSync", () => {
@@ -680,33 +1043,51 @@ function checkCrypto(): GroupedTests {
       assert(derived.length === 64);
     }),
 
-    runTest("crypto.timingSafeEqual", () => {
-      const a = Buffer.from("secret");
-      const b = Buffer.from("secret");
-      const c = Buffer.from("other!");
+    runTest("crypto.timingSafeEqual (equal buffers)", () => {
+      const a = Buffer.from("secret-value");
+      const b = Buffer.from("secret-value");
       assert(crypto.timingSafeEqual(a, b) === true);
+    }),
+
+    runTest("crypto.timingSafeEqual (different buffers)", () => {
+      const a = Buffer.from("secret-value");
+      const c = Buffer.from("other-value!");
       assert(crypto.timingSafeEqual(a, c) === false);
     }),
 
-    runTest("crypto.sign / verify (HMAC-based via createHmac)", () => {
+    runTest("crypto.timingSafeEqual rejects different lengths", () => {
+      let threw = false;
+      try {
+        crypto.timingSafeEqual(Buffer.from("abc"), Buffer.from("abcd"));
+      } catch {
+        threw = true;
+      }
+      assert(threw, "timingSafeEqual should throw for different-length buffers");
+    }),
+
+    runTest("HMAC sign + verify pattern", () => {
       const key = "signing-key";
       const data = "data-to-sign";
       const sig = crypto.createHmac("sha256", key).update(data).digest("hex");
       const verify = crypto.createHmac("sha256", key).update(data).digest("hex");
       assert(sig === verify);
+      const bad = crypto.createHmac("sha256", key).update("tampered").digest("hex");
+      assert(sig !== bad, "tampered data should produce different signature");
     }),
 
-    runTest("crypto.getHashes", () => {
+    runTest("crypto.getHashes includes common algorithms", () => {
       const hashes = crypto.getHashes();
       assert(Array.isArray(hashes));
       assert(hashes.includes("sha256"));
-      return `available: ${hashes.slice(0, 5).join(", ")}...`;
+      assert(hashes.includes("sha512"));
+      assert(hashes.includes("md5"));
     }),
 
-    runTest("crypto.getCiphers", () => {
+    runTest("crypto.getCiphers includes AES variants", () => {
       const ciphers = crypto.getCiphers();
       assert(Array.isArray(ciphers));
       assert(ciphers.includes("aes-256-cbc"));
+      assert(ciphers.includes("aes-256-gcm"));
     }),
   ]);
 }
@@ -1281,120 +1662,189 @@ async function checkAsyncPatterns(): Promise<GroupedTests> {
 }
 
 // ---------------------------------------------------------------------------
-// 16. EventEmitter
-// ---------------------------------------------------------------------------
-
-function checkEventEmitter(): GroupedTests {
-  return group([
-    runTest("EventEmitter exists", () => {
-      assert(typeof EventEmitter === "function");
-    }),
-
-    runTest("EventEmitter on/emit", () => {
-      const ee = new EventEmitter();
-      let received: string | null = null;
-      ee.on("test", (val: string) => { received = val; });
-      ee.emit("test", "hello");
-      assert(received === "hello");
-    }),
-
-    runTest("EventEmitter once", () => {
-      const ee = new EventEmitter();
-      let count = 0;
-      ee.once("ping", () => { count++; });
-      ee.emit("ping");
-      ee.emit("ping");
-      assert(count === 1);
-    }),
-
-    runTest("EventEmitter removeListener", () => {
-      const ee = new EventEmitter();
-      let count = 0;
-      const handler = () => { count++; };
-      ee.on("ev", handler);
-      ee.emit("ev");
-      ee.removeListener("ev", handler);
-      ee.emit("ev");
-      assert(count === 1);
-    }),
-
-    runTest("EventEmitter listenerCount", () => {
-      const ee = new EventEmitter();
-      ee.on("ev", () => {});
-      ee.on("ev", () => {});
-      assert(ee.listenerCount("ev") === 2);
-    }),
-  ]);
-}
-
-// ---------------------------------------------------------------------------
-// 17. Request / Response Shim (the runtime.js contract)
+// 16. Request / Response Shim (the runtime.js contract)
 // ---------------------------------------------------------------------------
 
 function checkReqResShim(
   req: IncomingMessage,
   res: ServerResponse,
 ): GroupedTests {
-  return group([
-    runTest("req.method exists", () => {
-      assert(typeof req.method === "string" && req.method.length > 0);
-    }),
+  const tests: TestResult[] = [];
 
-    runTest("req.url exists", () => {
-      assert(typeof req.url === "string");
-    }),
+  // --- req deep tests ---
 
-    runTest("req.headers is object", () => {
-      assert(typeof req.headers === "object" && req.headers !== null);
-    }),
+  tests.push(runTest("req.method is GET for health check route", () => {
+    assert(req.method === "GET", `expected GET, got ${req.method}`);
+  }));
 
-    runTest("req.rawHeaders is array", () => {
-      assert(Array.isArray(req.rawHeaders));
-    }),
+  tests.push(runTest("req.url starts with /", () => {
+    assert(typeof req.url === "string");
+    assert(req.url!.startsWith("/"), `url should start with /, got ${req.url}`);
+  }));
 
-    runTest("res.statusCode settable", () => {
-      const prev = res.statusCode;
-      res.statusCode = 299;
-      assert(res.statusCode === 299);
-      res.statusCode = prev;
-    }),
+  tests.push(runTest("req.headers has host header", () => {
+    assert(typeof req.headers.host === "string" && req.headers.host.length > 0);
+  }));
 
-    runTest("res.setHeader", () => {
-      assert(typeof res.setHeader === "function");
-      res.setHeader("X-Test", "value");
-    }),
+  tests.push(runTest("req.headers keys are lowercase", () => {
+    for (const key of Object.keys(req.headers)) {
+      assert(key === key.toLowerCase(), `header key "${key}" should be lowercase`);
+    }
+  }));
 
-    runTest("res.removeHeader", () => {
-      assert(typeof res.removeHeader === "function");
-      res.setHeader("X-Remove-Test", "val");
-      res.removeHeader("X-Remove-Test");
-    }),
+  tests.push(runTest("req.rawHeaders is paired key-value array", () => {
+    assert(Array.isArray(req.rawHeaders));
+    assert(req.rawHeaders.length % 2 === 0, "rawHeaders should have even length");
+    assert(req.rawHeaders.length >= 2, "should have at least one header pair");
+  }));
 
-    runTest("res.appendHeader", () => {
-      assert(typeof res.appendHeader === "function");
-    }),
+  tests.push(runTest("req.httpVersion is string", () => {
+    assert(typeof req.httpVersion === "string" && req.httpVersion.length > 0);
+  }));
 
-    runTest("res.setHeader with array (multi-value)", () => {
-      res.setHeader("X-Multi", ["val1", "val2"]);
-    }),
+  // --- res statusCode deep tests ---
 
-    runTest("res.end", () => {
-      assert(typeof res.end === "function");
-    }),
+  tests.push(runTest("res.statusCode settable to various HTTP codes", () => {
+    const codes = [200, 201, 204, 301, 302, 400, 401, 403, 404, 500, 502, 503];
+    for (const code of codes) {
+      res.statusCode = code;
+      assert(res.statusCode === code, `expected ${code}, got ${res.statusCode}`);
+    }
+    res.statusCode = 200;
+  }));
 
-    runTest("parseQuerystring (runtime global)", () => {
-      const result = parseQuerystring("a=1&b=2");
-      assert(result["a"] === "1" && result["b"] === "2");
-    }),
+  tests.push(runTest("res.statusMessage settable", () => {
+    res.statusMessage = "Custom Status";
+    assert(res.statusMessage === "Custom Status");
+    res.statusMessage = "OK";
+  }));
 
-    runTest("text(req) body reader", () => {
-      assert(typeof text === "function");
-    }),
-  ]);
+  // --- res header manipulation deep tests ---
+
+  tests.push(runTest("res.setHeader + getHeader roundtrip", () => {
+    res.setHeader("X-Roundtrip-Test", "value-123");
+    const val = res.getHeader("X-Roundtrip-Test");
+    assert(val === "value-123", `expected "value-123", got "${val}"`);
+  }));
+
+  tests.push(runTest("res.getHeader is case-insensitive", () => {
+    res.setHeader("X-Case-Test", "CaseValue");
+    assert(res.getHeader("x-case-test") === "CaseValue");
+    assert(res.getHeader("X-CASE-TEST") === "CaseValue");
+  }));
+
+  tests.push(runTest("res.hasHeader returns true for set headers", () => {
+    res.setHeader("X-Has-Test", "exists");
+    assert(res.hasHeader("X-Has-Test") === true);
+    assert(res.hasHeader("X-Nonexistent-Header") === false);
+  }));
+
+  tests.push(runTest("res.removeHeader fully removes the header", () => {
+    res.setHeader("X-Remove-Verify", "present");
+    assert(res.hasHeader("X-Remove-Verify") === true);
+    res.removeHeader("X-Remove-Verify");
+    assert(res.hasHeader("X-Remove-Verify") === false);
+    assert(res.getHeader("X-Remove-Verify") === undefined);
+  }));
+
+  tests.push(runTest("res.appendHeader appends to existing header", () => {
+    res.setHeader("X-Append-Verify", "val1");
+    res.appendHeader("X-Append-Verify", "val2");
+    const val = res.getHeader("X-Append-Verify");
+    assert(Array.isArray(val), "expected array after appendHeader");
+    assert((val as string[]).includes("val1") && (val as string[]).includes("val2"));
+  }));
+
+  tests.push(runTest("res.setHeader with array sets multi-value header", () => {
+    res.setHeader("X-Multi-Verify", ["a", "b", "c"]);
+    const val = res.getHeader("X-Multi-Verify");
+    assert(Array.isArray(val));
+    assert((val as string[]).length === 3);
+    assert((val as string[])[0] === "a" && (val as string[])[2] === "c");
+  }));
+
+  tests.push(runTest("res.getHeaders returns all set headers", () => {
+    res.setHeader("X-GetHeaders-Test", "ghval");
+    const all = res.getHeaders();
+    assert(typeof all === "object" && all !== null);
+    const key = Object.keys(all).find((k) => k.toLowerCase() === "x-getheaders-test");
+    assert(key !== undefined, "expected X-GetHeaders-Test in getHeaders()");
+  }));
+
+  tests.push(runTest("res.getHeaderNames returns array of names", () => {
+    res.setHeader("X-Names-Test", "nval");
+    const names = res.getHeaderNames();
+    assert(Array.isArray(names));
+    assert(names.some((n) => n.toLowerCase() === "x-names-test"));
+  }));
+
+  tests.push(runTest("res.writeHead is callable", () => {
+    assert(typeof res.writeHead === "function");
+  }));
+
+  tests.push(runTest("res.write is callable", () => {
+    assert(typeof res.write === "function");
+  }));
+
+  tests.push(runTest("res.end is callable", () => {
+    assert(typeof res.end === "function");
+  }));
+
+  // --- parseQuerystring deep tests ---
+
+  tests.push(runTest("parseQuerystring basic key=value pairs", () => {
+    const result = parseQuerystring("a=1&b=2&c=3");
+    assert(result["a"] === "1" && result["b"] === "2" && result["c"] === "3");
+  }));
+
+  tests.push(runTest("parseQuerystring repeated keys produce array", () => {
+    const result = parseQuerystring("a=1&a=2&a=3");
+    const val = result["a"];
+    assert(Array.isArray(val) && val.length === 3);
+    assert(val![0] === "1" && val![2] === "3");
+  }));
+
+  tests.push(runTest("parseQuerystring decodes percent-encoded chars", () => {
+    const result = parseQuerystring("name=hello%20world&q=a%26b%3Dc");
+    assert(result["name"] === "hello world");
+    assert(result["q"] === "a&b=c");
+  }));
+
+  tests.push(runTest("parseQuerystring decodes + as space", () => {
+    const result = parseQuerystring("name=hello+world");
+    assert(result["name"] === "hello world");
+  }));
+
+  tests.push(runTest("parseQuerystring empty string yields empty object", () => {
+    const result = parseQuerystring("");
+    assert(Object.keys(result).length === 0);
+  }));
+
+  tests.push(runTest("parseQuerystring key without value", () => {
+    const result = parseQuerystring("flag&key=val");
+    assert("flag" in result);
+    assert(result["key"] === "val");
+  }));
+
+  // --- text() body reader ---
+
+  tests.push(runTest("text body reader function exists", () => {
+    assert(typeof text === "function");
+  }));
+
+  // cleanup test headers
+  for (const h of [
+    "X-Roundtrip-Test", "X-Case-Test", "X-Has-Test", "X-Append-Verify",
+    "X-Multi-Verify", "X-GetHeaders-Test", "X-Names-Test",
+  ]) {
+    try { res.removeHeader(h); } catch {}
+  }
+
+  return group(tests);
 }
 
 // ---------------------------------------------------------------------------
-// 18. Console
+// 17. Console
 // ---------------------------------------------------------------------------
 
 function checkConsole(): GroupedTests {
@@ -1431,7 +1881,7 @@ function checkConsole(): GroupedTests {
 }
 
 // ---------------------------------------------------------------------------
-// 19. WeakRef + FinalizationRegistry
+// 18. WeakRef + FinalizationRegistry
 // ---------------------------------------------------------------------------
 
 function checkWeakRefFinalization(): GroupedTests {
@@ -1459,7 +1909,7 @@ function checkWeakRefFinalization(): GroupedTests {
 }
 
 // ---------------------------------------------------------------------------
-// 20. AbortController / AbortSignal
+// 19. AbortController / AbortSignal
 // ---------------------------------------------------------------------------
 
 function checkAbortController(): GroupedTests {
@@ -1468,126 +1918,717 @@ function checkAbortController(): GroupedTests {
       assert(typeof AbortController === "function");
     }),
 
-    runTest("AbortController basic usage", () => {
+    runTest("AbortController.signal is AbortSignal", () => {
+      const ac = new AbortController();
+      assert(ac.signal instanceof AbortSignal);
+      assert(ac.signal.aborted === false);
+    }),
+
+    runTest("AbortController.abort() sets signal.aborted to true", () => {
       const ac = new AbortController();
       assert(ac.signal.aborted === false);
       ac.abort();
       assert(ac.signal.aborted === true);
     }),
 
-    runTest("AbortSignal.reason", () => {
+    runTest("AbortSignal.reason with string", () => {
       const ac = new AbortController();
       ac.abort("custom reason");
       assert(ac.signal.reason === "custom reason");
     }),
 
-    runTest("AbortSignal.timeout", () => {
-      assert(typeof AbortSignal.timeout === "function");
+    runTest("AbortSignal.reason with Error object", () => {
+      const ac = new AbortController();
+      const err = new Error("abort error");
+      ac.abort(err);
+      assert(ac.signal.reason === err);
+      assert((ac.signal.reason as Error).message === "abort error");
     }),
 
-    runTest("AbortSignal.any", () => {
-      assert(typeof AbortSignal.any === "function");
+    runTest("AbortSignal abort event listener fires synchronously", () => {
+      const ac = new AbortController();
+      let fired = false;
+      let receivedEvent: Event | null = null;
+      ac.signal.addEventListener("abort", (e) => {
+        fired = true;
+        receivedEvent = e;
+      });
+      ac.abort();
+      assert(fired, "abort event should fire");
+      assert(receivedEvent !== null);
+      assert(receivedEvent!.type === "abort");
+    }),
+
+    runTest("AbortSignal multiple listeners all fire", () => {
+      const ac = new AbortController();
+      let count = 0;
+      ac.signal.addEventListener("abort", () => { count++; });
+      ac.signal.addEventListener("abort", () => { count++; });
+      ac.signal.addEventListener("abort", () => { count++; });
+      ac.abort();
+      assert(count === 3, `expected 3, got ${count}`);
+    }),
+
+    runTest("AbortSignal.abort() creates pre-aborted signal", () => {
+      const signal = AbortSignal.abort("pre-aborted");
+      assert(signal.aborted === true);
+      assert(signal.reason === "pre-aborted");
+    }),
+
+    runTest("AbortSignal.timeout returns non-aborted signal", () => {
+      const signal = AbortSignal.timeout(60000);
+      assert(signal instanceof AbortSignal);
+      assert(signal.aborted === false);
+    }),
+
+    runTest("AbortSignal.any combines multiple signals", () => {
+      const ac1 = new AbortController();
+      const ac2 = new AbortController();
+      const combined = AbortSignal.any([ac1.signal, ac2.signal]);
+      assert(combined.aborted === false);
+      ac1.abort("first");
+      assert(combined.aborted === true);
+      assert(combined.reason === "first");
+    }),
+
+    runTest("AbortSignal.any with pre-aborted signal", () => {
+      const preAborted = AbortSignal.abort("already");
+      const ac = new AbortController();
+      const combined = AbortSignal.any([preAborted, ac.signal]);
+      assert(combined.aborted === true);
+      assert(combined.reason === "already");
+    }),
+
+    runTest("AbortSignal.throwIfAborted", () => {
+      const ac = new AbortController();
+      ac.signal.throwIfAborted(); // should not throw
+      ac.abort("done");
+      let threw = false;
+      try {
+        ac.signal.throwIfAborted();
+      } catch {
+        threw = true;
+      }
+      assert(threw, "throwIfAborted should throw after abort");
+    }),
+
+    runTest("AbortController abort is idempotent", () => {
+      const ac = new AbortController();
+      let count = 0;
+      ac.signal.addEventListener("abort", () => { count++; });
+      ac.abort("first");
+      ac.abort("second");
+      assert(count === 1, "abort event should fire only once");
+      assert(ac.signal.reason === "first", "reason should be from first abort");
     }),
   ]);
 }
 
 // ---------------------------------------------------------------------------
-// 21. Fetch API
+// 20. Fetch API (constructors + real HTTP calls)
 // ---------------------------------------------------------------------------
 
-function checkFetchAPI(): GroupedTests {
-  return group([
-    runTest("fetch exists", () => {
-      assert(typeof fetch === "function");
-    }),
+async function checkFetchAPI(baseUrl: string): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
 
-    runTest("Request constructor exists", () => {
-      assert(typeof Request === "function");
-    }),
+  // --- Headers deep tests ---
 
-    runTest("Response constructor exists", () => {
-      assert(typeof Response === "function");
-    }),
+  tests.push(runTest("Headers constructor and case-insensitive access", () => {
+    const h = new Headers();
+    h.set("Content-Type", "application/json");
+    assert(h.get("content-type") === "application/json");
+    assert(h.get("CONTENT-TYPE") === "application/json");
+  }));
 
-    runTest("Headers constructor exists", () => {
-      assert(typeof Headers === "function");
-    }),
+  tests.push(runTest("Headers from object", () => {
+    const h = new Headers({ "X-Foo": "bar", "X-Baz": "qux" });
+    assert(h.get("x-foo") === "bar");
+    assert(h.get("x-baz") === "qux");
+  }));
 
-    runTest("Headers basic usage", () => {
-      const h = new Headers();
-      h.set("Content-Type", "application/json");
-      assert(h.get("content-type") === "application/json");
-      h.append("X-Custom", "val1");
-      h.append("X-Custom", "val2");
-      assert(h.has("x-custom"));
-    }),
+  tests.push(runTest("Headers append + getSetCookie-style multi-value", () => {
+    const h = new Headers();
+    h.append("X-Multi", "val1");
+    h.append("X-Multi", "val2");
+    assert(h.has("x-multi"));
+    const combined = h.get("x-multi");
+    assert(combined!.includes("val1") && combined!.includes("val2"));
+  }));
 
-    runTest("Request construction", () => {
-      const r = new Request("https://example.com/api", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "value" }),
-      });
-      assert(r.method === "POST");
-      assert(r.url === "https://example.com/api");
-    }),
+  tests.push(runTest("Headers delete", () => {
+    const h = new Headers({ "X-Del": "val" });
+    assert(h.has("x-del"));
+    h.delete("X-Del");
+    assert(!h.has("x-del"));
+    assert(h.get("x-del") === null);
+  }));
 
-    runTest("Response construction", () => {
-      const r = new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-      assert(r.status === 200);
-      assert(r.ok === true);
-    }),
+  tests.push(runTest("Headers iteration (entries, keys, values, forEach)", () => {
+    const h = new Headers({ "A": "1", "B": "2" });
+    const entries = [...h.entries()];
+    assert(entries.length === 2);
+    const keys = [...h.keys()];
+    assert(keys.length === 2);
+    const vals = [...h.values()];
+    assert(vals.length === 2);
+    let forEachCount = 0;
+    h.forEach(() => { forEachCount++; });
+    assert(forEachCount === 2);
+  }));
 
-    runTest("Response.json / Response.text static", () => {
-      assert(typeof Response.json === "function");
-    }),
-  ]);
+  // --- Request deep tests ---
+
+  tests.push(runTest("Request construction with all options", () => {
+    const r = new Request(`${baseUrl}/?_t=json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Custom": "test" },
+      body: JSON.stringify({ key: "value" }),
+    });
+    assert(r.method === "POST");
+    assert(r.url === `${baseUrl}/?_t=json`);
+    assert(r.headers.get("content-type") === "application/json");
+    assert(r.headers.get("x-custom") === "test");
+  }));
+
+  tests.push(runTest("Request clone preserves properties", () => {
+    const r = new Request(`${baseUrl}/?_t=json`, { method: "GET" });
+    const cloned = r.clone();
+    assert(cloned.url === r.url);
+    assert(cloned.method === r.method);
+  }));
+
+  tests.push(runTest("Request default method is GET", () => {
+    const r = new Request(`${baseUrl}/?_t=json`);
+    assert(r.method === "GET");
+  }));
+
+  // --- Response deep tests ---
+
+  tests.push(runTest("Response construction with status and headers", () => {
+    const r = new Response(JSON.stringify({ ok: true }), {
+      status: 201,
+      statusText: "Created",
+      headers: { "Content-Type": "application/json" },
+    });
+    assert(r.status === 201);
+    assert(r.statusText === "Created");
+    assert(r.ok === true);
+    assert(r.headers.get("content-type") === "application/json");
+  }));
+
+  tests.push(runTest("Response.ok reflects status range", () => {
+    assert(new Response(null, { status: 200 }).ok === true);
+    assert(new Response(null, { status: 299 }).ok === true);
+    assert(new Response(null, { status: 300 }).ok === false);
+    assert(new Response(null, { status: 404 }).ok === false);
+    assert(new Response(null, { status: 500 }).ok === false);
+  }));
+
+  tests.push(runTest("Response.json() static constructor", () => {
+    const r = Response.json({ hello: "world" }, { status: 200 });
+    assert(r.status === 200);
+    assert(r.headers.get("content-type")?.includes("application/json") === true);
+  }));
+
+  tests.push(runTest("Response.redirect() static constructor", () => {
+    assert(typeof Response.redirect === "function");
+    const r = Response.redirect("https://example.com/path", 302);
+    assert(r.status === 302);
+    const loc = r.headers.get("location");
+    assert(loc !== null && loc.includes("example.com"));
+  }));
+
+  // --- Response body parsing ---
+
+  tests.push(await runTestAsync("Response.json() body parsing", async () => {
+    const r = new Response('{"a":1,"b":"two","nested":{"c":true}}', {
+      headers: { "Content-Type": "application/json" },
+    });
+    const data = await r.json() as { a: number; b: string; nested: { c: boolean } };
+    assert(data.a === 1);
+    assert(data.b === "two");
+    assert(data.nested.c === true);
+  }));
+
+  tests.push(await runTestAsync("Response.text() body parsing", async () => {
+    const r = new Response("hello world — unicode: 🌍");
+    const t = await r.text();
+    assert(t === "hello world — unicode: 🌍");
+  }));
+
+  tests.push(await runTestAsync("Response.arrayBuffer() body parsing", async () => {
+    const r = new Response("test");
+    const ab = await r.arrayBuffer();
+    assert(ab instanceof ArrayBuffer);
+    assert(ab.byteLength === 4);
+    const view = new Uint8Array(ab);
+    assert(view[0] === 0x74); // 't'
+  }));
+
+  tests.push(await runTestAsync("Response.blob() body parsing", async () => {
+    const r = new Response("blob data here");
+    const blob = await r.blob();
+    assert(blob instanceof Blob);
+    assert(blob.size === 14);
+    const t = await blob.text();
+    assert(t === "blob data here");
+  }));
+
+  tests.push(await runTestAsync("Response clone + independent body reads", async () => {
+    const r = new Response('{"x":42}');
+    const r2 = r.clone();
+    const t1 = await r.text();
+    const t2 = await r2.text();
+    assert(t1 === t2);
+    assert(t1 === '{"x":42}');
+  }));
+
+  // --- Real HTTP calls: GET ---
+
+  tests.push(await runTestAsync("fetch GET /test/json → valid JSON response", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=json`);
+    assert(resp.ok, `expected ok, got status ${resp.status}`);
+    assert(resp.status === 200);
+    const data = await resp.json() as { method: string; message: string };
+    assert(data.method === "GET", `expected GET, got ${data.method}`);
+    assert(data.message === "ok");
+  }));
+
+  tests.push(await runTestAsync("fetch GET response has correct content-type", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=json`);
+    const ct = resp.headers.get("content-type");
+    assert(ct !== null && ct.includes("application/json"));
+  }));
+
+  tests.push(await runTestAsync("fetch GET /test/headers echoes custom headers", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=headers`, {
+      headers: {
+        "X-Custom-Header": "custom-value-123",
+        "X-Another": "another-val",
+      },
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { headers: Record<string, string> };
+    assert(
+      data.headers["x-custom-header"] === "custom-value-123",
+      `expected custom-value-123, got ${data.headers["x-custom-header"]}`,
+    );
+    assert(data.headers["x-another"] === "another-val");
+  }));
+
+  tests.push(await runTestAsync("fetch 404 for unknown path", async () => {
+    const resp = await fetch(`${baseUrl}/nonexistent-path-xyz`);
+    assert(resp.status === 404);
+    assert(!resp.ok);
+  }));
+
+  // --- Real HTTP calls: POST with JSON body ---
+
+  tests.push(await runTestAsync("fetch POST /echo with JSON body → roundtrip", async () => {
+    const payload = {
+      name: "baal",
+      values: [1, 2, 3],
+      nested: { ok: true, count: 42 },
+      unicode: "Hello 🌍",
+    };
+    const resp = await fetch(`${baseUrl}/?_t=echo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { echo: typeof payload };
+    assert(data.echo.name === "baal");
+    assert(data.echo.values.length === 3 && data.echo.values[2] === 3);
+    assert(data.echo.nested.ok === true && data.echo.nested.count === 42);
+    assert(data.echo.unicode === "Hello 🌍");
+  }));
+
+  tests.push(await runTestAsync("fetch POST /echo with empty body", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=echo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "",
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { echo: null };
+    assert(data.echo === null);
+  }));
+
+  // --- Real HTTP calls: POST raw body ---
+
+  tests.push(await runTestAsync("fetch POST /test/echo-raw with text body", async () => {
+    const body = "raw text content for testing";
+    const resp = await fetch(`${baseUrl}/?_t=echo-raw`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body,
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { body: string; byteLength: number };
+    assert(data.body === body);
+    assert(data.byteLength === Buffer.byteLength(body, "utf-8"));
+  }));
+
+  // --- Upload: large POST body ---
+
+  tests.push(await runTestAsync("fetch POST upload large body (50KB)", async () => {
+    const largeBody = "X".repeat(50000);
+    const resp = await fetch(`${baseUrl}/?_t=echo-raw`, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: largeBody,
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { byteLength: number; body: string };
+    assert(data.byteLength === 50000, `expected 50000 bytes, got ${data.byteLength}`);
+    assert(data.body.length === 50000);
+  }));
+
+  tests.push(await runTestAsync("fetch POST upload JSON body (10KB)", async () => {
+    const items = Array.from({ length: 200 }, (_, i) => ({
+      id: i,
+      name: `item-${i}`,
+      data: "x".repeat(30),
+    }));
+    const body = JSON.stringify(items);
+    const resp = await fetch(`${baseUrl}/?_t=echo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { echo: typeof items };
+    assert(Array.isArray(data.echo));
+    assert(data.echo.length === 200);
+    assert(data.echo[199]!.id === 199);
+  }));
+
+  // --- Download: large GET response ---
+
+  tests.push(await runTestAsync("fetch GET download large response (50KB+)", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=large`);
+    assert(resp.ok);
+    const data = await resp.text();
+    assert(data.length >= 50000, `expected >= 50000 chars, got ${data.length}`);
+  }));
+
+  tests.push(await runTestAsync("fetch GET download large response as JSON", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=large`);
+    assert(resp.ok);
+    const data = await resp.json() as { items: unknown[]; padding: string };
+    assert(Array.isArray(data.items));
+    assert(typeof data.padding === "string");
+  }));
+
+  // --- fetch with AbortController ---
+
+  tests.push(await runTestAsync("fetch with pre-aborted signal throws", async () => {
+    const ac = new AbortController();
+    ac.abort("cancelled");
+    let threw = false;
+    try {
+      await fetch(`${baseUrl}/?_t=json`, { signal: ac.signal });
+    } catch {
+      threw = true;
+    }
+    assert(threw, "expected fetch to throw on aborted signal");
+  }));
+
+  // --- fetch via Request object ---
+
+  tests.push(await runTestAsync("fetch using Request object (POST)", async () => {
+    const req = new Request(`${baseUrl}/?_t=echo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ via: "request-object" }),
+    });
+    const resp = await fetch(req);
+    assert(resp.ok);
+    const data = await resp.json() as { echo: { via: string } };
+    assert(data.echo.via === "request-object");
+  }));
+
+  tests.push(await runTestAsync("fetch using Request object (GET)", async () => {
+    const req = new Request(`${baseUrl}/?_t=json`, { method: "GET" });
+    const resp = await fetch(req);
+    assert(resp.ok);
+    const data = await resp.json() as { method: string };
+    assert(data.method === "GET");
+  }));
+
+  return group(tests);
 }
 
 // ---------------------------------------------------------------------------
-// 22. Streams API (Web Streams)
+// 21. Streams API (Web Streams — deep functionality tests)
 // ---------------------------------------------------------------------------
 
-function checkStreams(): GroupedTests {
-  return group([
-    runTest("ReadableStream exists", () => {
-      assert(typeof ReadableStream === "function");
-    }),
+async function checkStreams(): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
 
-    runTest("WritableStream exists", () => {
-      assert(typeof WritableStream === "function");
-    }),
+  tests.push(runTest("ReadableStream constructor exists", () => {
+    assert(typeof ReadableStream === "function");
+  }));
 
-    runTest("TransformStream exists", () => {
-      assert(typeof TransformStream === "function");
-    }),
+  tests.push(runTest("WritableStream constructor exists", () => {
+    assert(typeof WritableStream === "function");
+  }));
 
-    runTest("ReadableStream basic", () => {
-      const rs = new ReadableStream({
-        start(controller) {
-          controller.enqueue("chunk1");
-          controller.enqueue("chunk2");
+  tests.push(runTest("TransformStream constructor exists", () => {
+    assert(typeof TransformStream === "function");
+  }));
+
+  tests.push(await runTestAsync("ReadableStream: read all chunks to completion", async () => {
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue("chunk1");
+        controller.enqueue("chunk2");
+        controller.enqueue("chunk3");
+        controller.close();
+      },
+    });
+    const reader = rs.getReader();
+    const chunks: string[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value as string);
+    }
+    assert(chunks.length === 3);
+    assert(chunks[0] === "chunk1" && chunks[1] === "chunk2" && chunks[2] === "chunk3");
+  }));
+
+  tests.push(await runTestAsync("ReadableStream: pull-based data generation", async () => {
+    let pullCount = 0;
+    const rs = new ReadableStream({
+      pull(controller) {
+        pullCount++;
+        if (pullCount <= 3) {
+          controller.enqueue(pullCount);
+        } else {
           controller.close();
-        },
-      });
-      assert(typeof rs.getReader === "function");
-    }),
+        }
+      },
+    });
+    const reader = rs.getReader();
+    const values: number[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      values.push(value as number);
+    }
+    assert(values.length === 3);
+    assert(values[0] === 1 && values[2] === 3);
+  }));
 
-    runTest("TextEncoderStream exists", () => {
-      assert(typeof TextEncoderStream === "function");
-    }),
+  tests.push(await runTestAsync("ReadableStream: Uint8Array binary chunks", async () => {
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.enqueue(new Uint8Array([4, 5, 6]));
+        controller.close();
+      },
+    });
+    const reader = rs.getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value as Uint8Array);
+    }
+    assert(chunks.length === 2);
+    assert(chunks[0]![0] === 1 && chunks[1]![2] === 6);
+  }));
 
-    runTest("TextDecoderStream exists", () => {
-      assert(typeof TextDecoderStream === "function");
-    }),
-  ]);
+  tests.push(await runTestAsync("WritableStream: collect all written chunks", async () => {
+    const collected: string[] = [];
+    const ws = new WritableStream({
+      write(chunk) {
+        collected.push(chunk as string);
+      },
+    });
+    const writer = ws.getWriter();
+    await writer.write("alpha");
+    await writer.write("beta");
+    await writer.write("gamma");
+    await writer.close();
+    assert(collected.length === 3);
+    assert(collected.join(",") === "alpha,beta,gamma");
+  }));
+
+  tests.push(await runTestAsync("TransformStream: uppercase transform end-to-end", async () => {
+    const ts = new TransformStream({
+      transform(chunk, controller) {
+        controller.enqueue((chunk as string).toUpperCase());
+      },
+    });
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+
+    const writeAll = (async () => {
+      await writer.write("hello");
+      await writer.write("world");
+      await writer.close();
+    })();
+
+    const results: string[] = [];
+    const readAll = (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        results.push(value as string);
+      }
+    })();
+
+    await Promise.all([writeAll, readAll]);
+    assert(results.length === 2);
+    assert(results[0] === "HELLO" && results[1] === "WORLD");
+  }));
+
+  tests.push(await runTestAsync("TransformStream: JSON line parser", async () => {
+    const ts = new TransformStream({
+      transform(chunk, controller) {
+        const lines = (chunk as string).split("\n").filter((l) => l.trim());
+        for (const line of lines) {
+          controller.enqueue(JSON.parse(line));
+        }
+      },
+    });
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+
+    const writeAll = (async () => {
+      await writer.write('{"a":1}\n{"b":2}\n');
+      await writer.close();
+    })();
+
+    const objects: unknown[] = [];
+    const readAll = (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        objects.push(value);
+      }
+    })();
+
+    await Promise.all([writeAll, readAll]);
+    assert(objects.length === 2);
+    assert((objects[0] as { a: number }).a === 1);
+    assert((objects[1] as { b: number }).b === 2);
+  }));
+
+  tests.push(await runTestAsync("ReadableStream.tee() splits into independent streams", async () => {
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue("data1");
+        controller.enqueue("data2");
+        controller.close();
+      },
+    });
+    const [s1, s2] = rs.tee();
+    const r1 = s1.getReader();
+    const r2 = s2.getReader();
+
+    const c1: string[] = [];
+    const c2: string[] = [];
+    while (true) {
+      const { done, value } = await r1.read();
+      if (done) break;
+      c1.push(value as string);
+    }
+    while (true) {
+      const { done, value } = await r2.read();
+      if (done) break;
+      c2.push(value as string);
+    }
+    assert(c1.length === 2 && c2.length === 2);
+    assert(c1[0] === "data1" && c2[0] === "data1");
+    assert(c1[1] === "data2" && c2[1] === "data2");
+  }));
+
+  tests.push(await runTestAsync("ReadableStream.pipeTo() pipes all data", async () => {
+    const collected: string[] = [];
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue("x");
+        controller.enqueue("y");
+        controller.enqueue("z");
+        controller.close();
+      },
+    });
+    const ws = new WritableStream({
+      write(chunk) { collected.push(chunk as string); },
+    });
+    await rs.pipeTo(ws);
+    assert(collected.join("") === "xyz");
+  }));
+
+  tests.push(await runTestAsync("ReadableStream.pipeThrough() TransformStream", async () => {
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue("hello");
+        controller.enqueue("world");
+        controller.close();
+      },
+    });
+    const ts = new TransformStream({
+      transform(chunk, controller) {
+        controller.enqueue(`[${(chunk as string).toUpperCase()}]`);
+      },
+    });
+    const reader = rs.pipeThrough(ts).getReader();
+    const results: string[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      results.push(value as string);
+    }
+    assert(results[0] === "[HELLO]" && results[1] === "[WORLD]");
+  }));
+
+  tests.push(await runTestAsync("ReadableStream.cancel()", async () => {
+    let cancelReason: unknown = undefined;
+    const rs = new ReadableStream({
+      cancel(reason) { cancelReason = reason; },
+    });
+    await rs.cancel("done reading");
+    assert(cancelReason === "done reading");
+  }));
+
+  tests.push(await runTestAsync("Response body is a ReadableStream", async () => {
+    const resp = new Response("stream body content");
+    assert(resp.body instanceof ReadableStream);
+    const t = await resp.text();
+    assert(t === "stream body content");
+  }));
+
+  tests.push(await runTestAsync("Create Response from ReadableStream", async () => {
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("streamed "));
+        controller.enqueue(new TextEncoder().encode("response"));
+        controller.close();
+      },
+    });
+    const resp = new Response(rs);
+    const t = await resp.text();
+    assert(t === "streamed response");
+  }));
+
+  tests.push(runTest("TextEncoderStream exists", () => {
+    assert(typeof TextEncoderStream === "function");
+  }));
+
+  tests.push(runTest("TextDecoderStream exists", () => {
+    assert(typeof TextDecoderStream === "function");
+  }));
+
+  return group(tests);
 }
 
 // ---------------------------------------------------------------------------
-// 23. Process / Environment
+// 22. Process / Environment
 // ---------------------------------------------------------------------------
 
 function checkProcess(): GroupedTests {
@@ -1631,6 +2672,1037 @@ function checkProcess(): GroupedTests {
 }
 
 // ---------------------------------------------------------------------------
+// 23. EventTarget
+// ---------------------------------------------------------------------------
+
+function checkEventTarget(): GroupedTests {
+  return group([
+    runTest("EventTarget constructor exists", () => {
+      assert(typeof EventTarget === "function");
+    }),
+
+    runTest("EventTarget addEventListener + dispatchEvent", () => {
+      const target = new EventTarget();
+      let received: Event | null = null;
+      target.addEventListener("test", (e) => { received = e; });
+      target.dispatchEvent(new Event("test"));
+      assert(received !== null);
+      assert(received!.type === "test");
+    }),
+
+    runTest("EventTarget removeEventListener stops firing", () => {
+      const target = new EventTarget();
+      let count = 0;
+      const handler = () => { count++; };
+      target.addEventListener("inc", handler);
+      target.dispatchEvent(new Event("inc"));
+      assert(count === 1);
+      target.removeEventListener("inc", handler);
+      target.dispatchEvent(new Event("inc"));
+      assert(count === 1, "handler should not fire after removal");
+    }),
+
+    runTest("EventTarget once option", () => {
+      const target = new EventTarget();
+      let count = 0;
+      target.addEventListener("o", () => { count++; }, { once: true });
+      target.dispatchEvent(new Event("o"));
+      target.dispatchEvent(new Event("o"));
+      assert(count === 1, "once listener should fire only once");
+    }),
+
+    runTest("CustomEvent with detail", () => {
+      const target = new EventTarget();
+      let detail: unknown = null;
+      target.addEventListener("custom", (e) => {
+        detail = (e as CustomEvent).detail;
+      });
+      target.dispatchEvent(new CustomEvent("custom", { detail: { key: "value", num: 42 } }));
+      assert((detail as { key: string }).key === "value");
+      assert((detail as { num: number }).num === 42);
+    }),
+
+    runTest("EventTarget multiple listeners fire in order", () => {
+      const target = new EventTarget();
+      const calls: string[] = [];
+      target.addEventListener("m", () => { calls.push("a"); });
+      target.addEventListener("m", () => { calls.push("b"); });
+      target.addEventListener("m", () => { calls.push("c"); });
+      target.dispatchEvent(new Event("m"));
+      assert(calls.join(",") === "a,b,c");
+    }),
+
+    runTest("Event properties: type, cancelable, defaultPrevented", () => {
+      const e = new Event("test", { cancelable: true });
+      assert(e.type === "test");
+      assert(e.cancelable === true);
+      assert(e.defaultPrevented === false);
+      e.preventDefault();
+      assert(e.defaultPrevented === true);
+    }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// 24. Blob
+// ---------------------------------------------------------------------------
+
+async function checkBlob(): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
+
+  tests.push(runTest("Blob constructor exists", () => {
+    assert(typeof Blob === "function");
+  }));
+
+  tests.push(runTest("Blob from string parts", () => {
+    const blob = new Blob(["hello ", "world"]);
+    assert(blob.size === 11);
+  }));
+
+  tests.push(runTest("Blob with type option", () => {
+    const blob = new Blob(['{"a":1}'], { type: "application/json" });
+    assert(blob.type === "application/json");
+  }));
+
+  tests.push(await runTestAsync("Blob.text()", async () => {
+    const blob = new Blob(["hello world"]);
+    const t = await blob.text();
+    assert(t === "hello world");
+  }));
+
+  tests.push(await runTestAsync("Blob.arrayBuffer()", async () => {
+    const blob = new Blob(["test"]);
+    const ab = await blob.arrayBuffer();
+    assert(ab instanceof ArrayBuffer);
+    assert(ab.byteLength === 4);
+  }));
+
+  tests.push(await runTestAsync("Blob.slice() content", async () => {
+    const blob = new Blob(["hello world"]);
+    const sliced = blob.slice(6, 11);
+    assert(sliced.size === 5);
+    const t = await sliced.text();
+    assert(t === "world");
+  }));
+
+  tests.push(runTest("Blob from Uint8Array", () => {
+    const bytes = new Uint8Array([72, 73]);
+    const blob = new Blob([bytes]);
+    assert(blob.size === 2);
+  }));
+
+  tests.push(runTest("Blob.stream() returns ReadableStream", () => {
+    const blob = new Blob(["stream test"]);
+    const stream = blob.stream();
+    assert(stream instanceof ReadableStream);
+  }));
+
+  return group(tests);
+}
+
+// ---------------------------------------------------------------------------
+// 25. FormData
+// ---------------------------------------------------------------------------
+
+function checkFormData(): GroupedTests {
+  return group([
+    runTest("FormData constructor exists", () => {
+      assert(typeof FormData === "function");
+    }),
+
+    runTest("FormData append + get", () => {
+      const fd = new FormData();
+      fd.append("key", "value");
+      assert(fd.get("key") === "value");
+    }),
+
+    runTest("FormData set overwrites", () => {
+      const fd = new FormData();
+      fd.append("key", "value1");
+      fd.set("key", "value2");
+      assert(fd.get("key") === "value2");
+      assert(fd.getAll("key").length === 1);
+    }),
+
+    runTest("FormData append multiple values + getAll", () => {
+      const fd = new FormData();
+      fd.append("m", "a");
+      fd.append("m", "b");
+      fd.append("m", "c");
+      const all = fd.getAll("m");
+      assert(all.length === 3);
+      assert(all[0] === "a" && all[2] === "c");
+    }),
+
+    runTest("FormData has + delete", () => {
+      const fd = new FormData();
+      fd.set("key", "val");
+      assert(fd.has("key") === true);
+      fd.delete("key");
+      assert(fd.has("key") === false);
+      assert(fd.get("key") === null);
+    }),
+
+    runTest("FormData iteration (entries, keys, values)", () => {
+      const fd = new FormData();
+      fd.set("a", "1");
+      fd.set("b", "2");
+      assert([...fd.entries()].length === 2);
+      assert([...fd.keys()].length === 2);
+      assert([...fd.values()].length === 2);
+    }),
+
+    runTest("FormData forEach", () => {
+      const fd = new FormData();
+      fd.set("x", "1");
+      fd.set("y", "2");
+      let count = 0;
+      fd.forEach(() => { count++; });
+      assert(count === 2);
+    }),
+
+    runTest("FormData with Blob value", () => {
+      const fd = new FormData();
+      const blob = new Blob(["file content"], { type: "text/plain" });
+      fd.set("file", blob, "test.txt");
+      const retrieved = fd.get("file");
+      assert(retrieved !== null);
+    }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// 26. Web Crypto (subtle)
+// ---------------------------------------------------------------------------
+
+async function checkWebCryptoSubtle(): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
+
+  tests.push(runTest("crypto.subtle exists", () => {
+    assert(crypto.subtle != null);
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle.digest SHA-256 known vector", async () => {
+    const data = new TextEncoder().encode("hello");
+    const hash = await crypto.subtle.digest("SHA-256", data);
+    assert(hash instanceof ArrayBuffer);
+    assert(hash.byteLength === 32);
+    const hex = [...new Uint8Array(hash)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    assert(hex === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle.digest SHA-512", async () => {
+    const data = new TextEncoder().encode("hello");
+    const hash = await crypto.subtle.digest("SHA-512", data);
+    assert(hash instanceof ArrayBuffer);
+    assert(hash.byteLength === 64);
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle HMAC generateKey + sign + verify", async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: "HMAC", hash: "SHA-256" },
+      true,
+      ["sign", "verify"],
+    );
+    const data = new TextEncoder().encode("message to sign");
+    const signature = await crypto.subtle.sign("HMAC", key, data);
+    assert(signature instanceof ArrayBuffer && signature.byteLength > 0);
+
+    const valid = await crypto.subtle.verify("HMAC", key, signature, data);
+    assert(valid === true);
+
+    const tampered = new TextEncoder().encode("tampered");
+    const invalid = await crypto.subtle.verify("HMAC", key, signature, tampered);
+    assert(invalid === false);
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle HMAC importKey + sign", async () => {
+    const rawKey = new TextEncoder().encode("my-secret-key-for-hmac");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      rawKey,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign", "verify"],
+    );
+    const data = new TextEncoder().encode("payload");
+    const sig = await crypto.subtle.sign("HMAC", key, data);
+    assert(sig.byteLength === 32);
+
+    const valid = await crypto.subtle.verify("HMAC", key, sig, data);
+    assert(valid === true);
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle AES-GCM encrypt + decrypt", async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      true,
+      ["encrypt", "decrypt"],
+    );
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const plaintext = new TextEncoder().encode("secret data for subtle crypto");
+
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      plaintext,
+    );
+    assert(ciphertext instanceof ArrayBuffer);
+    assert(ciphertext.byteLength > plaintext.byteLength);
+
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      ciphertext,
+    );
+    const result = new TextDecoder().decode(decrypted);
+    assert(result === "secret data for subtle crypto");
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle exportKey", async () => {
+    const key = await crypto.subtle.generateKey(
+      { name: "HMAC", hash: "SHA-256" },
+      true,
+      ["sign", "verify"],
+    );
+    const exported = await crypto.subtle.exportKey("raw", key);
+    assert(exported instanceof ArrayBuffer);
+    assert(exported.byteLength > 0);
+  }));
+
+  tests.push(runTest("crypto.getRandomValues (Web Crypto style)", () => {
+    const arr = new Uint8Array(16);
+    crypto.getRandomValues(arr);
+    assert(!arr.every((b) => b === 0));
+  }));
+
+  return group(tests);
+}
+
+// ---------------------------------------------------------------------------
+// 27. Advanced Object, Reflect & Proxy
+// ---------------------------------------------------------------------------
+
+function checkAdvancedObjectReflectProxy(): GroupedTests {
+  return group([
+    runTest("Object.defineProperty (writable: false)", () => {
+      const obj: Record<string, unknown> = {};
+      Object.defineProperty(obj, "readonly", {
+        value: 42,
+        writable: false,
+        enumerable: true,
+        configurable: false,
+      });
+      assert(obj["readonly"] === 42);
+    }),
+
+    runTest("Object.defineProperty getter/setter", () => {
+      const store: { _val: number } & Record<string, unknown> = { _val: 0 };
+      Object.defineProperty(store, "doubled", {
+        get() { return (this as typeof store)._val * 2; },
+        set(v: number) { (this as typeof store)._val = v; },
+        enumerable: true,
+        configurable: true,
+      });
+      store._val = 5;
+      assert(store["doubled"] === 10);
+      store["doubled"] = 7;
+      assert(store._val === 7);
+    }),
+
+    runTest("Object.getOwnPropertyDescriptor", () => {
+      const obj = { a: 1 };
+      const desc = Object.getOwnPropertyDescriptor(obj, "a");
+      assert(desc !== undefined);
+      assert(desc!.value === 1 && desc!.writable === true && desc!.enumerable === true);
+    }),
+
+    runTest("Object.getOwnPropertyDescriptors", () => {
+      const obj = { a: 1, b: 2 };
+      const descs = Object.getOwnPropertyDescriptors(obj);
+      assert(descs.a.value === 1 && descs.b.value === 2);
+    }),
+
+    runTest("Object.getOwnPropertyNames includes non-enumerable", () => {
+      const obj: Record<string, unknown> = {};
+      Object.defineProperty(obj, "hidden", { value: 1, enumerable: false });
+      obj["visible"] = 2;
+      const names = Object.getOwnPropertyNames(obj);
+      assert(names.includes("hidden") && names.includes("visible"));
+      assert(!Object.keys(obj).includes("hidden"));
+    }),
+
+    runTest("Object.getOwnPropertySymbols", () => {
+      const sym = Symbol("test");
+      const obj = { [sym]: 42, normal: 1 };
+      const symbols = Object.getOwnPropertySymbols(obj);
+      assert(symbols.length === 1 && symbols[0] === sym);
+    }),
+
+    runTest("Object.create with prototype chain", () => {
+      const proto = { greet() { return "hello"; } };
+      const obj = Object.create(proto) as typeof proto;
+      assert(obj.greet() === "hello");
+      assert(Object.getPrototypeOf(obj) === proto);
+    }),
+
+    runTest("Object.create with null prototype", () => {
+      const obj = Object.create(null) as Record<string, unknown>;
+      obj["key"] = "value";
+      assert(Object.getPrototypeOf(obj) === null);
+      assert(!("toString" in obj));
+    }),
+
+    runTest("Object.is (NaN, +0/-0 edge cases)", () => {
+      assert(Object.is(NaN, NaN) === true);
+      assert(Object.is(0, -0) === false);
+      assert(Object.is(1, 1) === true);
+    }),
+
+    runTest("Reflect.ownKeys (strings + symbols)", () => {
+      const sym = Symbol("s");
+      const obj = { b: 2, a: 1, [sym]: 3 };
+      const keys = Reflect.ownKeys(obj);
+      assert(keys.includes("a") && keys.includes("b") && keys.includes(sym));
+    }),
+
+    runTest("Reflect.has / Reflect.deleteProperty", () => {
+      const obj: Record<string, number> = { a: 1, b: 2 };
+      assert(Reflect.has(obj, "a") === true);
+      assert(Reflect.deleteProperty(obj, "a") === true);
+      assert(!("a" in obj));
+    }),
+
+    runTest("Reflect.apply", () => {
+      assert(Reflect.apply(Math.max, null, [1, 5, 3]) === 5);
+    }),
+
+    runTest("Reflect.construct", () => {
+      class Pair { constructor(public x: number, public y: number) {} }
+      const p = Reflect.construct(Pair, [10, 20]) as Pair;
+      assert(p.x === 10 && p.y === 20 && p instanceof Pair);
+    }),
+
+    runTest("Proxy get/set/has/deleteProperty traps", () => {
+      const log: string[] = [];
+      const target: Record<string, number> = { x: 1 };
+      const proxy = new Proxy(target, {
+        get(t, p) { log.push(`get:${String(p)}`); return Reflect.get(t, p); },
+        set(t, p, v) { log.push(`set:${String(p)}`); return Reflect.set(t, p, v); },
+        has(t, p) { log.push(`has:${String(p)}`); return Reflect.has(t, p); },
+        deleteProperty(t, p) { log.push(`del:${String(p)}`); return Reflect.deleteProperty(t, p); },
+      });
+      void proxy["x"];
+      proxy["y"] = 2;
+      "x" in proxy;
+      delete proxy["y"];
+      assert(log.join(",") === "get:x,set:y,has:x,del:y");
+    }),
+
+    runTest("Proxy apply trap (function proxy)", () => {
+      const fn = (a: number, b: number) => a + b;
+      const proxy = new Proxy(fn, {
+        apply(target, thisArg, args) {
+          return (Reflect.apply(target, thisArg, args) as number) * 10;
+        },
+      });
+      assert(proxy(2, 3) === 50);
+    }),
+
+    runTest("Proxy construct trap", () => {
+      class Original { constructor(public val: number) {} }
+      const Proxied = new Proxy(Original, {
+        construct(target, args) {
+          const instance = Reflect.construct(target, args) as Original;
+          instance.val *= 2;
+          return instance;
+        },
+      });
+      const obj = new Proxied(5);
+      assert(obj.val === 10);
+    }),
+
+    runTest("Proxy.revocable", () => {
+      const { proxy, revoke } = Proxy.revocable({ a: 1 }, {});
+      assert(proxy.a === 1);
+      revoke();
+      let threw = false;
+      try { void proxy.a; } catch { threw = true; }
+      assert(threw, "revoked proxy should throw");
+    }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// 28. Function Patterns (bind, call, apply, closures, composition)
+// ---------------------------------------------------------------------------
+
+function checkFunctionPatterns(): GroupedTests {
+  return group([
+    runTest("Function.prototype.bind (partial application)", () => {
+      function add(a: number, b: number) { return a + b; }
+      const add5 = add.bind(null, 5);
+      assert(add5(3) === 8 && add5(10) === 15);
+    }),
+
+    runTest("Function.prototype.call", () => {
+      function greet(this: { name: string }, greeting: string) {
+        return `${greeting}, ${this.name}`;
+      }
+      assert(greet.call({ name: "baal" }, "hello") === "hello, baal");
+    }),
+
+    runTest("Function.prototype.apply", () => {
+      function sum(this: void, ...args: number[]) { return args.reduce((a, b) => a + b, 0); }
+      assert(sum.apply(undefined, [1, 2, 3, 4]) === 10);
+    }),
+
+    runTest("closure captures mutable state", () => {
+      function makeCounter() {
+        let count = 0;
+        return { inc() { count++; }, get() { return count; } };
+      }
+      const c = makeCounter();
+      c.inc(); c.inc(); c.inc();
+      assert(c.get() === 3);
+    }),
+
+    runTest("closure factory (middleware pattern)", () => {
+      function withPrefix(prefix: string) {
+        return (msg: string) => `${prefix}: ${msg}`;
+      }
+      const logger = withPrefix("LOG");
+      const errLogger = withPrefix("ERR");
+      assert(logger("test") === "LOG: test");
+      assert(errLogger("fail") === "ERR: fail");
+    }),
+
+    runTest("function composition (pipe)", () => {
+      const pipe = (...fns: Array<(x: number) => number>) =>
+        (x: number) => fns.reduce((v, fn) => fn(v), x);
+      const transform = pipe((x) => x + 1, (x) => x * 2, (x) => x - 3);
+      assert(transform(5) === 9);
+    }),
+
+    runTest("Function constructor (dynamic code)", () => {
+      const add = new Function("a", "b", "return a + b") as (a: number, b: number) => number;
+      assert(add(3, 4) === 7);
+    }),
+
+    runTest("getter/setter in object literal", () => {
+      const obj = {
+        _val: 0,
+        get value() { return this._val; },
+        set value(v: number) { this._val = v * 2; },
+      };
+      obj.value = 5;
+      assert(obj.value === 10);
+    }),
+
+    runTest("computed property names", () => {
+      const key = "dynamic";
+      const obj: Record<string, unknown> = { [key]: true, [`${key}Fn`]() { return 42; } };
+      assert(obj["dynamic"] === true);
+      assert((obj["dynamicFn"] as () => number)() === 42);
+    }),
+
+    runTest("generator protocol (fibonacci)", () => {
+      function* fib() {
+        let a = 0, b = 1;
+        while (true) { yield a; [a, b] = [b, a + b]; }
+      }
+      const gen = fib();
+      const first5 = Array.from({ length: 5 }, () => gen.next().value);
+      assert(first5.join(",") === "0,1,1,2,3");
+    }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// 29. Well-Known Symbols
+// ---------------------------------------------------------------------------
+
+function checkWellKnownSymbols(): GroupedTests {
+  return group([
+    runTest("Symbol.toPrimitive", () => {
+      class Money {
+        constructor(private amount: number) {}
+        [Symbol.toPrimitive](hint: string) {
+          if (hint === "number") return this.amount;
+          if (hint === "string") return `$${this.amount}`;
+          return this.amount;
+        }
+      }
+      const m = new Money(42);
+      assert(Number(m) === 42);
+      assert(String(m) === "$42");
+    }),
+
+    runTest("Symbol.hasInstance", () => {
+      class Validator {
+        static [Symbol.hasInstance](val: unknown): boolean {
+          return typeof val === "string" && (val as string).length > 0;
+        }
+      }
+      assert(typeof Validator[Symbol.hasInstance] === "function");
+      assert(Validator[Symbol.hasInstance]("hello") === true);
+      assert(Validator[Symbol.hasInstance]("") === false);
+    }),
+
+    runTest("Symbol.toStringTag", () => {
+      class MyClass { get [Symbol.toStringTag]() { return "MyCustomClass"; } }
+      assert(Object.prototype.toString.call(new MyClass()) === "[object MyCustomClass]");
+    }),
+
+    runTest("Symbol.iterator custom class", () => {
+      class Countdown {
+        constructor(private n: number) {}
+        [Symbol.iterator]() {
+          let current = this.n;
+          return {
+            next() {
+              return current > 0
+                ? { value: current--, done: false as const }
+                : { value: undefined, done: true as const };
+            },
+          };
+        }
+      }
+      assert([...new Countdown(3)].join(",") === "3,2,1");
+    }),
+
+    runTest("Symbol.asyncIterator exists", () => {
+      assert(typeof Symbol.asyncIterator === "symbol");
+    }),
+
+    runTest("Symbol.isConcatSpreadable", () => {
+      const arr = [1, 2];
+      const spreadable = { length: 2, 0: 3, 1: 4, [Symbol.isConcatSpreadable]: true };
+      const result = arr.concat(spreadable as unknown as number[]);
+      assert(result.length === 4 && result[2] === 3 && result[3] === 4);
+    }),
+
+    runTest("Symbol.for / Symbol.keyFor (global registry)", () => {
+      const s1: symbol = Symbol.for("app.key");
+      const s2: symbol = Symbol.for("app.key");
+      assert(s1 === s2);
+      assert(Symbol.keyFor(s1) === "app.key");
+      assert(Symbol.keyFor(Symbol("local")) === undefined);
+    }),
+
+    runTest("Symbol.species exists", () => {
+      assert(typeof Symbol.species === "symbol");
+    }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// 30. Data Manipulation & Backend Patterns
+// ---------------------------------------------------------------------------
+
+function checkDataManipulation(): GroupedTests {
+  return group([
+    runTest("deep object merge", () => {
+      function deepMerge(a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> {
+        const r = { ...a };
+        for (const k of Object.keys(b)) {
+          r[k] = (b[k] && typeof b[k] === "object" && !Array.isArray(b[k]) &&
+                   a[k] && typeof a[k] === "object" && !Array.isArray(a[k]))
+            ? deepMerge(a[k] as Record<string, unknown>, b[k] as Record<string, unknown>)
+            : b[k];
+        }
+        return r;
+      }
+      const merged = deepMerge(
+        { a: 1, nested: { x: 10, y: 20 } },
+        { nested: { y: 99, z: 30 }, b: 2 },
+      );
+      assert((merged["nested"] as Record<string, number>)["x"] === 10);
+      assert((merged["nested"] as Record<string, number>)["y"] === 99);
+      assert((merged["nested"] as Record<string, number>)["z"] === 30);
+    }),
+
+    runTest("object pick / omit", () => {
+      const pick = (obj: Record<string, unknown>, keys: string[]) =>
+        Object.fromEntries(Object.entries(obj).filter(([k]) => keys.includes(k)));
+      const omit = (obj: Record<string, unknown>, keys: string[]) =>
+        Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)));
+      const user = { id: 1, name: "baal", password: "secret", email: "a@b.com" };
+      assert(!("password" in omit(user, ["password"])));
+      assert(Object.keys(pick(user, ["id", "name"])).length === 2);
+    }),
+
+    runTest("array groupBy via reduce", () => {
+      const items = [
+        { type: "fruit", name: "apple" },
+        { type: "veggie", name: "carrot" },
+        { type: "fruit", name: "banana" },
+        { type: "veggie", name: "pea" },
+      ];
+      const grouped = items.reduce<Record<string, typeof items>>((acc, item) => {
+        (acc[item.type] ??= []).push(item);
+        return acc;
+      }, {});
+      assert(grouped["fruit"]!.length === 2);
+      assert(grouped["veggie"]!.length === 2);
+    }),
+
+    runTest("array deduplicate via Set", () => {
+      assert([...new Set([1, 2, 2, 3, 3, 3])].join(",") === "1,2,3");
+    }),
+
+    runTest("array chunk", () => {
+      function chunk<T>(arr: T[], size: number): T[][] {
+        const out: T[][] = [];
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+      }
+      const result = chunk([1, 2, 3, 4, 5, 6, 7], 3);
+      assert(result.length === 3 && result[0]!.length === 3 && result[2]!.length === 1);
+    }),
+
+    runTest("Map ↔ Object conversion", () => {
+      const obj = { a: 1, b: 2, c: 3 };
+      const map = new Map(Object.entries(obj));
+      assert(map.size === 3 && map.get("b") === 2);
+      const back = Object.fromEntries(map);
+      assert(back["a"] === 1 && back["c"] === 3);
+    }),
+
+    runTest("nested destructuring with defaults", () => {
+      const config: { db?: { host?: string; port?: number } } = { db: { host: "localhost" } };
+      const { db: { host = "127.0.0.1", port = 5432 } = {} } = config;
+      assert(host === "localhost" && port === 5432);
+    }),
+
+    runTest("reduce to build lookup Map", () => {
+      const users = [{ id: 1, name: "alice" }, { id: 2, name: "bob" }];
+      const lookup = users.reduce((m, u) => m.set(u.id, u), new Map<number, typeof users[0]>());
+      assert(lookup.size === 2 && lookup.get(2)!.name === "bob");
+    }),
+
+    runTest("JSON safe parse pattern", () => {
+      function safeParse(json: string) {
+        try { return { ok: true as const, data: JSON.parse(json) as unknown }; }
+        catch (e) { return { ok: false as const, error: (e as Error).message }; }
+      }
+      const good = safeParse('{"x":1}');
+      assert(good.ok === true);
+      const bad = safeParse("not json");
+      assert(bad.ok === false);
+    }),
+
+    runTest("flatMap for 1-to-many transforms", () => {
+      const orders = [{ id: 1, items: ["a", "b"] }, { id: 2, items: ["c"] }];
+      const all = orders.flatMap((o) => o.items.map((item) => ({ orderId: o.id, item })));
+      assert(all.length === 3 && all[2]!.orderId === 2);
+    }),
+
+    runTest("multi-criteria sort", () => {
+      const items = [
+        { p: 2, n: "c" }, { p: 1, n: "b" }, { p: 1, n: "a" }, { p: 2, n: "a" },
+      ];
+      items.sort((a, b) => a.p - b.p || a.n.localeCompare(b.n));
+      assert(items[0]!.n === "a" && items[0]!.p === 1);
+      assert(items[2]!.n === "a" && items[2]!.p === 2);
+    }),
+
+    runTest("immutable update (spread + override)", () => {
+      const state = { user: { name: "alice", age: 30 }, settings: { theme: "dark" } };
+      const updated = { ...state, user: { ...state.user, age: 31 } };
+      assert(updated.user.age === 31 && state.user.age === 30);
+      assert(updated.settings === state.settings);
+    }),
+
+    runTest("template literal tag (SQL parameterization)", () => {
+      function sql(strings: TemplateStringsArray, ...values: unknown[]) {
+        const params: unknown[] = [];
+        const query = strings.reduce((acc, str, i) => {
+          if (i < values.length) { params.push(values[i]); return acc + str + `$${i + 1}`; }
+          return acc + str;
+        }, "");
+        return { query, params };
+      }
+      const name = "alice"; const age = 30;
+      const result = sql`SELECT * FROM users WHERE name = ${name} AND age > ${age}`;
+      assert(result.query === "SELECT * FROM users WHERE name = $1 AND age > $2");
+      assert(result.params[0] === "alice" && result.params[1] === 30);
+    }),
+
+    runTest("cookie parsing pattern", () => {
+      const raw = "session=abc123; theme=dark; lang=en";
+      const cookies = Object.fromEntries(
+        raw.split(";").map((pair) => {
+          const [key, ...rest] = pair.trim().split("=");
+          return [key!, rest.join("=")];
+        }),
+      );
+      assert(cookies["session"] === "abc123" && cookies["theme"] === "dark");
+    }),
+
+    runTest("JWT-like token creation + decode", () => {
+      const b64url = (s: string) =>
+        btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      const header = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
+      const payload = b64url(JSON.stringify({ sub: "user-1", iat: 1700000000 }));
+      const token = `${header}.${payload}.fakesig`;
+      const parts = token.split(".");
+      assert(parts.length === 3);
+      const decoded = JSON.parse(atob(parts[1]!.replace(/-/g, "+").replace(/_/g, "/"))) as { sub: string };
+      assert(decoded.sub === "user-1");
+    }),
+
+    runTest("memoization pattern", () => {
+      let calls = 0;
+      function memoize<R>(fn: (n: number) => R) {
+        const cache = new Map<string, R>();
+        return (n: number): R => {
+          const key = JSON.stringify(n);
+          if (cache.has(key)) return cache.get(key)!;
+          const result = fn(n);
+          cache.set(key, result);
+          return result;
+        };
+      }
+      const square = memoize((n: number) => { calls++; return n * n; });
+      assert(square(5) === 25);
+      assert(square(5) === 25);
+      assert(calls === 1);
+    }),
+
+    runTest("Authorization header parsing (Bearer token)", () => {
+      const authHeader = "Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sig";
+      const [scheme, token] = authHeader.split(" ", 2);
+      assert(scheme === "Bearer");
+      assert(token!.startsWith("eyJ"));
+      const parts = token!.split(".");
+      const headerData = JSON.parse(atob(parts[0]!)) as { alg: string };
+      const payloadData = JSON.parse(atob(parts[1]!)) as { sub: string };
+      assert(headerData.alg === "HS256");
+      assert(payloadData.sub === "1234567890");
+    }),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// 31. Fetch HTTP Methods & Advanced Patterns
+// ---------------------------------------------------------------------------
+
+async function checkFetchHTTPMethods(baseUrl: string): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
+
+  tests.push(await runTestAsync("fetch PUT echoes method", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=method`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "update" }),
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { method: string };
+    assert(data.method === "PUT");
+  }));
+
+  tests.push(await runTestAsync("fetch DELETE echoes method", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=method`, { method: "DELETE" });
+    assert(resp.ok);
+    const data = await resp.json() as { method: string };
+    assert(data.method === "DELETE");
+  }));
+
+  tests.push(await runTestAsync("fetch PATCH echoes method", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=method`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ field: "patched" }),
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { method: string };
+    assert(data.method === "PATCH");
+  }));
+
+  tests.push(await runTestAsync("fetch HEAD returns no body but has headers", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=json`, { method: "HEAD" });
+    assert(resp.ok && resp.status === 200);
+    assert(resp.headers.get("content-type")?.includes("application/json") === true);
+    const body = await resp.text();
+    assert(body === "", "HEAD response should have empty body");
+  }));
+
+  tests.push(await runTestAsync("fetch OPTIONS echoes method", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=method`, { method: "OPTIONS" });
+    assert(resp.ok);
+    const data = await resp.json() as { method: string };
+    assert(data.method === "OPTIONS");
+  }));
+
+  tests.push(await runTestAsync("fetch GET /test/status/201", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=status&_code=201`);
+    assert(resp.status === 201 && resp.ok);
+  }));
+
+  tests.push(await runTestAsync("fetch GET /test/status/400", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=status&_code=400`);
+    assert(resp.status === 400 && !resp.ok);
+  }));
+
+  tests.push(await runTestAsync("fetch GET /test/status/500", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=status&_code=500`);
+    assert(resp.status === 500 && !resp.ok);
+  }));
+
+  tests.push(await runTestAsync("fetch GET /test/empty → 204 no content", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=empty`);
+    assert(resp.status === 204);
+    assert(await resp.text() === "");
+  }));
+
+  tests.push(await runTestAsync("fetch multiple concurrent requests", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => fetch(`${baseUrl}/?_t=json`).then((r) => r.json())),
+    );
+    assert(results.length === 5);
+    for (const r of results) assert((r as { method: string }).method === "GET");
+  }));
+
+  tests.push(await runTestAsync("fetch POST with query params in URL", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=method&foo=bar&baz=qux`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "val" }),
+    });
+    assert(resp.ok);
+    const data = await resp.json() as { method: string; query: string };
+    assert(data.method === "POST" && data.query.includes("foo=bar"));
+  }));
+
+  tests.push(await runTestAsync("fetch GET /test/set-cookie receives header", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=set-cookie`);
+    assert(resp.ok);
+    const sc = resp.headers.get("set-cookie");
+    assert(sc !== null && sc.includes("session="));
+  }));
+
+  return group(tests);
+}
+
+// ---------------------------------------------------------------------------
+// 32. Enhanced Req/Res Deep Tests (via self-fetch)
+// ---------------------------------------------------------------------------
+
+async function checkReqResDeep(baseUrl: string): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
+
+  tests.push(await runTestAsync("res.writeHead sets status + headers", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=write-head`);
+    assert(resp.status === 299);
+    assert(resp.headers.get("x-custom-via-writehead") === "hello");
+    assert(resp.headers.get("x-another") === "world");
+  }));
+
+  tests.push(await runTestAsync("res.write + res.end streaming", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=multi-write`);
+    assert(await resp.text() === "chunk1chunk2chunk3");
+  }));
+
+  tests.push(await runTestAsync("res.end with data param", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=end-with-data`);
+    assert(resp.ok);
+    assert(await resp.text() === "direct-end-data");
+  }));
+
+  tests.push(await runTestAsync("204 no content via writeHead + end", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=empty`);
+    assert(resp.status === 204);
+    assert(await resp.text() === "");
+  }));
+
+  tests.push(await runTestAsync("content-type preserved through write", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=multi-write`);
+    assert(resp.headers.get("content-type")?.includes("text/plain") === true);
+  }));
+
+  tests.push(await runTestAsync("large chunked response via multiple writes (50KB)", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=chunked-large`);
+    assert(resp.ok);
+    const body = await resp.text();
+    assert(body.length === 50000, `expected 50000, got ${body.length}`);
+  }));
+
+  tests.push(await runTestAsync("POST body preserves unicode", async () => {
+    const payload = { emoji: "🎉🔥💻", chinese: "中文测试", arabic: "مرحبا", mixed: "Hello 世界 🌍" };
+    const resp = await fetch(`${baseUrl}/?_t=echo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json() as { echo: typeof payload };
+    assert(data.echo.emoji === payload.emoji);
+    assert(data.echo.chinese === payload.chinese);
+    assert(data.echo.mixed === payload.mixed);
+  }));
+
+  tests.push(await runTestAsync("POST special JSON values roundtrip", async () => {
+    const payload = {
+      nullVal: null as null,
+      boolTrue: true,
+      boolFalse: false,
+      zero: 0,
+      negFloat: -3.14,
+      empty: "",
+      nested: { deep: { arr: [1, null, "three", true] as const } },
+    };
+    const resp = await fetch(`${baseUrl}/?_t=echo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json() as { echo: { nullVal: null; boolFalse: boolean; zero: number; nested: { deep: { arr: unknown[] } } } };
+    assert(data.echo.nullVal === null);
+    assert(data.echo.boolFalse === false);
+    assert(data.echo.zero === 0);
+    assert(data.echo.nested.deep.arr[1] === null);
+  }));
+
+  tests.push(await runTestAsync("echo large JSON array (1000 items)", async () => {
+    const items = Array.from({ length: 1000 }, (_, i) => ({ id: i, val: `item-${i}` }));
+    const resp = await fetch(`${baseUrl}/?_t=echo`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(items),
+    });
+    const data = await resp.json() as { echo: Array<{ id: number }> };
+    assert(data.echo.length === 1000 && data.echo[999]!.id === 999);
+  }));
+
+  tests.push(await runTestAsync("req.headers roundtrip with 20 custom headers", async () => {
+    const hdrs: Record<string, string> = {};
+    for (let i = 0; i < 20; i++) hdrs[`x-hdr-${i}`] = `val-${i}`;
+    const resp = await fetch(`${baseUrl}/?_t=headers`, { headers: hdrs });
+    const data = await resp.json() as { headers: Record<string, string> };
+    for (let i = 0; i < 20; i++) assert(data.headers[`x-hdr-${i}`] === `val-${i}`);
+  }));
+
+  tests.push(await runTestAsync("req.headers with long value (4KB)", async () => {
+    const longVal = "x".repeat(4000);
+    const resp = await fetch(`${baseUrl}/?_t=headers`, {
+      headers: { "X-Long": longVal },
+    });
+    const data = await resp.json() as { headers: Record<string, string> };
+    assert(data.headers["x-long"] === longVal);
+  }));
+
+  tests.push(await runTestAsync("Set-Cookie response header", async () => {
+    const resp = await fetch(`${baseUrl}/?_t=set-cookie`);
+    const sc = resp.headers.get("set-cookie");
+    assert(sc !== null && sc.length > 0);
+  }));
+
+  return group(tests);
+}
+
+// ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
 
@@ -1662,9 +3734,18 @@ async function runHealthCheck(
   sections: Record<string, GroupedTests>;
   tests: TestResult[];
 }> {
-  const [timers, asyncPatterns] = await Promise.all([
+  const host = req.headers.host ?? "localhost";
+  const baseUrl = `http://${host}`;
+
+  const [timers, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep] = await Promise.all([
     checkTimers(),
     checkAsyncPatterns(),
+    checkFetchAPI(baseUrl),
+    checkStreams(),
+    checkBlob(),
+    checkWebCryptoSubtle(),
+    checkFetchHTTPMethods(baseUrl),
+    checkReqResDeep(baseUrl),
   ]);
 
   const sections: Record<string, GroupedTests> = {
@@ -1683,14 +3764,23 @@ async function runHealthCheck(
     math: checkMath(),
     collections: checkCollections(),
     async_patterns: asyncPatterns,
-    event_emitter: checkEventEmitter(),
     req_res_shim: checkReqResShim(req, res),
     console: checkConsole(),
     weakref_finalization: checkWeakRefFinalization(),
     abort_controller: checkAbortController(),
-    fetch_api: checkFetchAPI(),
-    streams: checkStreams(),
+    fetch_api: fetchApi,
+    streams,
     process: checkProcess(),
+    event_target: checkEventTarget(),
+    blob,
+    form_data: checkFormData(),
+    web_crypto_subtle: webCryptoSubtle,
+    advanced_object_reflect_proxy: checkAdvancedObjectReflectProxy(),
+    function_patterns: checkFunctionPatterns(),
+    well_known_symbols: checkWellKnownSymbols(),
+    data_manipulation: checkDataManipulation(),
+    fetch_http_methods: fetchMethods,
+    req_res_deep: reqResDeep,
   };
 
   const tests = flattenLabeledTests(sections);
@@ -1738,34 +3828,108 @@ export async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> {
-  const host = req.headers.host;
-  const base = `http://${host}`;
-  const url = new URL(req.url ?? "/", base);
+  const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const action = url.searchParams.get("_t");
 
   res.setHeader("Content-Type", "application/json; charset=utf-8");
 
-  if (req.method === "GET" && url.pathname === "/") {
+  if (!action && req.method === "GET" && url.pathname === "/") {
     const { summary, sections, tests } = await runHealthCheck(req, res);
     res.statusCode = summary.healthy ? 200 : 503;
     res.end(JSON.stringify({ summary, sections, tests }, null, 2));
     return;
   }
 
-  if (req.method === "POST" && url.pathname === "/echo") {
-    try {
-      const raw = await text(req);
-      const body = raw.trim() === "" ? null : (JSON.parse(raw) as unknown);
+  switch (action) {
+    case "json": {
+      if (req.method === "HEAD") { res.statusCode = 200; res.end(); return; }
       res.statusCode = 200;
-      res.end(JSON.stringify({ echo: body }, null, 2));
-    } catch (_e) {
-      res.statusCode = 400;
-      res.end(JSON.stringify({ error: "invalid JSON body" }));
+      res.end(JSON.stringify({ method: "GET", message: "ok" }));
+      return;
     }
-    return;
+    case "echo": {
+      try {
+        const raw = await text(req);
+        const body = raw.trim() === "" ? null : (JSON.parse(raw) as unknown);
+        res.statusCode = 200;
+        res.end(JSON.stringify({ echo: body }, null, 2));
+      } catch {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "invalid JSON body" }));
+      }
+      return;
+    }
+    case "echo-raw": {
+      const raw = await text(req);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ body: raw, byteLength: Buffer.byteLength(raw, "utf-8") }));
+      return;
+    }
+    case "large": {
+      const items = Array.from({ length: 500 }, (_, i) => ({ id: i, name: `item-${i}`, value: Math.random() }));
+      res.statusCode = 200;
+      res.end(JSON.stringify({ items, padding: "x".repeat(30000) }));
+      return;
+    }
+    case "headers": {
+      res.statusCode = 200;
+      res.end(JSON.stringify({ headers: req.headers }));
+      return;
+    }
+    case "method": {
+      let body: unknown = null;
+      if (req.method === "POST" || req.method === "PUT" || req.method === "PATCH") {
+        try {
+          const raw = await text(req);
+          body = raw.trim() ? JSON.parse(raw) : null;
+        } catch { body = null; }
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ method: req.method, query: url.search, body }));
+      return;
+    }
+    case "status": {
+      const code = parseInt(url.searchParams.get("_code") ?? "200", 10);
+      res.statusCode = code;
+      res.end(JSON.stringify({ status: code }));
+      return;
+    }
+    case "empty": {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    case "multi-write": {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.write("chunk1");
+      res.write("chunk2");
+      res.end("chunk3");
+      return;
+    }
+    case "write-head": {
+      res.writeHead(299, { "X-Custom-Via-WriteHead": "hello", "X-Another": "world" });
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    case "end-with-data": {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("direct-end-data");
+      return;
+    }
+    case "set-cookie": {
+      res.setHeader("Set-Cookie", ["session=abc123; Path=/; HttpOnly", "theme=dark; Path=/"]);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    case "chunked-large": {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      for (let i = 0; i < 5; i++) res.write("A".repeat(10000));
+      res.end();
+      return;
+    }
   }
 
   res.statusCode = 404;
-  res.end(JSON.stringify({
-    hint: "GET / for the full health report, POST /echo to test body parsing",
-  }));
+  res.end(JSON.stringify({ error: "not found" }));
 }
