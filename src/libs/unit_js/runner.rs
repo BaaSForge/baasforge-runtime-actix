@@ -31,7 +31,7 @@ pub fn run_unit_handler(
 
 fn run_in_ctx(
     ctx: &Ctx<'_>,
-    user_body: &str,
+    source: &str,
     snapshot: &TriggerHttpSnapshot,
 ) -> Result<TriggerHttpResponse, String> {
     register_globals(ctx).map_err(|e| {
@@ -49,7 +49,7 @@ fn run_in_ctx(
         .set("__snap", snap_val)
         .map_err(|e| e.to_string())?;
     ctx.globals()
-        .set("__userBody", user_body)
+        .set("__userSource", source)
         .map_err(|e| e.to_string())?;
 
     ctx.eval::<(), _>(RUNTIME_JS).map_err(|e| {

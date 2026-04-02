@@ -65,8 +65,21 @@ function __createRes() {
   };
 }
 
-const req = __buildReq(__snap);
-const res = __createRes();
-globalThis.__baal_res = res;
-const handleRequest = eval('(async function(req,res){' + __userBody + '})');
-globalThis.__baal_p = (async () => { await handleRequest(req, res); })();
+// Strip ES module syntax so the unit code can be eval'd as a plain script.
+// Imports are expected to be provided as runtime globals; `export` is removed
+// so `export async function handleRequest(…)` becomes a normal declaration.
+var __code = __userSource
+  .replace(/^\s*import\s+.*\s+from\s+['"][^'"]*['"];?\s*$/gm, '')
+  .replace(/^\s*import\s+['"][^'"]*['"];?\s*$/gm, '')
+  .replace(/^export\s+/gm, '');
+
+(0, eval)(__code);
+
+if (typeof handleRequest !== 'function') {
+  throw new Error('Unit must export a handleRequest(req, res) function');
+}
+
+var __req = __buildReq(__snap);
+var __res = __createRes();
+globalThis.__baal_res = __res;
+globalThis.__baal_p = (async () => { await handleRequest(__req, __res); })();
