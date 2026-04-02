@@ -72,19 +72,31 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         redis_conn,
     );
 
+    use actix_web::guard;
+
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(app_context.clone()))
             .service(
                 web::scope("/api/v1/trigger")
-                    .route(
-                        "/{project_id}/stage/{runtime_id}/{context_slug}/{module_slug}/{unit_name_slug}",
-                        web::get().to(unit::handle_trigger_api_unit_stage),
+                    .service(
+                        web::resource(
+                            "/{project_id}/stage/{runtime_id}/{context_slug}/{module_slug}/{unit_name_slug}",
+                        )
+                        .route(
+                            web::route()
+                                .guard(guard::Any(guard::Get()).or(guard::Post()).or(guard::Put()).or(guard::Patch()).or(guard::Delete()).or(guard::Head()).or(guard::Options()))
+                                .to(unit::handle_trigger_api_unit_stage),
+                        ),
                     )
-                    .route(
-                        "/{project_id}/{context_slug}/{module_slug}/{unit_name_slug}",
-                        web::get().to(unit::handle_trigger_api_unit_production),
-                    )
+                    .service(
+                        web::resource("/{project_id}/{context_slug}/{module_slug}/{unit_name_slug}")
+                            .route(
+                                web::route()
+                                    .guard(guard::Any(guard::Get()).or(guard::Post()).or(guard::Put()).or(guard::Patch()).or(guard::Delete()).or(guard::Head()).or(guard::Options()))
+                                    .to(unit::handle_trigger_api_unit_production),
+                            ),
+                    ),
             )
     })
     .bind(("127.0.0.1", port))?

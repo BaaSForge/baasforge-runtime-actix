@@ -3,17 +3,22 @@
 //! unit path appears in that release’s `combinedUnitIDs` metadata (with `chatSessionId`), then uses Redis + Postgres
 //! with **cache and DB keys scoped by chat session** so duplicate full unit ids across sessions cannot cross-talk.
 
-use crate::libs::api_response::{api_error, api_success};
+use crate::libs::api_response::api_error;
+use crate::libs::unit_js::{self, TriggerHttpSnapshot};
 use crate::libs::unit_slug::is_valid_slug;
-use crate::models::projects::ProjectUnitType;
+use crate::models::projects::{ProjectUnitRow, ProjectUnitType};
 use crate::routes::AppContext;
 use crate::services::project_release::{
     load_unit_for_path_production, load_unit_for_path_stage, ServiceError,
 };
-use actix_web::{web, HttpResponse};
+use actix_web::http::StatusCode;
+use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
+
+/// Max request body size forwarded into QuickJS `req` (bytes).
+const TRIGGER_MAX_BODY_BYTES: usize = 512 * 1024;
 
 /// Path params for runtime units exposed at this API. The **type** segment of the composite unit id
 /// is not in the URL; handlers pass [`ProjectUnitType::Api`] into [`logical_unit_path`] and the load helpers.
@@ -58,6 +63,8 @@ fn logical_unit_path(
 pub async fn handle_trigger_api_unit_production(
     ctx: web::Data<AppContext>,
     path: web::Path<ProdUnitPath>,
+    http_req: HttpRequest,
+    body: web::Bytes,
 ) -> HttpResponse {
     let params = path.into_inner();
     let unit_type = ProjectUnitType::Api;
@@ -78,7 +85,7 @@ pub async fn handle_trigger_api_unit_production(
     )
     .await
     {
-        Ok(Some(unit)) => HttpResponse::Ok().json(api_success("unit", unit)),
+        Ok(Some(unit)) => respond_trigger_unit(unit, &http_req, body).await,
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
     }
@@ -87,6 +94,8 @@ pub async fn handle_trigger_api_unit_production(
 pub async fn handle_trigger_api_unit_stage(
     ctx: web::Data<AppContext>,
     path: web::Path<StageUnitPath>,
+    http_req: HttpRequest,
+    body: web::Bytes,
 ) -> HttpResponse {
     let params = path.into_inner();
     let prod = ProdUnitPath {
@@ -114,10 +123,82 @@ pub async fn handle_trigger_api_unit_stage(
     )
     .await
     {
-        Ok(Some(unit)) => HttpResponse::Ok().json(api_success("unit", unit)),
+        Ok(Some(unit)) => respond_trigger_unit(unit, &http_req, body).await,
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
     }
+}
+
+fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes) -> Result<TriggerHttpSnapshot, &'static str> {
+    if body.len() > TRIGGER_MAX_BODY_BYTES {
+        return Err("request body too large for unit trigger");
+    }
+    let method = req.method().as_str().to_string();
+    let url = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_else(|| req.uri().path().to_string());
+    let mut header_pairs = Vec::new();
+    for (name, value) in req.headers().iter() {
+        let value = value.to_str().unwrap_or("").to_string();
+        header_pairs.push((name.as_str().to_string(), value));
+    }
+    let body_text = String::from_utf8_lossy(body).into_owned();
+    Ok(TriggerHttpSnapshot {
+        method,
+        url,
+        header_pairs,
+        body_text,
+    })
+}
+
+async fn respond_trigger_unit(unit: ProjectUnitRow, http_req: &HttpRequest, body: web::Bytes) -> HttpResponse {
+    let code = match unit.code.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(c) => c.to_string(),
+        None => {
+            return HttpResponse::BadRequest()
+                .json(api_error("unit has no executable code", json!({})));
+        }
+    };
+    let snapshot = match trigger_http_snapshot(http_req, &body) {
+        Ok(s) => s,
+        Err(msg) => return HttpResponse::PayloadTooLarge().json(api_error(msg, json!({}))),
+    };
+    let unit_id = unit.id.clone();
+    let revision = unit.revision;
+    let run_result = match tokio::task::spawn_blocking(move || unit_js::run_unit_handler(&code, &snapshot)).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            tracing::error!(
+                unit_id = %unit_id,
+                revision,
+                error = %e,
+                "trigger unit: QuickJS execution failed"
+            );
+            return HttpResponse::BadRequest().json(api_error(
+                "javascript execution failed",
+                json!({ "detail": e }),
+            ));
+        }
+        Err(join_err) => {
+            if let Ok(payload) = join_err.try_into_panic() {
+                tracing::error!(unit_id = %unit_id, revision, ?payload, "trigger unit: QuickJS task panicked");
+            } else {
+                tracing::error!(unit_id = %unit_id, revision, "trigger unit: QuickJS task cancelled");
+            }
+            return HttpResponse::InternalServerError()
+                .json(api_error("javascript runner panicked", json!({})));
+        }
+    };
+
+    let status =
+        StatusCode::from_u16(run_result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let mut resp = HttpResponse::build(status);
+    for (name, value) in run_result.headers {
+        resp.append_header((name, value));
+    }
+    resp.body(run_result.body)
 }
 
 fn map_service_err(e: ServiceError) -> HttpResponse {
