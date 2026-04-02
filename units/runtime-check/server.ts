@@ -7,5 +7,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Listening on http://localhost:${PORT}/`);
+  console.log(`Runtime health check listening on http://localhost:${PORT}/`);
 });
