@@ -1,11 +1,11 @@
 use rquickjs::{Context, Ctx, Promise, Runtime, Value};
 
 use super::error::{format_js_error, log_js_failure};
+use super::modules;
 use super::types::{JsResponseRaw, TriggerHttpResponse, TriggerHttpSnapshot};
-use super::url;
 
 fn register_globals(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
-    url::register(ctx)?;
+    modules::register_all(ctx)?;
     rquickjs_extra_console::init(ctx)?;
     Ok(())
 }

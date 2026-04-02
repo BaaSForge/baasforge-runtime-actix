@@ -1,13 +1,30 @@
 function parseQuerystring(str, sep, eq) {
-  const out = Object.create(null);
+  var out = Object.create(null);
   if (!str) return out;
   sep = sep || "&";
   eq = eq || "=";
-  for (const part of str.split(sep)) {
+  var parts = str.split(sep);
+  for (var p = 0; p < parts.length; p++) {
+    var part = parts[p];
     if (!part) continue;
-    const i = part.indexOf(eq);
-    if (i < 0) { out[part] = ""; continue; }
-    out[part.slice(0, i)] = part.slice(i + eq.length);
+    var i = part.indexOf(eq);
+    var key, val;
+    if (i < 0) {
+      key = decodeURIComponent(part.replace(/\+/g, " "));
+      val = "";
+    } else {
+      key = decodeURIComponent(part.slice(0, i).replace(/\+/g, " "));
+      val = decodeURIComponent(part.slice(i + eq.length).replace(/\+/g, " "));
+    }
+    if (key in out) {
+      if (Array.isArray(out[key])) {
+        out[key].push(val);
+      } else {
+        out[key] = [out[key], val];
+      }
+    } else {
+      out[key] = val;
+    }
   }
   return out;
 }
@@ -17,57 +34,130 @@ async function text(req) {
 }
 
 function __buildReq(snap) {
-  const headers = Object.create(null);
-  const rawHeaders = [];
-  for (const pair of snap.headerPairs) {
-    const k = pair[0];
-    const v = pair[1];
-    const lk = k.toLowerCase();
+  var headers = Object.create(null);
+  var rawHeaders = [];
+  for (var p = 0; p < snap.headerPairs.length; p++) {
+    var pair = snap.headerPairs[p];
+    var k = pair[0];
+    var v = pair[1];
+    var lk = k.toLowerCase();
     if (headers[lk] === undefined) headers[lk] = v;
     rawHeaders.push(k, v);
   }
   return {
     method: snap.method,
     url: snap.url,
-    headers,
-    rawHeaders,
+    headers: headers,
+    rawHeaders: rawHeaders,
+    httpVersion: "1.1",
     __bodyText: snap.bodyText,
   };
 }
 
 function __createRes() {
+  var _headers = {};
+  var _body = "";
+  var _statusCode = 200;
+  var _statusMessage = "OK";
+
   return {
-    statusCode: 200,
-    __headers: [],
-    __body: "",
-    setHeader(name, value) {
-      const n = String(name).toLowerCase();
-      this.__headers = this.__headers.filter(h => h.name !== n);
+    get statusCode() { return _statusCode; },
+    set statusCode(v) { _statusCode = v; },
+    get statusMessage() { return _statusMessage; },
+    set statusMessage(v) { _statusMessage = v; },
+
+    setHeader: function (name, value) {
+      var n = String(name).toLowerCase();
       if (Array.isArray(value)) {
-        for (const item of value) this.__headers.push({ name: n, value: String(item) });
+        _headers[n] = value.map(String);
       } else {
-        this.__headers.push({ name: n, value: String(value) });
+        _headers[n] = String(value);
       }
     },
-    removeHeader(name) {
-      this.__headers = this.__headers.filter(h => h.name !== String(name).toLowerCase());
+
+    getHeader: function (name) {
+      return _headers[String(name).toLowerCase()];
     },
-    appendHeader(name, value) {
-      const v = Array.isArray(value) ? value.join(", ") : String(value);
-      this.__headers.push({ name: String(name).toLowerCase(), value: v });
+
+    hasHeader: function (name) {
+      return String(name).toLowerCase() in _headers;
     },
-    end(chunk) {
-      this.__body = chunk === undefined ? "" : String(chunk);
+
+    removeHeader: function (name) {
+      delete _headers[String(name).toLowerCase()];
     },
-    __snapshot() {
-      return { status: this.statusCode, headers: this.__headers, body: this.__body };
+
+    appendHeader: function (name, value) {
+      var n = String(name).toLowerCase();
+      var existing = _headers[n];
+      if (existing === undefined) {
+        _headers[n] = String(value);
+      } else if (Array.isArray(existing)) {
+        existing.push(String(value));
+      } else {
+        _headers[n] = [existing, String(value)];
+      }
+    },
+
+    getHeaders: function () {
+      var out = Object.create(null);
+      var keys = Object.keys(_headers);
+      for (var i = 0; i < keys.length; i++) {
+        out[keys[i]] = _headers[keys[i]];
+      }
+      return out;
+    },
+
+    getHeaderNames: function () {
+      return Object.keys(_headers);
+    },
+
+    writeHead: function (statusCode, statusMessage, headers) {
+      _statusCode = statusCode;
+      if (typeof statusMessage === "string") {
+        _statusMessage = statusMessage;
+      } else if (typeof statusMessage === "object" && statusMessage !== null) {
+        headers = statusMessage;
+      }
+      if (headers) {
+        var keys = Object.keys(headers);
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i].toLowerCase();
+          _headers[k] = String(headers[keys[i]]);
+        }
+      }
+    },
+
+    write: function (chunk) {
+      if (chunk !== undefined && chunk !== null) {
+        _body += String(chunk);
+      }
+    },
+
+    end: function (chunk) {
+      if (chunk !== undefined && chunk !== null) {
+        _body = String(chunk);
+      }
+    },
+
+    __snapshot: function () {
+      var headerPairs = [];
+      var keys = Object.keys(_headers);
+      for (var i = 0; i < keys.length; i++) {
+        var val = _headers[keys[i]];
+        if (Array.isArray(val)) {
+          for (var j = 0; j < val.length; j++) {
+            headerPairs.push({ name: keys[i], value: val[j] });
+          }
+        } else {
+          headerPairs.push({ name: keys[i], value: String(val) });
+        }
+      }
+      return { status: _statusCode, headers: headerPairs, body: _body };
     },
   };
 }
 
-// Strip ES module syntax so the unit code can be eval'd as a plain script.
-// Imports are expected to be provided as runtime globals; `export` is removed
-// so `export async function handleRequest(…)` becomes a normal declaration.
 var __code = __userSource
   .replace(/^\s*import\s+.*\s+from\s+['"][^'"]*['"];?\s*$/gm, '')
   .replace(/^\s*import\s+['"][^'"]*['"];?\s*$/gm, '')

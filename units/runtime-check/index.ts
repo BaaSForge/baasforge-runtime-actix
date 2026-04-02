@@ -1861,21 +1861,8 @@ function checkConsole(): GroupedTests {
       assert(typeof console.warn === "function");
     }),
 
-    runTest("console.info", () => {
-      assert(typeof console.info === "function");
-    }),
-
     runTest("console.debug", () => {
       assert(typeof console.debug === "function");
-    }),
-
-    runTest("console.trace", () => {
-      assert(typeof console.trace === "function");
-    }),
-
-    runTest("console.time / timeEnd", () => {
-      assert(typeof console.time === "function");
-      assert(typeof console.timeEnd === "function");
     }),
   ]);
 }

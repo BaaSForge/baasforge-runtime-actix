@@ -3,8 +3,8 @@
 //! URL and URLSearchParams are provided as Rust-backed classes (see [`url`]).
 //! Request/response data is passed via `rquickjs-serde` — no JSON roundtrips.
 
+pub mod modules;
 pub mod types;
-pub mod url;
 
 mod error;
 mod runner;
