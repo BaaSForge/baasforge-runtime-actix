@@ -134,11 +134,10 @@ fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes) -> Result<Trigger
         return Err("request body too large for unit trigger");
     }
     let method = req.method().as_str().to_string();
-    let url = req
-        .uri()
-        .path_and_query()
-        .map(|pq| pq.as_str().to_string())
-        .unwrap_or_else(|| req.uri().path().to_string());
+    let url = match req.uri().query() {
+        Some(q) => format!("/?{}", q),
+        None => "/".to_string(),
+    };
     let mut header_pairs = Vec::new();
     for (name, value) in req.headers().iter() {
         let value = value.to_str().unwrap_or("").to_string();
