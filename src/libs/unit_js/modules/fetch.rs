@@ -31,7 +31,11 @@ fn do_request(
 ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
     let url = normalize_url(raw_url);
     let url = url.as_str();
-    let agent = ureq::Agent::new_with_defaults();
+    let agent = ureq::Agent::new_with_config(
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build(),
+    );
 
     macro_rules! no_body {
         ($req:expr) => {{
@@ -56,7 +60,7 @@ fn do_request(
         "POST" => with_body!(agent.post(url)),
         "PUT" => with_body!(agent.put(url)),
         "PATCH" => with_body!(agent.patch(url)),
-        "OPTIONS" => no_body!(agent.get(url)),
+        "OPTIONS" => no_body!(agent.options(url)),
         other => return Err(format!("Unsupported HTTP method: {other}")),
     }?;
 

@@ -136,7 +136,7 @@ function __createRes() {
 
     end: function (chunk) {
       if (chunk !== undefined && chunk !== null) {
-        _body = String(chunk);
+        _body += String(chunk);
       }
     },
 
