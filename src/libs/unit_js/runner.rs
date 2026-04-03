@@ -34,6 +34,22 @@ fn run_in_ctx(
     source: &str,
     snapshot: &TriggerHttpSnapshot,
 ) -> Result<TriggerHttpResponse, String> {
+    // Expose trigger path + host before module registration so fetch.js
+    // can rewrite self-referencing URLs to the correct trigger endpoint.
+    let self_host = snapshot
+        .header_pairs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+        .map(|(_, v)| v.as_str())
+        .unwrap_or("localhost");
+
+    ctx.globals()
+        .set("__triggerBasePath", snapshot.trigger_path.as_str())
+        .map_err(|e| e.to_string())?;
+    ctx.globals()
+        .set("__selfHost", self_host)
+        .map_err(|e| e.to_string())?;
+
     register_globals(ctx).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("register_globals", &msg);

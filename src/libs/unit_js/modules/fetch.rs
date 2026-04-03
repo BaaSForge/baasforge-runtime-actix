@@ -12,45 +12,51 @@ pub fn register(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     Ok(())
 }
 
+/// Replace `localhost` with `127.0.0.1` to avoid IPv6 `::1` resolution
+/// on macOS where the server only binds to IPv4.
+fn normalize_url(url: &str) -> String {
+    if url.ends_with("://localhost") {
+        return url.replace("://localhost", "://127.0.0.1");
+    }
+    url.replace("://localhost:", "://127.0.0.1:")
+        .replace("://localhost/", "://127.0.0.1/")
+        .replace("://localhost?", "://127.0.0.1?")
+}
+
 fn do_request(
-    url: &str,
+    raw_url: &str,
     method: &str,
     headers: &[(String, String)],
     body: &str,
 ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
+    let url = normalize_url(raw_url);
+    let url = url.as_str();
     let agent = ureq::Agent::new_with_defaults();
 
+    macro_rules! no_body {
+        ($req:expr) => {{
+            let mut r = $req;
+            for (n, v) in headers { r = r.header(n, v); }
+            r.call().map_err(|e| format!("{e}"))
+        }};
+    }
+
+    macro_rules! with_body {
+        ($req:expr) => {{
+            let mut r = $req;
+            for (n, v) in headers { r = r.header(n, v); }
+            r.send(body.as_bytes()).map_err(|e| format!("{e}"))
+        }};
+    }
+
     let resp = match method {
-        "GET" => {
-            let mut r = agent.get(url);
-            for (n, v) in headers { r = r.header(n, v); }
-            r.call().map_err(|e| format!("{e}"))
-        }
-        "HEAD" => {
-            let mut r = agent.head(url);
-            for (n, v) in headers { r = r.header(n, v); }
-            r.call().map_err(|e| format!("{e}"))
-        }
-        "DELETE" => {
-            let mut r = agent.delete(url);
-            for (n, v) in headers { r = r.header(n, v); }
-            r.call().map_err(|e| format!("{e}"))
-        }
-        "POST" => {
-            let mut r = agent.post(url);
-            for (n, v) in headers { r = r.header(n, v); }
-            r.send(body.as_bytes()).map_err(|e| format!("{e}"))
-        }
-        "PUT" => {
-            let mut r = agent.put(url);
-            for (n, v) in headers { r = r.header(n, v); }
-            r.send(body.as_bytes()).map_err(|e| format!("{e}"))
-        }
-        "PATCH" => {
-            let mut r = agent.patch(url);
-            for (n, v) in headers { r = r.header(n, v); }
-            r.send(body.as_bytes()).map_err(|e| format!("{e}"))
-        }
+        "GET" => no_body!(agent.get(url)),
+        "HEAD" => no_body!(agent.head(url)),
+        "DELETE" => no_body!(agent.delete(url)),
+        "POST" => with_body!(agent.post(url)),
+        "PUT" => with_body!(agent.put(url)),
+        "PATCH" => with_body!(agent.patch(url)),
+        "OPTIONS" => no_body!(agent.get(url)),
         other => return Err(format!("Unsupported HTTP method: {other}")),
     }?;
 

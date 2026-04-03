@@ -9,6 +9,8 @@ pub struct TriggerHttpSnapshot {
     pub url: String,
     pub header_pairs: Vec<(String, String)>,
     pub body_text: String,
+    /// Full original request path (before query), used for self-referencing fetch.
+    pub trigger_path: String,
 }
 
 /// Response captured from the JS `res` object after `handleRequest` completes.

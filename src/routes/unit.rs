@@ -85,7 +85,10 @@ pub async fn handle_trigger_api_unit_production(
     )
     .await
     {
-        Ok(Some(unit)) => respond_trigger_unit(unit, &http_req, body).await,
+        Ok(Some(unit)) => {
+            let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
+            respond_trigger_unit(unit, &http_req, body, port).await
+        }
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
     }
@@ -123,13 +126,16 @@ pub async fn handle_trigger_api_unit_stage(
     )
     .await
     {
-        Ok(Some(unit)) => respond_trigger_unit(unit, &http_req, body).await,
+        Ok(Some(unit)) => {
+            let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
+            respond_trigger_unit(unit, &http_req, body, port).await
+        }
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
     }
 }
 
-fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes) -> Result<TriggerHttpSnapshot, &'static str> {
+fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes, server_port: u16) -> Result<TriggerHttpSnapshot, &'static str> {
     if body.len() > TRIGGER_MAX_BODY_BYTES {
         return Err("request body too large for unit trigger");
     }
@@ -138,10 +144,14 @@ fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes) -> Result<Trigger
         Some(q) => format!("/?{}", q),
         None => "/".to_string(),
     };
+    let trigger_path = req.uri().path().to_string();
     let mut header_pairs = Vec::new();
     for (name, value) in req.headers().iter() {
-        let value = value.to_str().unwrap_or("").to_string();
-        header_pairs.push((name.as_str().to_string(), value));
+        let mut v = value.to_str().unwrap_or("").to_string();
+        if name.as_str().eq_ignore_ascii_case("host") && !v.contains(':') {
+            v = format!("{v}:{server_port}");
+        }
+        header_pairs.push((name.as_str().to_string(), v));
     }
     let body_text = String::from_utf8_lossy(body).into_owned();
     Ok(TriggerHttpSnapshot {
@@ -149,10 +159,11 @@ fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes) -> Result<Trigger
         url,
         header_pairs,
         body_text,
+        trigger_path,
     })
 }
 
-async fn respond_trigger_unit(unit: ProjectUnitRow, http_req: &HttpRequest, body: web::Bytes) -> HttpResponse {
+async fn respond_trigger_unit(unit: ProjectUnitRow, http_req: &HttpRequest, body: web::Bytes, server_port: u16) -> HttpResponse {
     let code = match unit.code.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(c) => c.to_string(),
         None => {
@@ -160,7 +171,7 @@ async fn respond_trigger_unit(unit: ProjectUnitRow, http_req: &HttpRequest, body
                 .json(api_error("unit has no executable code", json!({})));
         }
     };
-    let snapshot = match trigger_http_snapshot(http_req, &body) {
+    let snapshot = match trigger_http_snapshot(http_req, &body, server_port) {
         Ok(s) => s,
         Err(msg) => return HttpResponse::PayloadTooLarge().json(api_error(msg, json!({}))),
     };
