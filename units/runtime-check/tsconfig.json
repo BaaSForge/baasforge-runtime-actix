@@ -4,14 +4,14 @@
     "module": "ES2022",
     "moduleResolution": "node",
     "lib": ["ES2023"],
-    "outDir": "dist",
-    "rootDir": ".",
+
+    "types": ["node"],
     "declaration": false,
     "sourceMap": true,
-    "types": ["node"],
     "skipLibCheck": true,
 
     "strict": true,
+    "noEmit": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
     "strictFunctionTypes": true,
@@ -27,7 +27,10 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "noPropertyAccessFromIndexSignature": true
+    "noPropertyAccessFromIndexSignature": true,
+
+    "outDir": "dist",
+    "rootDir": "."
   },
   "include": ["./**/*.ts"]
 }
