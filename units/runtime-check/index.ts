@@ -17,7 +17,23 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { parse as parseQuerystring } from "node:querystring";
 import { text } from "node:stream/consumers";
 import { URL } from "node:url";
-import * as crypto from "node:crypto";
+import {
+  randomUUID,
+  randomBytes,
+  randomInt,
+  randomFillSync,
+  createHash,
+  createHmac,
+  getHashes,
+  getCiphers,
+  pbkdf2Sync,
+  scryptSync,
+  timingSafeEqual,
+  createCipheriv,
+  createDecipheriv,
+  subtle,
+  getRandomValues,
+} from "node:crypto";
 import { Buffer } from "node:buffer";
 import { TextEncoder, TextDecoder } from "node:util";
 import { setTimeout as setTimeoutPromise } from "node:timers/promises";
@@ -830,18 +846,18 @@ function checkCrypto(): GroupedTests {
     }),
 
     runTest("crypto.randomUUID format", () => {
-      const uuid = crypto.randomUUID();
+      const uuid = randomUUID();
       assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid));
       return uuid;
     }),
 
     runTest("crypto.randomUUID uniqueness", () => {
-      const uuids = new Set(Array.from({ length: 100 }, () => crypto.randomUUID()));
+      const uuids = new Set(Array.from({ length: 100 }, () => randomUUID()));
       assert(uuids.size === 100, "100 UUIDs should all be unique");
     }),
 
     runTest("crypto.randomBytes", () => {
-      const bytes = crypto.randomBytes(32);
+      const bytes = randomBytes(32);
       assert(bytes.length === 32);
       assert(Buffer.isBuffer(bytes));
       const allZero = bytes.every((b) => b === 0);
@@ -851,51 +867,51 @@ function checkCrypto(): GroupedTests {
 
     runTest("crypto.randomInt", () => {
       for (let i = 0; i < 50; i++) {
-        const n = crypto.randomInt(10, 20);
+        const n = randomInt(10, 20);
         assert(n >= 10 && n < 20, `randomInt out of range: ${n}`);
       }
     }),
 
     runTest("crypto.randomFillSync", () => {
       const buf = Buffer.alloc(16);
-      crypto.randomFillSync(buf);
+      randomFillSync(buf);
       const allZero = buf.every((b) => b === 0);
       assert(!allZero, "randomFillSync should fill with random data");
     }),
 
     runTest("crypto.createHash (SHA-256) known vector", () => {
-      const hash = crypto.createHash("sha256").update("hello").digest("hex");
+      const hash = createHash("sha256").update("hello").digest("hex");
       assert(hash === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
     }),
 
     runTest("crypto.createHash (SHA-512)", () => {
-      const hash = crypto.createHash("sha512").update("hello").digest("hex");
+      const hash = createHash("sha512").update("hello").digest("hex");
       assert(hash.length === 128);
     }),
 
     runTest("crypto.createHash (SHA-384)", () => {
-      const hash = crypto.createHash("sha384").update("hello").digest("hex");
+      const hash = createHash("sha384").update("hello").digest("hex");
       assert(hash.length === 96);
     }),
 
     runTest("crypto.createHash (MD5) known vector", () => {
-      const hash = crypto.createHash("md5").update("hello").digest("hex");
+      const hash = createHash("md5").update("hello").digest("hex");
       assert(hash === "5d41402abc4b2a76b9719d911017c592");
     }),
 
     runTest("crypto.createHash (SHA-1)", () => {
-      const hash = crypto.createHash("sha1").update("hello").digest("hex");
+      const hash = createHash("sha1").update("hello").digest("hex");
       assert(hash.length === 40);
     }),
 
     runTest("crypto.createHash digest as Buffer", () => {
-      const buf = crypto.createHash("sha256").update("hello").digest();
+      const buf = createHash("sha256").update("hello").digest();
       assert(Buffer.isBuffer(buf));
       assert(buf.length === 32);
     }),
 
     runTest("crypto.createHash digest as base64", () => {
-      const b64 = crypto.createHash("sha256").update("hello").digest("base64");
+      const b64 = createHash("sha256").update("hello").digest("base64");
       assert(typeof b64 === "string");
       const backToHex = Buffer.from(b64, "base64").toString("hex");
       assert(backToHex === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
@@ -903,65 +919,65 @@ function checkCrypto(): GroupedTests {
 
     runTest("crypto.createHash with Buffer input", () => {
       const buf = Buffer.from("hello");
-      const hash = crypto.createHash("sha256").update(buf).digest("hex");
+      const hash = createHash("sha256").update(buf).digest("hex");
       assert(hash === "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
     }),
 
     runTest("crypto.createHash multi-update equals single update", () => {
-      const h = crypto.createHash("sha256");
+      const h = createHash("sha256");
       h.update("hello");
       h.update(" ");
       h.update("world");
       const combined = h.digest("hex");
-      const single = crypto.createHash("sha256").update("hello world").digest("hex");
+      const single = createHash("sha256").update("hello world").digest("hex");
       assert(combined === single);
     }),
 
     runTest("crypto.createHash empty input", () => {
-      const hash = crypto.createHash("sha256").update("").digest("hex");
+      const hash = createHash("sha256").update("").digest("hex");
       assert(hash === "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
     }),
 
     runTest("crypto.createHmac (SHA-256)", () => {
-      const hmac = crypto.createHmac("sha256", "secret-key").update("message").digest("hex");
+      const hmac = createHmac("sha256", "secret-key").update("message").digest("hex");
       assert(typeof hmac === "string" && hmac.length === 64);
-      const hmac2 = crypto.createHmac("sha256", "secret-key").update("message").digest("hex");
+      const hmac2 = createHmac("sha256", "secret-key").update("message").digest("hex");
       assert(hmac === hmac2, "same input should produce same HMAC");
     }),
 
     runTest("crypto.createHmac (SHA-1)", () => {
-      const hmac = crypto.createHmac("sha1", "key").update("data").digest("hex");
+      const hmac = createHmac("sha1", "key").update("data").digest("hex");
       assert(hmac.length === 40);
     }),
 
     runTest("crypto.createHmac (SHA-512)", () => {
-      const hmac = crypto.createHmac("sha512", "key").update("data").digest("hex");
+      const hmac = createHmac("sha512", "key").update("data").digest("hex");
       assert(hmac.length === 128);
     }),
 
     runTest("crypto.createHmac with Buffer key", () => {
       const key = Buffer.from("secret-key");
-      const hmac = crypto.createHmac("sha256", key).update("message").digest("hex");
-      const hmacStr = crypto.createHmac("sha256", "secret-key").update("message").digest("hex");
+      const hmac = createHmac("sha256", key).update("message").digest("hex");
+      const hmacStr = createHmac("sha256", "secret-key").update("message").digest("hex");
       assert(hmac === hmacStr, "Buffer key and string key should produce same result");
     }),
 
     runTest("crypto.createHmac different keys produce different output", () => {
-      const h1 = crypto.createHmac("sha256", "key1").update("data").digest("hex");
-      const h2 = crypto.createHmac("sha256", "key2").update("data").digest("hex");
+      const h1 = createHmac("sha256", "key1").update("data").digest("hex");
+      const h2 = createHmac("sha256", "key2").update("data").digest("hex");
       assert(h1 !== h2);
     }),
 
     runTest("crypto.createCipheriv / createDecipheriv (AES-256-CBC)", () => {
-      const key = crypto.randomBytes(32);
-      const iv = crypto.randomBytes(16);
+      const key = randomBytes(32);
+      const iv = randomBytes(16);
       const plaintext = "secret message for encryption test — with unicode: 🔒";
 
-      const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+      const cipher = createCipheriv("aes-256-cbc", key, iv);
       let encrypted = cipher.update(plaintext, "utf8", "hex");
       encrypted += cipher.final("hex");
 
-      const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+      const decipher = createDecipheriv("aes-256-cbc", key, iv);
       let decrypted = decipher.update(encrypted, "hex", "utf8");
       decrypted += decipher.final("utf8");
 
@@ -970,17 +986,17 @@ function checkCrypto(): GroupedTests {
     }),
 
     runTest("crypto.createCipheriv (AES-256-GCM) with authTag", () => {
-      const key = crypto.randomBytes(32);
-      const iv = crypto.randomBytes(12);
+      const key = randomBytes(32);
+      const iv = randomBytes(12);
       const plaintext = "authenticated encryption test";
 
-      const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
       let encrypted = cipher.update(plaintext, "utf8", "hex");
       encrypted += cipher.final("hex");
       const authTag = cipher.getAuthTag();
       assert(authTag.length === 16);
 
-      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+      const decipher = createDecipheriv("aes-256-gcm", key, iv);
       decipher.setAuthTag(authTag);
       let decrypted = decipher.update(encrypted, "hex", "utf8");
       decrypted += decipher.final("utf8");
@@ -989,16 +1005,16 @@ function checkCrypto(): GroupedTests {
     }),
 
     runTest("crypto AES-256-GCM wrong authTag fails", () => {
-      const key = crypto.randomBytes(32);
-      const iv = crypto.randomBytes(12);
+      const key = randomBytes(32);
+      const iv = randomBytes(12);
 
-      const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+      const cipher = createCipheriv("aes-256-gcm", key, iv);
       let encrypted = cipher.update("data", "utf8", "hex");
       encrypted += cipher.final("hex");
       cipher.getAuthTag();
 
-      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-      decipher.setAuthTag(crypto.randomBytes(16));
+      const decipher = createDecipheriv("aes-256-gcm", key, iv);
+      decipher.setAuthTag(randomBytes(16));
       decipher.update(encrypted, "hex", "utf8");
       let threw = false;
       try {
@@ -1010,14 +1026,14 @@ function checkCrypto(): GroupedTests {
     }),
 
     runTest("crypto.createCipheriv (AES-128-CBC)", () => {
-      const key = crypto.randomBytes(16);
-      const iv = crypto.randomBytes(16);
+      const key = randomBytes(16);
+      const iv = randomBytes(16);
 
-      const cipher = crypto.createCipheriv("aes-128-cbc", key, iv);
+      const cipher = createCipheriv("aes-128-cbc", key, iv);
       let encrypted = cipher.update("test", "utf8", "hex");
       encrypted += cipher.final("hex");
 
-      const decipher = crypto.createDecipheriv("aes-128-cbc", key, iv);
+      const decipher = createDecipheriv("aes-128-cbc", key, iv);
       let decrypted = decipher.update(encrypted, "hex", "utf8");
       decrypted += decipher.final("utf8");
 
@@ -1025,40 +1041,40 @@ function checkCrypto(): GroupedTests {
     }),
 
     runTest("crypto.pbkdf2Sync", () => {
-      const derived = crypto.pbkdf2Sync("password", "salt", 100000, 64, "sha512");
+      const derived = pbkdf2Sync("password", "salt", 100000, 64, "sha512");
       assert(derived.length === 64);
-      const derived2 = crypto.pbkdf2Sync("password", "salt", 100000, 64, "sha512");
+      const derived2 = pbkdf2Sync("password", "salt", 100000, 64, "sha512");
       assert(derived.equals(derived2), "deterministic derivation");
       return `hex: ${derived.toString("hex").slice(0, 32)}...`;
     }),
 
     runTest("crypto.pbkdf2Sync different passwords differ", () => {
-      const d1 = crypto.pbkdf2Sync("pass1", "salt", 1000, 32, "sha256");
-      const d2 = crypto.pbkdf2Sync("pass2", "salt", 1000, 32, "sha256");
+      const d1 = pbkdf2Sync("pass1", "salt", 1000, 32, "sha256");
+      const d2 = pbkdf2Sync("pass2", "salt", 1000, 32, "sha256");
       assert(!d1.equals(d2));
     }),
 
     runTest("crypto.scryptSync", () => {
-      const derived = crypto.scryptSync("password", "salt", 64);
+      const derived = scryptSync("password", "salt", 64);
       assert(derived.length === 64);
     }),
 
     runTest("crypto.timingSafeEqual (equal buffers)", () => {
       const a = Buffer.from("secret-value");
       const b = Buffer.from("secret-value");
-      assert(crypto.timingSafeEqual(a, b) === true);
+      assert(timingSafeEqual(a, b) === true);
     }),
 
     runTest("crypto.timingSafeEqual (different buffers)", () => {
       const a = Buffer.from("secret-value");
       const c = Buffer.from("other-value!");
-      assert(crypto.timingSafeEqual(a, c) === false);
+      assert(timingSafeEqual(a, c) === false);
     }),
 
     runTest("crypto.timingSafeEqual rejects different lengths", () => {
       let threw = false;
       try {
-        crypto.timingSafeEqual(Buffer.from("abc"), Buffer.from("abcd"));
+        timingSafeEqual(Buffer.from("abc"), Buffer.from("abcd"));
       } catch {
         threw = true;
       }
@@ -1068,15 +1084,15 @@ function checkCrypto(): GroupedTests {
     runTest("HMAC sign + verify pattern", () => {
       const key = "signing-key";
       const data = "data-to-sign";
-      const sig = crypto.createHmac("sha256", key).update(data).digest("hex");
-      const verify = crypto.createHmac("sha256", key).update(data).digest("hex");
+      const sig = createHmac("sha256", key).update(data).digest("hex");
+      const verify = createHmac("sha256", key).update(data).digest("hex");
       assert(sig === verify);
-      const bad = crypto.createHmac("sha256", key).update("tampered").digest("hex");
+      const bad = createHmac("sha256", key).update("tampered").digest("hex");
       assert(sig !== bad, "tampered data should produce different signature");
     }),
 
     runTest("crypto.getHashes includes common algorithms", () => {
-      const hashes = crypto.getHashes();
+      const hashes = getHashes();
       assert(Array.isArray(hashes));
       assert(hashes.includes("sha256"));
       assert(hashes.includes("sha512"));
@@ -1084,7 +1100,7 @@ function checkCrypto(): GroupedTests {
     }),
 
     runTest("crypto.getCiphers includes AES variants", () => {
-      const ciphers = crypto.getCiphers();
+      const ciphers = getCiphers();
       assert(Array.isArray(ciphers));
       assert(ciphers.includes("aes-256-cbc"));
       assert(ciphers.includes("aes-256-gcm"));
@@ -2866,12 +2882,12 @@ async function checkWebCryptoSubtle(): Promise<GroupedTests> {
   const tests: TestResult[] = [];
 
   tests.push(runTest("crypto.subtle exists", () => {
-    assert(crypto.subtle != null);
+    assert(subtle != null);
   }));
 
   tests.push(await runTestAsync("crypto.subtle.digest SHA-256 known vector", async () => {
     const data = new TextEncoder().encode("hello");
-    const hash = await crypto.subtle.digest("SHA-256", data);
+    const hash = await subtle.digest("SHA-256", data);
     assert(hash instanceof ArrayBuffer);
     assert(hash.byteLength === 32);
     const hex = [...new Uint8Array(hash)]
@@ -2882,32 +2898,32 @@ async function checkWebCryptoSubtle(): Promise<GroupedTests> {
 
   tests.push(await runTestAsync("crypto.subtle.digest SHA-512", async () => {
     const data = new TextEncoder().encode("hello");
-    const hash = await crypto.subtle.digest("SHA-512", data);
+    const hash = await subtle.digest("SHA-512", data);
     assert(hash instanceof ArrayBuffer);
     assert(hash.byteLength === 64);
   }));
 
   tests.push(await runTestAsync("crypto.subtle HMAC generateKey + sign + verify", async () => {
-    const key = await crypto.subtle.generateKey(
+    const key = await subtle.generateKey(
       { name: "HMAC", hash: "SHA-256" },
       true,
       ["sign", "verify"],
     );
     const data = new TextEncoder().encode("message to sign");
-    const signature = await crypto.subtle.sign("HMAC", key, data);
+    const signature = await subtle.sign("HMAC", key, data);
     assert(signature instanceof ArrayBuffer && signature.byteLength > 0);
 
-    const valid = await crypto.subtle.verify("HMAC", key, signature, data);
+    const valid = await subtle.verify("HMAC", key, signature, data);
     assert(valid === true);
 
     const tampered = new TextEncoder().encode("tampered");
-    const invalid = await crypto.subtle.verify("HMAC", key, signature, tampered);
+    const invalid = await subtle.verify("HMAC", key, signature, tampered);
     assert(invalid === false);
   }));
 
   tests.push(await runTestAsync("crypto.subtle HMAC importKey + sign", async () => {
     const rawKey = new TextEncoder().encode("my-secret-key-for-hmac");
-    const key = await crypto.subtle.importKey(
+    const key = await subtle.importKey(
       "raw",
       rawKey,
       { name: "HMAC", hash: "SHA-256" },
@@ -2915,23 +2931,23 @@ async function checkWebCryptoSubtle(): Promise<GroupedTests> {
       ["sign", "verify"],
     );
     const data = new TextEncoder().encode("payload");
-    const sig = await crypto.subtle.sign("HMAC", key, data);
+    const sig = await subtle.sign("HMAC", key, data);
     assert(sig.byteLength === 32);
 
-    const valid = await crypto.subtle.verify("HMAC", key, sig, data);
+    const valid = await subtle.verify("HMAC", key, sig, data);
     assert(valid === true);
   }));
 
   tests.push(await runTestAsync("crypto.subtle AES-GCM encrypt + decrypt", async () => {
-    const key = await crypto.subtle.generateKey(
+    const key = await subtle.generateKey(
       { name: "AES-GCM", length: 256 },
       true,
       ["encrypt", "decrypt"],
     );
-    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const iv = getRandomValues(new Uint8Array(12));
     const plaintext = new TextEncoder().encode("secret data for subtle crypto");
 
-    const ciphertext = await crypto.subtle.encrypt(
+    const ciphertext = await subtle.encrypt(
       { name: "AES-GCM", iv },
       key,
       plaintext,
@@ -2939,7 +2955,7 @@ async function checkWebCryptoSubtle(): Promise<GroupedTests> {
     assert(ciphertext instanceof ArrayBuffer);
     assert(ciphertext.byteLength > plaintext.byteLength);
 
-    const decrypted = await crypto.subtle.decrypt(
+    const decrypted = await subtle.decrypt(
       { name: "AES-GCM", iv },
       key,
       ciphertext,
@@ -2949,19 +2965,19 @@ async function checkWebCryptoSubtle(): Promise<GroupedTests> {
   }));
 
   tests.push(await runTestAsync("crypto.subtle exportKey", async () => {
-    const key = await crypto.subtle.generateKey(
+    const key = await subtle.generateKey(
       { name: "HMAC", hash: "SHA-256" },
       true,
       ["sign", "verify"],
     );
-    const exported = await crypto.subtle.exportKey("raw", key);
+    const exported = await subtle.exportKey("raw", key);
     assert(exported instanceof ArrayBuffer);
     assert(exported.byteLength > 0);
   }));
 
   tests.push(runTest("crypto.getRandomValues (Web Crypto style)", () => {
     const arr = new Uint8Array(16);
-    crypto.getRandomValues(arr);
+    getRandomValues(arr);
     assert(!arr.every((b) => b === 0));
   }));
 
