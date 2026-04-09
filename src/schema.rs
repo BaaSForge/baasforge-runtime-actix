@@ -121,6 +121,7 @@ diesel::table! {
         is_stage -> Bool,
         revision -> Float8,
         base_production_release_id -> Nullable<Uuid>,
+        brief_note -> Nullable<Text>,
     }
 }
 
@@ -159,6 +160,9 @@ diesel::table! {
         unit_name_slug -> Varchar,
         id -> Text,
         revision -> Int4,
+        compiled_code -> Nullable<Text>,
+        metadata -> Nullable<Jsonb>,
+        depends_on -> Nullable<Text>,
     }
 }
 

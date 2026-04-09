@@ -134,6 +134,7 @@ pub struct ProjectReleaseRow {
 pub struct ProjectUnitRow {
     pub project_id: Uuid,
     pub code: Option<String>,
+    pub compiled_code: Option<String>,
     pub explanation: Option<String>,
     pub chat_session_id: Uuid,
     pub unit_type: ProjectUnitType,

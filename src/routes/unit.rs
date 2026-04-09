@@ -164,11 +164,11 @@ fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes, server_port: u16)
 }
 
 async fn respond_trigger_unit(unit: ProjectUnitRow, http_req: &HttpRequest, body: web::Bytes, server_port: u16) -> HttpResponse {
-    let code = match unit.code.as_deref().filter(|s| !s.trim().is_empty()) {
+    let code = match unit.compiled_code.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(c) => c.to_string(),
         None => {
             return HttpResponse::BadRequest()
-                .json(api_error("unit has no executable code", json!({})));
+                .json(api_error("unit has no executable compiled code", json!({})));
         }
     };
     let snapshot = match trigger_http_snapshot(http_req, &body, server_port) {
