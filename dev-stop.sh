@@ -2,7 +2,7 @@
 # Stop local dev processes: API ports (see dev-scaled.sh / dev.sh), runtime/release worker binaries, cargo watch.
 set -u
 
-PORTS=(1501 1502 1503 1504)
+PORTS=(1501 1502 1503 1504 3334)
 
 echo "==> Stopping listeners on ports ${PORTS[*]}..."
 for port in "${PORTS[@]}"; do
