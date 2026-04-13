@@ -8,7 +8,7 @@ use super::error::{format_js_error, log_js_failure};
 use super::modules;
 use super::modules::sdk::{self, WorkflowHostCtx};
 
-const WORKFLOW_RUNTIME_JS: &str = include_str!("scripts/workflow-runtime.js");
+const WORKFLOW_RUNTIME_JS: &str = concat!(include_str!("scripts/runtime-shared.js"), "\n", include_str!("scripts/workflow-runtime.js"));
 
 /// Context data passed into the QuickJS workflow runtime.
 #[derive(Debug, Clone)]

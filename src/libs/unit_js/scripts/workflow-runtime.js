@@ -214,20 +214,6 @@ function __createSharedContext(wfCtx) {
   };
 }
 
-// sdk global object (inter-unit communication)
-var sdk = {
-  call: function (unitPath, data) {
-    return Promise.resolve().then(function () {
-      var dataJson = data !== undefined ? JSON.stringify(data) : "null";
-      var resultJson = __baal_call(unitPath, dataJson);
-      if (resultJson === null || resultJson === undefined) return null;
-      return JSON.parse(resultJson);
-    });
-  },
-};
-
-globalThis.sdk = sdk;
-
 // workflow() constructor — returns opaque WorkflowDefinition
 function workflow(configOrHandler) {
   if (typeof configOrHandler === "function") {
@@ -246,19 +232,7 @@ globalThis.workflow = workflow;
 //   __instanceId, __steps, __sleeps, __promises, __dateNow, __stepIndex,
 //   __handlerName (null for run, string for shared handler), __handlerInput
 
-var __baalModuleGlobals = { 'node:crypto': 'crypto', 'crypto': 'crypto' };
-
-var __code = __userSource
-  .replace(
-    /^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?\s*$/gm,
-    function (_m, names, mod) {
-      var ns = __baalModuleGlobals[mod];
-      if (ns) return 'var {' + names.replace(/\bas\b/g, ':') + '} = globalThis.' + ns + ';';
-      return '';
-    }
-  )
-  .replace(/^\s*import\s+.*\s+from\s+['"][^'"]*['"];?\s*$/gm, "")
-  .replace(/^\s*import\s+['"][^'"]*['"];?\s*$/gm, "")
+var __code = __stripImports(__userSource)
   .replace(/^export\s+default\s+/m, "var __wfDef = ");
 
 (0, eval)(__code);

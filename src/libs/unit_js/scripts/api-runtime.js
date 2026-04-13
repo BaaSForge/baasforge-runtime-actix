@@ -1,38 +1,3 @@
-function parseQuerystring(str, sep, eq) {
-  var out = Object.create(null);
-  if (!str) return out;
-  sep = sep || "&";
-  eq = eq || "=";
-  var parts = str.split(sep);
-  for (var p = 0; p < parts.length; p++) {
-    var part = parts[p];
-    if (!part) continue;
-    var i = part.indexOf(eq);
-    var key, val;
-    if (i < 0) {
-      key = decodeURIComponent(part.replace(/\+/g, " "));
-      val = "";
-    } else {
-      key = decodeURIComponent(part.slice(0, i).replace(/\+/g, " "));
-      val = decodeURIComponent(part.slice(i + eq.length).replace(/\+/g, " "));
-    }
-    if (key in out) {
-      if (Array.isArray(out[key])) {
-        out[key].push(val);
-      } else {
-        out[key] = [out[key], val];
-      }
-    } else {
-      out[key] = val;
-    }
-  }
-  return out;
-}
-
-async function text(req) {
-  return req.__bodyText !== undefined ? req.__bodyText : "";
-}
-
 function __buildReq(snap) {
   var headers = Object.create(null);
   var rawHeaders = [];
@@ -158,19 +123,7 @@ function __createRes() {
   };
 }
 
-var __baalModuleGlobals = { 'node:crypto': 'crypto', 'crypto': 'crypto' };
-
-var __code = __userSource
-  .replace(
-    /^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?\s*$/gm,
-    function (_m, names, mod) {
-      var ns = __baalModuleGlobals[mod];
-      if (ns) return 'var {' + names.replace(/\bas\b/g, ':') + '} = globalThis.' + ns + ';';
-      return '';
-    }
-  )
-  .replace(/^\s*import\s+.*\s+from\s+['"][^'"]*['"];?\s*$/gm, '')
-  .replace(/^\s*import\s+['"][^'"]*['"];?\s*$/gm, '')
+var __code = __stripImports(__userSource)
   .replace(/^export\s+/gm, '');
 
 (0, eval)(__code);

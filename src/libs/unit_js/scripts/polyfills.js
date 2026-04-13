@@ -589,6 +589,10 @@
   FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
   globalThis.FormData = FormData;
 
+  globalThis.__baalModules = globalThis.__baalModules || {};
+  globalThis.__baalModules['node:util'] = { TextEncoder: globalThis.TextEncoder, TextDecoder: globalThis.TextDecoder };
+  globalThis.__baalModules['node:timers/promises'] = { setTimeout: globalThis.setTimeoutPromise };
+
   // ---- Request ----
 
   function Request(input, init) {

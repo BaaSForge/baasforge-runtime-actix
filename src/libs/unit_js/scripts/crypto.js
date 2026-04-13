@@ -286,4 +286,8 @@
   };
 
   globalThis.crypto = crypto;
+
+  globalThis.__baalModules = globalThis.__baalModules || {};
+  globalThis.__baalModules['node:crypto'] = crypto;
+  globalThis.__baalModules['crypto'] = crypto;
 })();

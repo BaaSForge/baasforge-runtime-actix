@@ -10,7 +10,7 @@ fn register_globals(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     Ok(())
 }
 
-const RUNTIME_JS: &str = include_str!("scripts/runtime.js");
+const API_RUNTIME_JS: &str = concat!(include_str!("scripts/runtime-shared.js"), "\n", include_str!("scripts/api-runtime.js"));
 
 pub fn run_unit_handler(
     source: &str,
@@ -68,7 +68,7 @@ fn run_in_ctx(
         .set("__userSource", source)
         .map_err(|e| e.to_string())?;
 
-    ctx.eval::<(), _>(RUNTIME_JS).map_err(|e| {
+    ctx.eval::<(), _>(API_RUNTIME_JS).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("eval_setup", &msg);
         msg

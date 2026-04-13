@@ -7,8 +7,8 @@ pub mod modules;
 pub mod types;
 pub mod workflow_runner;
 
+mod api_runner;
 mod error;
-mod runner;
 
-pub use runner::run_unit_handler;
+pub use api_runner::run_unit_handler;
 pub use types::{TriggerHttpResponse, TriggerHttpSnapshot};
