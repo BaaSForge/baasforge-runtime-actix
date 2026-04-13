@@ -18,7 +18,6 @@ use crate::services::project_runtime_cache::{
 use async_nats::jetstream;
 use async_nats::jetstream::consumer::pull;
 use async_nats::jetstream::stream;
-use async_nats::ConnectOptions;
 use futures::StreamExt;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -177,38 +176,6 @@ async fn handle_release_deploy_event(
     );
 }
 
-/// `async_nats::connect` does not apply user:pass from the URL to the CONNECT frame; only
-/// [`ConnectOptions`] auth is sent. Use explicit options when the URL embeds credentials.
-async fn connect_nats(nats_url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
-    let Ok(mut parsed) = url::Url::parse(nats_url) else {
-        return async_nats::connect(nats_url).await;
-    };
-    let user = parsed.username();
-    let pass = parsed.password();
-    if user.is_empty() && pass.is_none() {
-        return async_nats::connect(nats_url).await;
-    }
-    let user = user.to_string();
-    let pass = pass.unwrap_or("").to_string();
-    parsed.set_username("").map_err(|()| {
-        async_nats::ConnectError::from(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "NATS URL: could not clear username for connect",
-        ))
-    })?;
-    parsed.set_password(None).map_err(|()| {
-        async_nats::ConnectError::from(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "NATS URL: could not clear password for connect",
-        ))
-    })?;
-    let server_url = parsed.to_string();
-    ConnectOptions::new()
-        .user_and_password(user, pass)
-        .connect(server_url)
-        .await
-}
-
 /// Runs the JetStream durable pull consumer until the connection ends. Intended for the `release_listener`
 /// binary (or a dedicated task); do not drop the returned future immediately or the listener will stop.
 pub async fn run_release_deploy_listener(
@@ -220,7 +187,7 @@ pub async fn run_release_deploy_listener(
     consumer_name: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("[nats] connecting to NATS for release deploy events (JetStream)");
-    let client = connect_nats(&nats_url).await?;
+    let client = crate::configs::connect_nats(&nats_url).await?;
     tracing::info!("[nats] connected to NATS");
 
     let js = jetstream::new(client);

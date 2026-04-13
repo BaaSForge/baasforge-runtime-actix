@@ -181,6 +181,31 @@ impl Settings {
     }
 }
 
+/// Connect to NATS, extracting user/pass from the URL if present.
+/// `async_nats::connect` does NOT parse userinfo from URLs, so we must
+/// extract credentials ourselves and use `ConnectOptions`.
+pub async fn connect_nats(url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
+    if let Ok(parsed) = url::Url::parse(url) {
+        let user = parsed.username();
+        let pass = parsed.password().unwrap_or("");
+        if !user.is_empty() {
+            let bare = format!(
+                "{}://{}:{}",
+                parsed.scheme(),
+                parsed.host_str().unwrap_or("localhost"),
+                parsed.port().unwrap_or(4222),
+            );
+            return async_nats::ConnectOptions::with_user_and_password(
+                user.to_string(),
+                pass.to_string(),
+            )
+            .connect(&bare)
+            .await;
+        }
+    }
+    async_nats::connect(url).await
+}
+
 /// Parses typical env truthy/falsey strings (e.g. `true`, `1`, `on`, `false`, `0`, `off`).
 fn parse_env_bool(s: &str) -> Result<bool, String> {
     match s.trim().to_lowercase().as_str() {

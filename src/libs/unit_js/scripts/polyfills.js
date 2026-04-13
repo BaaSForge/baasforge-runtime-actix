@@ -9,6 +9,10 @@
   globalThis.setTimeout = function (fn, _delay) {
     var id = ++__tid;
     var args = [].slice.call(arguments, 2);
+    var ms = Number(_delay) || 0;
+    if (ms > 0 && typeof __baal_sleep_sync === "function") {
+      __baal_sleep_sync(ms);
+    }
     queueMicrotask(function () {
       if (!__tc[id]) fn.apply(null, args);
       delete __tc[id];

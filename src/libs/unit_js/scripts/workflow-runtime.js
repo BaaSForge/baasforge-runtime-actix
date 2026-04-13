@@ -152,6 +152,8 @@ function __createWorkflowContext(wfCtx) {
         return Promise.reject(err);
       }
       var optsJson = opts ? JSON.stringify(opts) : "{}";
+      var retryPolicy = opts && opts.retryPolicy;
+
       return Promise.resolve().then(function () {
         return fn();
       }).then(function (result) {
@@ -160,7 +162,17 @@ function __createWorkflowContext(wfCtx) {
         wfCtx.__steps[name] = { status: "completed", result: resultJson };
         return result;
       }).catch(function (err) {
+        if (err && err.__isSuspend) {
+          throw err;
+        }
         var isTerminal = !!(err && err.__isTerminal);
+        if (!isTerminal && retryPolicy) {
+          throw new __SuspendExecution("step_retry", name, {
+            error: err.message || String(err),
+            retryPolicy: retryPolicy,
+            optsJson: optsJson,
+          });
+        }
         __baal_persist_step_error(name, err.message || String(err), isTerminal, optsJson);
         wfCtx.__steps[name] = { status: "failed", error: err.message || String(err), terminal: isTerminal };
         throw err;

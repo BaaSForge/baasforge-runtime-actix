@@ -99,7 +99,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     };
 
     let nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
-        match async_nats::connect(url).await {
+        match crate::configs::connect_nats(url).await {
             Ok(client) => {
                 tracing::info!("[nats_wf] connected for workflow signals");
                 Some(client)
@@ -110,11 +110,28 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             }
         }
     } else {
-        tracing::info!("[nats_wf] NATS_WF_URL not set, workflow timers disabled");
+        tracing::info!("[nats_wf] WF_NATS_URL not set, workflow timers disabled");
         None
     };
 
+    // In test mode, run the NATS wake consumer in-process (normally handled
+    // by the separate runtime_worker binary).
     if settings.test_mode {
+        if let (Some(wr), Some(nc)) = (&wf_redis, &nats_client) {
+            let wr = wr.clone();
+            let nc = nc.clone();
+            let p = pool.clone();
+            let rc = redis_conn.clone();
+            tracing::info!("[test_mode] starting inline NATS wake consumer");
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::services::runtime_worker::runner::run_wake_consumer(wr, nc, p, rc).await
+                {
+                    tracing::error!(error = %e, "[test_mode] wake consumer exited with error");
+                }
+            });
+        }
+
         tracing::info!("[test_mode] seeding test entities into database");
         crate::services::test_seed::seed_test_entities(&pool, &settings);
         crate::services::test_seed::print_trigger_urls(&settings);

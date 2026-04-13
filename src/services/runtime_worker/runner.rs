@@ -54,7 +54,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         };
 
     let nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
-        match async_nats::connect(url).await {
+        match crate::configs::connect_nats(url).await {
             Ok(client) => {
                 info!("[nats_wf] connected for workflow wake consumer");
                 Some(client)
@@ -65,7 +65,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     } else {
-        info!("[nats_wf] NATS_WF_URL not set, workflow wake disabled");
+        info!("[nats_wf] WF_NATS_URL not set, workflow wake disabled");
         None
     };
 
@@ -93,7 +93,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
-async fn run_wake_consumer(
+pub async fn run_wake_consumer(
     wf_redis: Arc<Mutex<redis::aio::MultiplexedConnection>>,
     nats: async_nats::Client,
     pool: crate::database::DbPool,
@@ -115,6 +115,8 @@ async fn run_wake_consumer(
         }
         let project_id = parts[1].to_string();
         let instance_id = parts[2].to_string();
+        let payload: Option<serde_json::Value> =
+            serde_json::from_slice(&msg.payload).ok();
 
         let wf_redis = wf_redis.clone();
         let nats_client = Some(nats.clone());
@@ -129,6 +131,7 @@ async fn run_wake_consumer(
                 &redis_conn,
                 &project_id,
                 &instance_id,
+                payload.as_ref(),
             )
             .await
             {
@@ -152,6 +155,7 @@ async fn handle_wake(
     redis_conn: &crate::database::SharedRedisConn,
     project_id: &str,
     instance_id: &str,
+    payload: Option<&serde_json::Value>,
 ) -> Result<(), String> {
     // Load the workflow meta to get the unit path
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
@@ -196,6 +200,27 @@ async fn handle_wake(
             .query_async::<()>(&mut *conn)
             .await
             .map_err(|e| format!("redis SET sleep elapsed: {e}"))?;
+    }
+
+    // Mark promise as timed_out before resuming
+    let reason = payload
+        .and_then(|p| p.get("reason"))
+        .and_then(|v| v.as_str());
+    if reason == Some("promise_timed_out") {
+        if let Some(promise_name) = payload
+            .and_then(|p| p.get("promise"))
+            .and_then(|v| v.as_str())
+        {
+            let promise_key = format!("wf:{project_id}:{instance_id}:promise:{promise_name}");
+            let timed_out_val = serde_json::json!({"status": "timed_out"}).to_string();
+            let mut conn = wf_redis.lock().await;
+            redis::cmd("SET")
+                .arg(&promise_key)
+                .arg(&timed_out_val)
+                .query_async::<()>(&mut *conn)
+                .await
+                .map_err(|e| format!("redis SET promise timed_out: {e}"))?;
+        }
     }
 
     // Parse unit path to load source code
