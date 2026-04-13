@@ -1,15 +1,17 @@
 //! Workflow integration test binary.
 //!
 //! Discovers compiled JS workflow units in a directory, runs each through the
-//! real workflow engine backed by Redis, orchestrates suspend/resume cycles,
-//! and outputs a JSON report identical in shape to the runtime-check suite.
+//! real workflow engine backed by Redis + NATS (from compose.yml), orchestrates
+//! suspend/resume cycles, and outputs a JSON report identical in shape to the
+//! runtime-check suite.
 //!
-//! No NATS required — sleep timers and promise wakes are handled in-process by
-//! the test harness.
+//! The harness drives wakes (sleep elapsed, handler calls) itself while NATS
+//! exercises the real publish paths in `sdk.rs` — verifying subject formats,
+//! serialization, and connection health.
 //!
 //! ```sh
-//! WF_REDIS_URL=redis://127.0.0.1:16379 WORKFLOW_DIST=units/workflow-tests/dist \
-//!   cargo run --bin test_workflow --release
+//! # Requires: docker compose up -d
+//! cargo run --bin test_workflow --release
 //! ```
 
 use baal_runtime_actix::libs::ids::new_uuid;
@@ -221,7 +223,7 @@ async fn reset_meta_to_running(redis: &SharedRedis, pid: &str, iid: &str) -> Res
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-async fn run_test(redis: &SharedRedis, dist_dir: &Path, test: &TestDef) -> TestResult {
+async fn run_test(redis: &SharedRedis, nats: &Option<async_nats::Client>, dist_dir: &Path, test: &TestDef) -> TestResult {
     let js_path = dist_dir.join(test.js_file);
     let source = match std::fs::read_to_string(&js_path) {
         Ok(s) => s,
@@ -235,24 +237,23 @@ async fn run_test(redis: &SharedRedis, dist_dir: &Path, test: &TestDef) -> TestR
     };
 
     let instance_id = new_uuid().to_string();
-    let nats: Option<async_nats::Client> = None;
 
     if let Err(e) = clean_instance(redis, PROJECT_ID, &instance_id).await {
         return fail(test, &format!("clean failed: {e}"));
     }
 
     if test.dedup {
-        return run_dedup_test(redis, &source, &instance_id, test).await;
+        return run_dedup_test(redis, nats, &source, &instance_id, test).await;
     }
     if test.cancel_on_suspend {
-        return run_cancel_test(redis, &source, &instance_id, test).await;
+        return run_cancel_test(redis, nats, &source, &instance_id, test).await;
     }
 
     let mut handler_idx: usize = 0;
     let mut retry_count: usize = 0;
 
     let start_err = workflow_engine::start_workflow(
-        redis, &nats, PROJECT_ID, "test.wf.test", &instance_id, test.input, &source,
+        redis, nats, PROJECT_ID, "test.wf.test", &instance_id, test.input, &source,
     ).await.err();
 
     if let Some(ref e) = start_err {
@@ -277,10 +278,10 @@ async fn run_test(redis: &SharedRedis, dist_dir: &Path, test: &TestDef) -> TestR
                 };
 
                 if test.replay && iteration == 0 {
-                    return run_replay_test(redis, &source, &instance_id, &output, test).await;
+                    return run_replay_test(redis, nats, &source, &instance_id, &output, test).await;
                 }
                 if !test.crash_clear_steps.is_empty() && iteration == 0 {
-                    return run_crash_replay_test(redis, &source, &instance_id, test).await;
+                    return run_crash_replay_test(redis, nats, &source, &instance_id, test).await;
                 }
 
                 return validate(test, &output);
@@ -307,7 +308,7 @@ async fn run_test(redis: &SharedRedis, dist_dir: &Path, test: &TestDef) -> TestR
                         } else if handler_idx < test.handlers.len() {
                             let h = &test.handlers[handler_idx];
                             if let Err(e) = workflow_engine::call_handler(
-                                redis, &nats, PROJECT_ID, &instance_id, h.name, h.input, &source,
+                                redis, nats, PROJECT_ID, &instance_id, h.name, h.input, &source,
                             ).await {
                                 return fail(test, &format!("handler '{}' failed: {e}", h.name));
                             }
@@ -320,7 +321,7 @@ async fn run_test(redis: &SharedRedis, dist_dir: &Path, test: &TestDef) -> TestR
                 }
 
                 if let Err(e) = workflow_engine::resume_workflow(
-                    redis, &nats, PROJECT_ID, &instance_id, &source,
+                    redis, nats, PROJECT_ID, &instance_id, &source,
                 ).await {
                     if test.retry_step.is_some() && retry_count < test.retry_max {
                         // retry below
@@ -341,7 +342,7 @@ async fn run_test(redis: &SharedRedis, dist_dir: &Path, test: &TestDef) -> TestR
                         let _: Result<(), _> = conn.del::<_, ()>(redis_key(PROJECT_ID, &instance_id, "result")).await;
                     }
                     let _ = workflow_engine::resume_workflow(
-                        redis, &nats, PROJECT_ID, &instance_id, &source,
+                        redis, nats, PROJECT_ID, &instance_id, &source,
                     ).await;
                     continue;
                 }
@@ -354,12 +355,10 @@ async fn run_test(redis: &SharedRedis, dist_dir: &Path, test: &TestDef) -> TestR
     fail(test, "max iterations (100) exceeded — possible infinite loop")
 }
 
-async fn run_dedup_test(redis: &SharedRedis, source: &str, iid: &str, test: &TestDef) -> TestResult {
-    let nats: Option<async_nats::Client> = None;
-
+async fn run_dedup_test(redis: &SharedRedis, nats: &Option<async_nats::Client>, source: &str, iid: &str, test: &TestDef) -> TestResult {
     // First run
     if let Err(e) = workflow_engine::start_workflow(
-        redis, &nats, PROJECT_ID, "test.wf.test", iid, r#"{"salt":"first-call"}"#, source,
+        redis, nats, PROJECT_ID, "test.wf.test", iid, r#"{"salt":"first-call"}"#, source,
     ).await {
         return fail(test, &format!("dedup first start: {e}"));
     }
@@ -375,7 +374,7 @@ async fn run_dedup_test(redis: &SharedRedis, source: &str, iid: &str, test: &Tes
                 if stype == "sleep" {
                     let _ = mark_sleep_elapsed(redis, PROJECT_ID, iid, &sname).await;
                 }
-                let _ = workflow_engine::resume_workflow(redis, &nats, PROJECT_ID, iid, source).await;
+                let _ = workflow_engine::resume_workflow(redis, nats, PROJECT_ID, iid, source).await;
             }
             _ => break,
         }
@@ -388,7 +387,7 @@ async fn run_dedup_test(redis: &SharedRedis, source: &str, iid: &str, test: &Tes
 
     // Second run with same instance_id but different input
     let _ = workflow_engine::start_workflow(
-        redis, &nats, PROJECT_ID, "test.wf.test", iid, r#"{"salt":"second-call"}"#, source,
+        redis, nats, PROJECT_ID, "test.wf.test", iid, r#"{"salt":"second-call"}"#, source,
     ).await;
 
     let second_result = match get_result_value(redis, PROJECT_ID, iid).await {
@@ -413,11 +412,9 @@ async fn run_dedup_test(redis: &SharedRedis, source: &str, iid: &str, test: &Tes
     validate(test, &first_result)
 }
 
-async fn run_cancel_test(redis: &SharedRedis, source: &str, iid: &str, test: &TestDef) -> TestResult {
-    let nats: Option<async_nats::Client> = None;
-
+async fn run_cancel_test(redis: &SharedRedis, nats: &Option<async_nats::Client>, source: &str, iid: &str, test: &TestDef) -> TestResult {
     if let Err(e) = workflow_engine::start_workflow(
-        redis, &nats, PROJECT_ID, "test.wf.test", iid, test.input, source,
+        redis, nats, PROJECT_ID, "test.wf.test", iid, test.input, source,
     ).await {
         return fail(test, &format!("cancel start: {e}"));
     }
@@ -458,10 +455,8 @@ async fn run_cancel_test(redis: &SharedRedis, source: &str, iid: &str, test: &Te
 }
 
 async fn run_replay_test(
-    redis: &SharedRedis, source: &str, iid: &str, first_output: &Value, test: &TestDef,
+    redis: &SharedRedis, nats: &Option<async_nats::Client>, source: &str, iid: &str, first_output: &Value, test: &TestDef,
 ) -> TestResult {
-    let nats: Option<async_nats::Client> = None;
-
     // Clear result + meta (keep steps/sleeps/promises) so we can re-run
     if let Err(e) = clear_result_and_meta_for_replay(redis, PROJECT_ID, iid).await {
         return fail(test, &format!("replay clear: {e}"));
@@ -469,7 +464,7 @@ async fn run_replay_test(
 
     // Re-start with same instance (meta gone, so dedup won't trigger)
     if let Err(e) = workflow_engine::start_workflow(
-        redis, &nats, PROJECT_ID, "test.wf.test", iid, test.input, source,
+        redis, nats, PROJECT_ID, "test.wf.test", iid, test.input, source,
     ).await {
         return fail(test, &format!("replay start: {e}"));
     }
@@ -485,7 +480,7 @@ async fn run_replay_test(
                 if stype == "sleep" {
                     let _ = mark_sleep_elapsed(redis, PROJECT_ID, iid, &sname).await;
                 }
-                let _ = workflow_engine::resume_workflow(redis, &nats, PROJECT_ID, iid, source).await;
+                let _ = workflow_engine::resume_workflow(redis, nats, PROJECT_ID, iid, source).await;
             }
             _ => break,
         }
@@ -509,10 +504,8 @@ async fn run_replay_test(
 }
 
 async fn run_crash_replay_test(
-    redis: &SharedRedis, source: &str, iid: &str, test: &TestDef,
+    redis: &SharedRedis, nats: &Option<async_nats::Client>, source: &str, iid: &str, test: &TestDef,
 ) -> TestResult {
-    let nats: Option<async_nats::Client> = None;
-
     // Clear specified steps (simulate crash before those steps persisted)
     for step in test.crash_clear_steps {
         if let Err(e) = clear_step(redis, PROJECT_ID, iid, step).await {
@@ -531,7 +524,7 @@ async fn run_crash_replay_test(
 
     // Resume — cached steps are replayed, cleared steps re-execute
     if let Err(e) = workflow_engine::resume_workflow(
-        redis, &nats, PROJECT_ID, iid, source,
+        redis, nats, PROJECT_ID, iid, source,
     ).await {
         return fail(test, &format!("crash resume: {e}"));
     }
@@ -547,7 +540,7 @@ async fn run_crash_replay_test(
                 if stype == "sleep" {
                     let _ = mark_sleep_elapsed(redis, PROJECT_ID, iid, &sname).await;
                 }
-                let _ = workflow_engine::resume_workflow(redis, &nats, PROJECT_ID, iid, source).await;
+                let _ = workflow_engine::resume_workflow(redis, nats, PROJECT_ID, iid, source).await;
             }
             _ => break,
         }
@@ -1292,6 +1285,27 @@ fn build_report(results: &[TestResult]) -> Value {
 }
 
 // ---------------------------------------------------------------------------
+// NATS connection (mirrors release_listener::connect_nats)
+// ---------------------------------------------------------------------------
+
+async fn connect_nats(nats_url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
+    let Ok(mut parsed) = url::Url::parse(nats_url) else {
+        return async_nats::connect(nats_url).await;
+    };
+    let user = parsed.username().to_string();
+    let pass = parsed.password().unwrap_or("").to_string();
+    if user.is_empty() {
+        return async_nats::connect(nats_url).await;
+    }
+    let _ = parsed.set_username("");
+    let _ = parsed.set_password(None);
+    async_nats::ConnectOptions::new()
+        .user_and_password(user, pass)
+        .connect(parsed.as_str())
+        .await
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1301,6 +1315,8 @@ async fn main() {
 
     let redis_url = std::env::var("WF_REDIS_URL")
         .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let nats_url = std::env::var("WF_NATS_URL")
+        .unwrap_or_else(|_| "nats://runtime_nats:z2TBGYR8dF1uX2@127.0.0.1:4222".to_string());
     let dist_dir = PathBuf::from(
         std::env::var("WORKFLOW_DIST")
             .unwrap_or_else(|_| "units/workflow-tests/dist".to_string()),
@@ -1312,8 +1328,13 @@ async fn main() {
     let conn = client
         .get_multiplexed_async_connection()
         .await
-        .expect("cannot connect to Redis");
+        .expect("cannot connect to Redis — is compose.yml running?");
     let redis: SharedRedis = Arc::new(Mutex::new(conn));
+
+    eprintln!("==> Connecting to NATS at {nats_url}");
+    let nats = connect_nats(&nats_url).await
+        .expect("cannot connect to NATS — is compose.yml running?");
+    let nats: Option<async_nats::Client> = Some(nats);
 
     eprintln!("==> Loading tests from {}", dist_dir.display());
     let tests = all_tests();
@@ -1323,7 +1344,7 @@ async fn main() {
 
     for (i, test) in tests.iter().enumerate() {
         eprint!("  [{:>2}/{}] {}/{} ... ", i + 1, tests.len(), test.category, test.name);
-        let result = run_test(&redis, &dist_dir, test).await;
+        let result = run_test(&redis, &nats, &dist_dir, test).await;
         if result.pass {
             eprintln!("PASS");
         } else {
