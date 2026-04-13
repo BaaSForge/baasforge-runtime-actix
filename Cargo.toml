@@ -14,6 +14,10 @@ path = "src/bin/runtime_worker.rs"
 name = "release_listener"
 path = "src/bin/release_listener.rs"
 
+[[bin]]
+name = "test_trigger"
+path = "src/bin/test_trigger.rs"
+
 [dependencies]
 # Web Framework & Core
 actix = "0.13.5"

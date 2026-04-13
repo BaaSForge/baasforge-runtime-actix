@@ -246,7 +246,17 @@ globalThis.workflow = workflow;
 //   __instanceId, __steps, __sleeps, __promises, __dateNow, __stepIndex,
 //   __handlerName (null for run, string for shared handler), __handlerInput
 
+var __baalModuleGlobals = { 'node:crypto': 'crypto', 'crypto': 'crypto' };
+
 var __code = __userSource
+  .replace(
+    /^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?\s*$/gm,
+    function (_m, names, mod) {
+      var ns = __baalModuleGlobals[mod];
+      if (ns) return 'var {' + names.replace(/\bas\b/g, ':') + '} = globalThis.' + ns + ';';
+      return '';
+    }
+  )
   .replace(/^\s*import\s+.*\s+from\s+['"][^'"]*['"];?\s*$/gm, "")
   .replace(/^\s*import\s+['"][^'"]*['"];?\s*$/gm, "")
   .replace(/^export\s+default\s+/m, "var __wfDef = ");
