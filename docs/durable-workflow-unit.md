@@ -1,0 +1,912 @@
+---
+name: Durable Workflow Unit
+overview: "Implement the Durable Workflow Unit feature for the BAAL platform: a new unit type that lets users write multi-step, long-running workflows that survive crashes, restarts, and deployments. Uses Redis (AOF) for fast persistent step state and NATS JetStream for messaging/timers. SDK follows Inngest + Restate patterns (the two most developer-friendly proven workflow SDKs)."
+todos:
+  - id: infra
+    content: Create runtime-compose.yml with Redis (AOF) + NATS JetStream (moved from compose.yml), password auth
+    status: pending
+  - id: docs
+    content: Create docs/platform-overview.md explaining the platform, units, SDK, units/ folder purpose, and isolation model
+    status: pending
+  - id: types
+    content: Write units/workflow-tests/@sdk.d.ts TypeScript declaration file with all workflow interfaces
+    status: pending
+  - id: test-skeleton
+    content: Create units/workflow-tests/ project skeleton with package.json, tsconfig.json, all test file stubs
+    status: pending
+  - id: workflow-runtime-js
+    content: "Write workflow-runtime.js: workflow() constructor, WorkflowContext (run/sleep/promise/set/get/rand/date), step memoization, suspension logic"
+    status: pending
+  - id: sdk-host-fns
+    content: "Write src/libs/unit_js/modules/sdk.rs: Rust host functions for step persistence, suspension, state, promise resolution via Redis/NATS, and sdk.call (workflow triggering)"
+    status: pending
+  - id: workflow-engine
+    content: "Write src/services/workflow_engine.rs: start/resume/cancel workflow, timer scheduling via NATS, promise management"
+    status: pending
+  - id: runner-integration
+    content: Add run_workflow_handler to runner.rs, pass Redis/NATS handles through spawn_blocking
+    status: pending
+  - id: routes
+    content: Create src/routes/workflow.rs with separate /api/v1/trigger/wf/ routes (start, shared handlers, status, cancel, attach), register in mod.rs
+    status: pending
+  - id: worker
+    content: Add NATS wf.*.*.wake consumer to runtime_worker.rs for timer/promise wake-ups
+    status: pending
+  - id: unit-type
+    content: Add Workflow variant to ProjectUnitType enum + database migration
+    status: pending
+  - id: tests-full
+    content: Fill in all test files with detailed assertions covering every workflow SDK feature
+    status: pending
+  - id: tests-isolation
+    content: Write cross-project isolation tests (steps, promises, state, status)
+    status: pending
+isProject: false
+---
+
+# Durable Workflow Unit Implementation Plan
+
+## 0. Runtime Choice: Build Custom Engine vs. Use Existing Library
+
+### Analysis of Existing Options
+
+Three proven durable workflow runtimes were evaluated:
+
+**Temporal** (self-hosted, $5B valuation):
+
+- Requires Cassandra/MySQL + Elasticsearch + separate worker processes
+- Namespace-per-tenant pattern limited to ~50 tenants; task-queue-per-tenant scales better but adds complexity
+- Workers must be long-running Node.js processes polling for tasks -- architectural mismatch with BAAL's embedded QuickJS model
+- Heavy operational overhead
+
+**Restate** (self-hosted, single Rust binary):
+
+- Beautiful SDK (`ctx.run`, `ctx.sleep`, `ctx.promise`), closest to what we want
+- Uses a callback-based protocol: Restate server calls your HTTP service, which uses the SDK to journal actions back
+- Requires implementing the Restate wire protocol (binary framed protobuf) in Rust, or running a Node.js sidecar -- neither fits our embedded QuickJS model
+- No built-in multi-tenancy at the millions-of-projects scale
+- 19K rps on 3-node cluster (proven but not at our target scale)
+
+**Inngest** (self-hosted, Go binary):
+
+- Clean SDK (`step.run`, `step.sleep`, `step.waitForEvent`)
+- Step-level memoization approach (not full replay) -- closest to what works with QuickJS
+- Requires separate HTTP function registration + callback model
+- No documented multi-tenancy support
+
+### Decision: Build Custom Engine, Follow Inngest + Restate SDK Patterns
+
+**Why**: All three engines use a callback architecture (engine calls your service). BAAL uses an embedded QuickJS engine inside `spawn_blocking` -- there is no HTTP service for an external engine to call back. Implementing any of their wire protocols would be fragile and add more complexity than building the engine ourselves.
+
+**What we reuse**:
+
+- **SDK design from Restate**: `ctx.run()`, `ctx.sleep()`, `ctx.promise()`, `ctx.set()/get()`, `ctx.rand`, `TerminalError`, compensation via try/catch -- the most elegant and flexible patterns
+- **Step memoization from Inngest**: Each step has a unique name and its result is cached. On re-invocation after crash/sleep, completed steps return cached results without re-executing. This is simpler than full journal replay and works perfectly with QuickJS's ephemeral contexts
+- **Infrastructure**: Redis with AOF persistence (fast in-memory with disk durability) for step state + NATS JetStream (already running) for timers and wake-up signals
+
+---
+
+## 1. Infrastructure: `runtime-compose.yml`
+
+Add a new Docker Compose file for workflow infrastructure. The existing `[compose.yml](compose.yml)` (NATS + nginx) stays unchanged.
+
+```yaml
+# runtime-compose.yml
+services:
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --requirepass wf_redis_dev_R7x9kP
+      --appendonly yes
+      --appendfsync everysec
+    ports:
+      - "6379:6379"
+    volumes:
+      - .dev/redis-data:/data
+```
+
+**Why Redis with AOF**: The user requires "persistent while it can load live data into RAM so it would be fast enough." Redis AOF is exactly this -- all data in memory for sub-millisecond reads, appended to disk for durability. A single Redis instance handles millions of keys (one workflow with 10 steps = ~12 keys; millions of projects is still manageable).
+
+**Why not a separate DB per project**: Redis key-prefix isolation (`wf:{project_id}:...`) gives complete data isolation on a shared instance. No operational overhead of managing millions of databases.
+
+NATS JetStream is included in `runtime-compose.yml` (moved from `compose.yml`) so all runtime infrastructure is in one place:
+
+```yaml
+  nats:
+    image: nats:alpine3.22
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+      - "6222:6222"
+    command:
+      - "-js"
+      - "-sd"
+      - "/data"
+      - "-m"
+      - "8222"
+      - "--user"
+      - "runtime_nats"
+      - "--pass"
+      - "z2TBGYR8dF1uX2"
+    volumes:
+      - .dev/nats-jetstream:/data
+```
+
+---
+
+## 2. SDK Design (The Most Critical Part)
+
+The SDK follows **Restate's API patterns** (proven elegant and flexible) with **Inngest's memoization model** (simpler than journal replay, fits QuickJS).
+
+### 2a. Workflow Definition API
+
+Two forms -- simple function and full definition with shared handlers:
+
+**Simple form** (most common):
+
+```typescript
+import { workflow, sdk } from "@sdk";
+
+export default workflow("order-fulfillment", async (ctx, order) => {
+  // Each step is persisted. On replay, returns cached result without re-executing.
+  const validated = await ctx.run("validate-order", async () => {
+    if (!order.items || order.items.length === 0) {
+      throw new ctx.TerminalError("Order has no items");
+    }
+    return { itemCount: order.items.length, total: order.total };
+  });
+
+  // Durable sleep -- survives crashes, restarts, deployments
+  await ctx.sleep("cooling-period", { minutes: 5 });
+
+  // Wait for an external signal (e.g. manager approval via shared handler)
+  const approval = await ctx.promise("manager-approved")
+    .get({ timeout: { hours: 24 } });
+
+  if (!approval) {
+    throw new ctx.TerminalError("Not approved within 24h");
+  }
+
+  // Trigger another workflow via sdk.call() and wait for its result
+  const payment = await ctx.run("charge-payment", async () => {
+    return await sdk.call("billing.payments.workflow.charge", {
+      orderId: order.id, amount: order.total,
+    });
+  });
+
+  return { validated, payment };
+});
+```
+
+**Full form** (with shared handlers for external interaction):
+
+```typescript
+import { workflow } from "@sdk";
+
+export default workflow("email-verification", {
+  run: async (ctx, user) => {
+    const secret = ctx.rand.uuidv4();
+    await ctx.run("prepare-verification", async () => {
+      // Step logic here (e.g. store secret, prepare email payload)
+      return { secret, email: user.email };
+    });
+
+    ctx.set("status", "awaiting-verification");
+
+    // Suspend until the "verified" promise is resolved by a shared handler
+    const clicked = await ctx.promise("verified")
+      .get({ timeout: { days: 1 } });
+
+    ctx.set("status", clicked === secret ? "verified" : "expired");
+    return { verified: clicked === secret };
+  },
+
+  handlers: {
+    verify: async (ctx, req) => {
+      await ctx.promise("verified").resolve(req.secret);
+    },
+    getStatus: async (ctx) => {
+      return { status: await ctx.get("status") };
+    },
+  },
+});
+```
+
+### `sdk.call()` -- Workflow Triggering (Partially Implemented)
+
+`sdk.call(unitPath, data)` is a Tier 1 SDK primitive for inter-unit communication. For this release, it supports **triggering workflow units only**. It can be called from any unit type (workflow steps, API units, and any future unit types).
+
+```typescript
+// From inside a workflow step:
+const result = await ctx.run("process-payment", async () => {
+  // Trigger another workflow and wait for its result
+  return await sdk.call("billing.payments.workflow.charge", {
+    orderId: order.id,
+    amount: order.total,
+  });
+});
+
+// Fire-and-forget (don't wait for result):
+await ctx.run("start-background", async () => {
+  await sdk.call("analytics.tracking.workflow.user-activity", eventData);
+});
+```
+
+**What `sdk.call` supports now:**
+- Triggering workflow units by their path (`context.module.workflow.name`)
+- Passing input data as the second argument
+- Returns a `Promise<T>` that resolves with the workflow's final result (or rejects on failure)
+- Can be called from any unit type -- workflows, API units, and any future unit types that will be added later
+
+**What `sdk.call` does NOT support yet:**
+- Triggering API units (their req/res semantics need separate design)
+- Triggering other future unit types (sagas, actors, etc.) -- these will be added as each unit type is implemented
+- `sdk.call` is designed to be the universal inter-unit communication primitive; additional invocation semantics will be added as new unit types are introduced
+
+### 2b. Cross-Unit Type Exports and Imports Convention
+
+Units can export TypeScript types that other units import for compile-time type safety when calling them via `sdk.call()`. This is **compile-time only** -- type imports are stripped at runtime (just like `node:*` imports). The platform runs lint rules on unit code to enforce the convention.
+
+**Import syntax** (from any unit type):
+```typescript
+import type { Input, Output } from "@units/billing.payments.workflow.charge";
+```
+
+The path uses dot notation matching the unit ID format: `@units/{context}.{module}.{unitType}.{name}`.
+
+**Workflow unit export convention:**
+
+Workflow units may ONLY export the following named types (plus the required `export default workflow(...)`):
+
+| Export Name | Required | Description |
+|---|---|---|
+| `Input` | Yes | The input type passed to the workflow's `run` handler |
+| `Output` | Yes | The return type of the workflow's `run` handler |
+| `{HandlerName}Input` | Per handler | Input type for a shared handler (PascalCase handler name + `Input`) |
+| `{HandlerName}Output` | Per handler | Return type for a shared handler (PascalCase handler name + `Output`) |
+
+**Example workflow with proper exports:**
+
+```typescript
+import { workflow, sdk } from "@sdk";
+
+// --- Exported types (compile-time only, for other units to import) ---
+export type Input = {
+  orderId: string;
+  amount: number;
+};
+
+export type Output = {
+  success: boolean;
+  receiptId: string;
+};
+
+export type VerifyInput = {
+  secret: string;
+};
+
+export type VerifyOutput = {
+  accepted: boolean;
+};
+
+// --- Workflow definition ---
+export default workflow("charge", {
+  run: async (ctx, input: Input): Promise<Output> => {
+    const receipt = await ctx.run("process", async () => {
+      return { receiptId: ctx.rand.uuidv4(), amount: input.amount };
+    });
+    return { success: true, receiptId: receipt.receiptId };
+  },
+  handlers: {
+    verify: async (ctx, req: VerifyInput): Promise<VerifyOutput> => {
+      return { accepted: req.secret === "valid" };
+    },
+  },
+});
+```
+
+**Consuming unit (type-safe `sdk.call`):**
+
+```typescript
+import { workflow, sdk } from "@sdk";
+import type { Input as ChargeInput, Output as ChargeOutput } from "@units/billing.payments.workflow.charge";
+
+export default workflow("order-process", async (ctx, order) => {
+  const payment = await ctx.run("charge", async () => {
+    const input: ChargeInput = { orderId: order.id, amount: order.total };
+    return await sdk.call<ChargeOutput>("billing.payments.workflow.charge", input);
+  });
+  return payment;
+});
+```
+
+**Lint rules (enforced by the dashboard platform, NOT this project):**
+
+The lint/type-checking of unit code happens in the user's dashboard platform (a completely separate project). That project validates unit code before deployment. The rules it enforces for this convention are:
+
+1. **Exports**: Only `export type` and `export interface` are allowed (plus the single `export default`). No `export const`, `export function`, `export class`, `export enum`, etc.
+2. **Export names**: Must match the pattern `Input`, `Output`, or `{PascalCase}Input` / `{PascalCase}Output` (regex: `^(Input|Output|[A-Z][a-zA-Z]*(?:Input|Output))$`).
+3. **Imports from `@units/*`**: Only `import type { ... } from "@units/..."` is allowed. Bare `import { ... }` (value imports) from `@units/*` are rejected.
+4. **Import path format**: Must be a valid dot-notation unit path after `@units/` (regex: `^@units/[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){3}$`).
+
+These rules are all checkable with simple regex patterns on the source code. This runtime project does not implement or test these lint rules -- it only needs to be aware of the convention so the SDK types and `@sdk.d.ts` declarations are designed to be compatible with it.
+
+> **Convention note for future unit types:** Every unit type that supports being called via `sdk.call()` must define its own export convention. This ensures a consistent, lintable pattern across all unit types as they are added to the platform.
+
+### 2c. WorkflowContext API (what `ctx` provides)
+
+
+| Method                      | Description                                                                                                                                  | Inspired By             |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `ctx.run(name, fn, opts?)`  | Execute a durable step. Result is persisted. On replay, returns cached result without re-executing `fn`.                                     | Restate `ctx.run()`     |
+| `ctx.sleep(name, duration)` | Durable timer. Suspends workflow, resumes after duration. Survives crashes. Duration: `{ seconds, minutes, hours, days }` or ms number.      | Restate `ctx.sleep()`   |
+| `ctx.promise<T>(name)`      | Returns a `DurablePromise<T>` with `.get(opts?)`, `.resolve(value)`, `.reject(error)`. `.get()` suspends until resolved/rejected or timeout. | Restate `ctx.promise()` |
+| `ctx.set(key, value)`       | Store workflow-scoped state (queryable from shared handlers).                                                                                | Restate `ctx.set()`     |
+| `ctx.get<T>(key)`           | Read workflow-scoped state.                                                                                                                  | Restate `ctx.get()`     |
+| `ctx.key`                   | The workflow instance ID (string).                                                                                                           | Restate `ctx.key`       |
+| `ctx.rand.uuidv4()`         | Deterministic UUID (seeded by instance ID + step position). Safe for replay.                                                                 | Restate `ctx.rand`      |
+| `ctx.rand.random()`         | Deterministic float [0,1). Safe for replay.                                                                                                  | Restate `ctx.rand`      |
+| `ctx.date.now()`            | Deterministic timestamp (captured at step boundary). Safe for replay.                                                                        | Restate `ctx.date`      |
+| `ctx.TerminalError`         | Error class that stops retries. Thrown to signal non-retriable failure.                                                                      | Restate `TerminalError` |
+
+
+**Step options** (`ctx.run` third argument):
+
+```typescript
+{
+  retryPolicy?: {
+    maxAttempts?: number;        // default: 10
+    initialInterval?: Duration;  // default: { seconds: 1 }
+    maxInterval?: Duration;      // default: { minutes: 5 }
+    backoffFactor?: number;      // default: 2
+  }
+}
+```
+
+### 2d. Compensation / Saga Pattern
+
+Following Restate's idiomatic approach -- not a separate construct, just try/catch with a compensation list:
+
+```typescript
+import { workflow, sdk } from "@sdk";
+
+export default workflow("transfer-funds", async (ctx, data) => {
+  const compensations = [];
+
+  try {
+    // Register compensation BEFORE executing the step
+    compensations.push(() => ctx.run("refund-source", async () => {
+      // Trigger another workflow to handle the refund
+      return await sdk.call("accounts.ledger.workflow.credit", {
+        accountId: data.from, amount: data.amount,
+      });
+    }));
+    const debit = await ctx.run("debit-source", async () => {
+      return await sdk.call("accounts.ledger.workflow.debit", {
+        accountId: data.from, amount: data.amount,
+      });
+    });
+
+    compensations.push(() => ctx.run("reverse-credit", async () => {
+      return await sdk.call("accounts.ledger.workflow.debit", {
+        accountId: data.to, amount: data.amount,
+      });
+    }));
+    const credit = await ctx.run("credit-dest", async () => {
+      return await sdk.call("accounts.ledger.workflow.credit", {
+        accountId: data.to, amount: data.amount,
+      });
+    });
+
+    await ctx.run("record-transfer", async () => {
+      return { from: data.from, to: data.to, amount: data.amount, ts: ctx.date.now() };
+    });
+  } catch (e) {
+    if (e instanceof ctx.TerminalError) {
+      // Compensations run in reverse order -- each is a durable step itself
+      for (const comp of compensations.reverse()) {
+        await comp();
+      }
+    }
+    throw e;
+  }
+});
+```
+
+### 2e. Parallel Execution
+
+Use native `Promise.all` and `Promise.race` (enhanced to be durable):
+
+```typescript
+// Parallel steps -- both execute concurrently, both results are persisted
+const [inventory, notification] = await Promise.all([
+  ctx.run("reserve-inventory", async () => {
+    return { reserved: true, items: order.items };
+  }),
+  ctx.run("send-notification", async () => {
+    return { notified: true, userId: order.userId };
+  }),
+]);
+
+// Race: first event wins or timeout
+const result = await Promise.race([
+  ctx.promise("approved").get(),
+  ctx.sleep("approval-timeout", { hours: 24 }).then(() => null),
+]);
+```
+
+---
+
+## 3. Execution Model: Step Memoization with Suspension
+
+### How It Works
+
+```
+Trigger workflow (or resume after sleep/promise)
+  |
+  v
+Load completed step results from Redis
+  |
+  v
+Create QuickJS context, inject step cache + engine callbacks
+  |
+  v
+Execute user's workflow function from the beginning
+  |
+  v
+ctx.run("step1") -> cached? return cached result : execute fn, persist to Redis, return
+  |
+  v
+ctx.run("step2") -> cached? return cached result : execute fn, persist to Redis, return
+  |
+  v
+ctx.sleep("wait", 5m) -> timer already elapsed? continue : schedule NATS timer, SUSPEND
+  |                                                            (destroy QuickJS context)
+  v                                                                    |
+ctx.run("step3") -> execute fn, persist, return              Timer fires via NATS
+  |                                                                    |
+  v                                                          Re-invoke workflow from start
+Workflow complete -> persist final result                     (steps 1,2 return cached)
+```
+
+### Suspension Points
+
+When a workflow hits `ctx.sleep()` or `ctx.promise().get()` that isn't yet resolved:
+
+1. The engine records the suspension point in Redis (`wf:{pid}:{iid}:suspended -> { type: "sleep"|"promise", name, ... }`)
+2. For sleeps: publishes a delayed message to NATS subject `wf.{project_id}.{instance_id}.wake` with the delay
+3. For promises: registers the promise in Redis; when `.resolve()` is called (from a shared handler or another unit), NATS publishes a wake message
+4. The QuickJS context is destroyed (no memory held during suspension)
+5. When the wake message arrives, the workflow engine re-invokes the workflow from the beginning
+6. All completed steps return cached results, the suspension point resolves, execution continues
+
+### Redis Key Structure
+
+All prefixed with `wf:{project_id}:` for multi-tenant isolation:
+
+```
+wf:{pid}:{instance_id}:meta           -> { name, status, input, createdAt, ... }
+wf:{pid}:{instance_id}:step:{name}    -> { status, result?, error?, retries, completedAt }
+wf:{pid}:{instance_id}:state:{key}    -> value (ctx.set/get)
+wf:{pid}:{instance_id}:promise:{name} -> { status, value?, error? }
+wf:{pid}:{instance_id}:result         -> final result or error
+wf:{pid}:{instance_id}:suspended      -> { type, name, wakeAt?, ... }
+```
+
+Status values: `running`, `suspended`, `completed`, `failed`, `compensating`.
+
+---
+
+## 4. Runtime Integration
+
+### 4a. New Unit Type
+
+Add `Workflow` to `[ProjectUnitType](src/models/projects.rs)` enum:
+
+```rust
+pub enum ProjectUnitType {
+    // ... existing variants ...
+    Workflow,
+}
+```
+
+Plus database migration to add the new enum value.
+
+### 4b. New Runner Function
+
+In `[src/libs/unit_js/runner.rs](src/libs/unit_js/runner.rs)`, add a new public function:
+
+```rust
+pub fn run_workflow_handler(
+    source: &str,
+    workflow_ctx: &WorkflowExecutionContext,  // project_id, instance_id, input, step_cache, ...
+) -> Result<WorkflowExecutionResult, String>
+```
+
+`WorkflowExecutionResult` is an enum:
+
+- `Completed(serde_json::Value)` -- workflow returned a value
+- `Suspended { suspension_type, name, wake_config }` -- workflow hit a sleep/promise
+- `Failed(String)` -- workflow threw an error
+
+### 4c. New Script: `workflow-runtime.js`
+
+A new script at `[src/libs/unit_js/scripts/workflow-runtime.js](src/libs/unit_js/scripts/workflow-runtime.js)` that:
+
+1. Defines the `workflow()` constructor function (available as global)
+2. Defines `WorkflowContext` class with `run()`, `sleep()`, `promise()`, `set()`, `get()`, `rand`, `date`, `TerminalError`
+3. Reads `__baal_workflow_ctx` (injected by Rust) containing step cache, engine config
+4. On `ctx.run(name, fn)`: checks `__baal_workflow_ctx.steps[name]`; if complete, returns cached result; otherwise calls `fn`, then calls `__baal_persist_step(name, result)` (Rust host function), returns result
+5. On `ctx.sleep(name, duration)`: checks if already elapsed; if not, calls `__baal_suspend("sleep", name, duration)` which throws a special `SuspendExecution` sentinel that the outer runner catches
+6. On `ctx.promise(name).get()`: checks if resolved; if not, calls `__baal_suspend("promise", name, timeout)`
+7. Strips imports/exports from user code, evals it, calls the exported workflow's `run` handler
+
+### 4d. New SDK Module: `src/libs/unit_js/modules/sdk.rs`
+
+Registers Rust host functions callable from JS:
+
+- `__baal_persist_step(name, result_json)` -> persists step result to Redis via `Handle::block_on`
+- `__baal_suspend(type, name, config_json)` -> records suspension in Redis, returns marker
+- `__baal_persist_state(key, value_json)` -> persists ctx.set() to Redis
+- `__baal_read_state(key)` -> reads ctx.get() from Redis
+- `__baal_resolve_promise(name, value_json)` -> resolves a durable promise in Redis + sends NATS wake
+- `__baal_call(unit_path, data_json)` -> invokes another unit by path; currently supports workflow units only (starts a workflow, waits for result). Validates that the target unit is a workflow; returns error for unsupported unit types.
+
+All host functions use `tokio::runtime::Handle::current().block_on(async { ... })` to bridge sync QuickJS to async Redis/NATS operations (same pattern used in existing `[runner.rs](src/libs/unit_js/runner.rs)` with `spawn_blocking`).
+
+### 4e. New Service: `src/services/workflow_engine.rs`
+
+The core workflow orchestration service:
+
+- `start_workflow(project_id, workflow_name, instance_id, input)` -- creates workflow metadata in Redis, triggers first execution
+- `resume_workflow(project_id, instance_id)` -- loads step cache from Redis, calls `run_workflow_handler`
+- `handle_wake(project_id, instance_id)` -- called when NATS timer/promise-wake arrives, calls `resume_workflow`
+- `cancel_workflow(project_id, instance_id)` -- marks as cancelled
+- `get_workflow_status(project_id, instance_id)` -- returns current status + step states
+- `resolve_promise(project_id, instance_id, promise_name, value)` -- resolves a durable promise
+
+Timer scheduling: publish to NATS subject `wf.{project_id}.{instance_id}.wake` with a delay header. NATS JetStream supports delayed delivery.
+
+### 4f. New Route Handlers (Separate from API Unit Routes)
+
+Workflow units get their own trigger prefix under `/api/v1/trigger/wf/`, completely separate from the existing API unit routes at `/api/v1/trigger/{project_id}/`. This avoids mixing different unit type semantics in the same handler.
+
+The existing API unit routes ([`src/routes/mod.rs`](src/routes/mod.rs)) remain untouched:
+- `/api/v1/trigger/{project_id}/{context}/{module}/{unit_name}` (production API units)
+- `/api/v1/trigger/{project_id}/stage/{runtime_id}/{context}/{module}/{unit_name}` (stage API units)
+
+New workflow-specific routes (new `src/routes/workflow.rs` module):
+
+- **Start workflow (production):**
+  `POST /api/v1/trigger/wf/{project_id}/{context}/{module}/{workflow_name}`
+  Accepts JSON body as workflow input. Returns `{ instanceId, status: "running" }`.
+
+- **Start workflow (stage):**
+  `POST /api/v1/trigger/wf/{project_id}/stage/{runtime_id}/{context}/{module}/{workflow_name}`
+
+- **Call shared handler:**
+  `POST /api/v1/trigger/wf/{project_id}/{context}/{module}/{workflow_name}/{instance_id}/handlers/{handler_name}`
+  Invokes a shared handler on a running workflow instance (e.g., to resolve a promise).
+
+- **Query workflow status:**
+  `GET /api/v1/trigger/wf/{project_id}/{context}/{module}/{workflow_name}/{instance_id}/status`
+  Returns current status, step states, workflow state (ctx.set/get values).
+
+- **Cancel workflow:**
+  `POST /api/v1/trigger/wf/{project_id}/{context}/{module}/{workflow_name}/{instance_id}/cancel`
+
+- **Attach to result:**
+  `GET /api/v1/trigger/wf/{project_id}/{context}/{module}/{workflow_name}/{instance_id}/result`
+  Blocks until workflow completes (or returns immediately if already done). Inspired by Restate's attach pattern.
+
+### 4g. NATS Consumer for Wake Signals
+
+In the existing `[src/bin/runtime_worker.rs](src/bin/runtime_worker.rs)` (already scaffolded):
+
+- Subscribe to `wf.*.*.wake` (filtered by project_id pattern)
+- On message: extract project_id and instance_id, call `workflow_engine::resume_workflow`
+- This is the "scheduler" that picks up timer expirations and promise resolutions
+
+---
+
+## 5. Type Declarations: `@sdk.d.ts`
+
+Create `[units/sdk-tests/@sdk.d.ts](units/sdk-tests/@sdk.d.ts)` -- the authoritative TypeScript type definition for the `@sdk` module. This file is used for type-checking user code.
+
+Key interfaces (focused on workflow -- the file will grow as more features are added):
+
+```typescript
+declare module "@sdk" {
+  // --- SDK singleton (platform primitives) ---
+  export const sdk: {
+    /**
+     * Invoke another unit by its path (context.module.unitType.name).
+     *
+     * Currently supports triggering **workflow units only**.
+     * Returns a Promise that resolves with the workflow's final result.
+     *
+     * Can be called from any unit type (workflow, api, and future unit types).
+     * Support for triggering other unit types (api, actors, sagas, etc.)
+     * will be added as each unit type is implemented.
+     */
+    call<T = any>(unitPath: string, data?: any): Promise<T>;
+  };
+
+  // --- Duration type ---
+  export interface Duration {
+    milliseconds?: number;
+    seconds?: number;
+    minutes?: number;
+    hours?: number;
+    days?: number;
+  }
+
+  // --- Workflow ---
+  export function workflow<TInput = any, TOutput = any>(
+    name: string,
+    handler: (ctx: WorkflowContext, input: TInput) => Promise<TOutput>
+  ): WorkflowDefinition<TInput, TOutput>;
+
+  export function workflow<TInput = any, TOutput = any>(
+    name: string,
+    config: WorkflowConfig<TInput, TOutput>
+  ): WorkflowDefinition<TInput, TOutput>;
+
+  export interface WorkflowConfig<TInput, TOutput> {
+    run: (ctx: WorkflowContext, input: TInput) => Promise<TOutput>;
+    handlers?: Record<string, (ctx: WorkflowSharedContext, input?: any) => Promise<any>>;
+  }
+
+  export interface WorkflowContext {
+    key: string;
+    run<T>(name: string, fn: () => Promise<T>, opts?: RunOptions): Promise<T>;
+    sleep(name: string, duration: Duration | number): Promise<void>;
+    promise<T = any>(name: string): DurablePromise<T>;
+    set(key: string, value: any): void;
+    get<T = any>(key: string): Promise<T | null>;
+    rand: DeterministicRand;
+    date: DeterministicDate;
+    TerminalError: typeof TerminalError;
+  }
+
+  export interface WorkflowSharedContext {
+    key: string;
+    promise<T = any>(name: string): DurablePromiseHandle<T>;
+    get<T = any>(key: string): Promise<T | null>;
+  }
+
+  export interface DurablePromise<T> {
+    get(opts?: { timeout?: Duration }): Promise<T | null>;
+    resolve(value: T): Promise<void>;
+    reject(error: string): Promise<void>;
+  }
+
+  export interface DurablePromiseHandle<T> {
+    resolve(value: T): Promise<void>;
+    reject(error: string): Promise<void>;
+  }
+
+  export interface RunOptions {
+    retryPolicy?: RetryPolicy;
+  }
+
+  export interface RetryPolicy {
+    maxAttempts?: number;
+    initialInterval?: Duration;
+    maxInterval?: Duration;
+    backoffFactor?: number;
+  }
+
+  export interface DeterministicRand {
+    uuidv4(): string;
+    random(): number;
+  }
+
+  export interface DeterministicDate {
+    now(): number;
+  }
+
+  export class TerminalError extends Error {
+    constructor(message: string, options?: { cause?: unknown });
+  }
+
+  // WorkflowDefinition is opaque -- users export it as default
+  export interface WorkflowDefinition<TInput = any, TOutput = any> {}
+}
+
+/**
+ * Cross-unit type imports.
+ *
+ * Units can import types from other units via:
+ *   import type { Input, Output } from "@units/context.module.workflow.name";
+ *
+ * This is compile-time only (stripped at runtime).
+ * Only `import type` is allowed -- value imports are rejected by lint.
+ *
+ * Each unit type defines its own export convention:
+ * - Workflow units: Input, Output, {HandlerName}Input, {HandlerName}Output
+ * - Future unit types will have different convention
+ *
+ * The wildcard module declaration below allows TypeScript to accept
+ * any @units/ path. Actual type safety comes from each unit's own
+ * type declaration file generated by the platform.
+ */
+declare module "@units/*" {
+  export type Input = any;
+  export type Output = any;
+  // Additional handler types are defined per-unit
+}
+```
+
+---
+
+## 6. Tests: `units/workflow-tests/`
+
+A new Node.js/TypeScript project at `units/workflow-tests/` that serves as the **source of truth** for all Durable Workflow SDK features. Each test file is a valid unit that can be deployed and triggered.
+
+Structure:
+
+```
+units/workflow-tests/
+  package.json
+  tsconfig.json
+  @sdk.d.ts              (symlink or copy from sdk-tests)
+
+  basic/
+    sequential-steps.ts          Sequential ctx.run() calls, verify result passing
+    step-return-types.ts         Steps returning strings, numbers, objects, arrays, null
+    empty-workflow.ts            Workflow with no steps, just returns input
+    step-with-side-effects.ts    ctx.run() that performs async logic (e.g. computation)
+
+  memoization/
+    step-memoization.ts          Re-invoke workflow, verify completed steps not re-executed
+    step-cache-integrity.ts      Verify step results match original execution after replay
+    idempotent-steps.ts          Same step name always returns same cached result
+
+  sleep/
+    basic-sleep.ts               ctx.sleep() with various durations
+    sleep-resume.ts              Verify workflow resumes after sleep completes
+    sleep-survives-restart.ts    Kill and restart, verify sleep resumes
+    multiple-sleeps.ts           Sequential sleeps in one workflow
+    sleep-zero.ts                Edge case: sleep(0) should proceed immediately
+
+  promises/
+    basic-promise.ts             ctx.promise().get() + external .resolve()
+    promise-timeout.ts           Promise with timeout, verify null on expiry
+    promise-reject.ts            Promise rejection propagates error
+    promise-resolve-before-wait.ts  Resolve before .get() -- should return immediately
+    multiple-promises.ts         Multiple independent promises in one workflow
+    promise-from-shared-handler.ts  Shared handler resolves promise
+
+  parallel/
+    promise-all.ts               Promise.all([ctx.run(...), ctx.run(...)])
+    promise-race.ts              Promise.race with sleep timeout
+    parallel-steps-isolation.ts  Parallel steps don't interfere with each other
+
+  retry/
+    default-retry.ts             Step fails transiently, retries succeed
+    custom-retry-policy.ts       maxAttempts, initialInterval, backoffFactor
+    terminal-error-no-retry.ts   TerminalError stops retries immediately
+    retry-exhaustion.ts          All retries fail, error propagates
+
+  compensation/
+    basic-compensation.ts        Try/catch with compensation list, reverse on failure
+    partial-compensation.ts      Only compensate completed steps
+    compensation-failure.ts      What happens if a compensation step also fails
+    nested-compensation.ts       Compensation steps that contain their own ctx.run()
+
+  state/
+    set-get-basic.ts             ctx.set() + ctx.get() round-trip
+    state-across-steps.ts        Set state in step 1, read in step 3
+    state-from-shared-handler.ts Shared handler reads state set by run handler
+    state-types.ts               Strings, numbers, objects, arrays, null
+
+  shared-handlers/
+    query-status.ts              Shared handler returns workflow state
+    resolve-promise.ts           Shared handler resolves a durable promise
+    multiple-handlers.ts         Multiple shared handlers on one workflow
+    handler-before-run-starts.ts Call shared handler before workflow run begins
+
+  deterministic/
+    rand-uuidv4.ts               ctx.rand.uuidv4() returns same value on replay
+    rand-random.ts               ctx.rand.random() is deterministic across replays
+    date-now.ts                  ctx.date.now() is deterministic across replays
+
+  crash-recovery/
+    resume-after-step.ts         Crash after step 2, resume continues at step 3
+    resume-after-sleep.ts        Crash during sleep, resume when timer fires
+    resume-after-promise.ts      Crash while waiting for promise, resume on resolve
+
+  lifecycle/
+    workflow-completion.ts       Workflow completes, final result persisted
+    workflow-cancellation.ts     Cancel a running/suspended workflow
+    workflow-deduplication.ts    Same instance_id = same execution (no duplicate)
+    workflow-timeout.ts          Overall workflow timeout
+
+  integration/
+    workflow-via-http-trigger.ts      Start a workflow via its HTTP trigger URL
+    shared-handler-via-http.ts       Call a shared handler via its HTTP endpoint
+    attach-to-result.ts              Use the /result endpoint to wait for workflow completion
+    cancel-via-http.ts               Cancel a running workflow via its HTTP endpoint
+    sdk-call-workflow-from-workflow.ts  Workflow step triggers another workflow via sdk.call()
+    sdk-call-workflow-from-api.ts      API unit triggers a workflow via sdk.call()
+    sdk-call-chained-workflows.ts      Workflow A -> sdk.call -> Workflow B -> sdk.call -> Workflow C
+    sdk-call-unsupported-type.ts       sdk.call() targeting a non-workflow unit returns clear error
+    sdk-call-nonexistent-unit.ts       sdk.call() targeting a unit that doesn't exist returns error
+
+  isolation/
+    cross-project-steps.ts       Project A workflow state invisible to Project B
+    cross-project-promises.ts    Project A can't resolve Project B's promises
+    cross-project-status.ts      Project A can't query Project B's workflow status
+```
+
+Hardcoded test project IDs:
+
+- Project A: `00000000-0000-0000-0000-000000000001`
+- Project B: `00000000-0000-0000-0000-000000000002`
+
+Each test file follows the same pattern as `[units/runtime-check/index.ts](units/runtime-check/index.ts)`: exports a `handleRequest` (for API-triggerable tests) or `workflow()` definition that runs assertions and returns a JSON report with pass/fail.
+
+---
+
+## 7. Documentation: `docs/platform-overview.md`
+
+Create a new doc explaining:
+
+- BAAL is a supabase-like "Architecture-as-a-Service" platform
+- **Units** are the core primitive: NodeJS functions created by users within **projects**
+- Each project can contain thousands of units; currently only `api` units are supported (HTTP request/response via `handleRequest(req, res)`)
+- The new `workflow` unit type enables durable multi-step workflows
+- Units are triggered via public trigger URLs: API units at `/api/v1/trigger/{project_id}/...`, workflow units at `/api/v1/trigger/wf/{project_id}/...`
+- Units communicate through the `@sdk` module (injected into the QuickJS runtime); `sdk.call()` currently supports triggering workflow units from any unit type; support for other unit types will be added as they are implemented
+- **Cross-unit type imports**: Units can import types from other units via `import type { ... } from "@units/context.module.unitType.name"`. This is compile-time only (stripped at runtime). Workflow unit's exports follow a strict convention: `Input`, `Output`, and `{PascalCaseHandler}Input`/`{PascalCaseHandler}Output`. Only `export type` / `export interface` are allowed (no value exports besides `export default`). Lint rules enforce this convention before deployment. Every future unit type must have a lintable convention too.
+- The `units/` folder is the **source of truth** for what code is allowed inside units:
+  - `units/runtime-check/` tests core language/Node.js API features
+  - `units/workflow-tests/` tests all Durable Workflow SDK features
+  - Only imports from `node:*` (as listed in `runtime-check/index.ts`), `@sdk`, and `@units/*` (type-only) are permitted
+- Projects are **completely isolated**: every SDK tool is scoped by `project_id` via Redis key-prefix and NATS subject-prefix isolation
+
+---
+
+## 8. Files to Create / Modify
+
+### New files:
+
+- `runtime-compose.yml` -- Redis + NATS services for workflow infrastructure (NATS moved from `compose.yml`)
+- `docs/platform-overview.md` -- Platform documentation
+- `src/routes/workflow.rs` -- Workflow-specific trigger routes (separate from API unit routes)
+- `src/libs/unit_js/modules/sdk.rs` -- Rust host functions for SDK bridge
+- `src/libs/unit_js/scripts/workflow-runtime.js` -- JS workflow context + execution logic
+- `src/services/workflow_engine.rs` -- Core workflow orchestration in Rust
+- `units/workflow-tests/` -- Full test project (structure above)
+- `units/workflow-tests/@sdk.d.ts` -- TypeScript declarations
+
+### Modified files:
+
+- `[compose.yml](compose.yml)` -- Remove NATS service (moved to `runtime-compose.yml`); keep only nginx loadbalancer or remove file if empty
+- `[src/libs/unit_js/modules/mod.rs](src/libs/unit_js/modules/mod.rs)` -- Add `sdk` module registration
+- `[src/libs/unit_js/runner.rs](src/libs/unit_js/runner.rs)` -- Add `run_workflow_handler` function
+- `[src/models/projects.rs](src/models/projects.rs)` -- Add `Workflow` variant to `ProjectUnitType`
+- `[src/routes/mod.rs](src/routes/mod.rs)` -- Register new `/api/v1/trigger/wf/` scope pointing to `workflow.rs` handlers
+- `[src/bin/runtime_worker.rs](src/bin/runtime_worker.rs)` -- Add NATS consumer for workflow wake signals
+- `[src/libs/unit_js/scripts/runtime.js](src/libs/unit_js/scripts/runtime.js)` -- Handle `@sdk` import stripping (already stripped, but ensure `workflow`, `sdk` globals are available)
+
+---
+
+## 9. Implementation Order
+
+1. **Infrastructure**: Create `runtime-compose.yml` with Redis + NATS (moved from compose.yml)
+2. **Documentation**: Create `docs/platform-overview.md`
+3. **Type declarations**: Write `@sdk.d.ts` with workflow interfaces
+4. **Test skeleton**: Create `units/workflow-tests/` project with all test file stubs
+5. **JS runtime**: Write `workflow-runtime.js` (workflow context, step memoization, sleep/promise suspension)
+6. **Rust host functions**: Write `src/libs/unit_js/modules/sdk.rs` (persist step, suspend, state, promise resolution)
+7. **Workflow engine**: Write `src/services/workflow_engine.rs` (start, resume, cancel, timer scheduling)
+8. **Runner integration**: Add `run_workflow_handler` to `runner.rs`, pass Redis/NATS handles
+9. **Route integration**: Create `src/routes/workflow.rs` with separate `/api/v1/trigger/wf/` routes, register in `mod.rs`
+10. **Worker integration**: Add NATS wake consumer to `runtime_worker.rs`
+11. **Unit type**: Add `Workflow` to `ProjectUnitType` enum + DB migration
+12. **Tests**: Fill in all test files with detailed assertions
+13. **Isolation tests**: Write cross-project isolation tests
+
