@@ -546,7 +546,7 @@ async fn execute_workflow(
             // Schedule promise timeout wake via JetStream publish with fire_at
             if suspension_type == "promise" {
                 if let Some(timeout_ms) = config.get("timeout").and_then(|v| v.as_f64()) {
-                    if timeout_ms > 0.0 {
+                    if timeout_ms >= 0.0 {
                         if let Some(js_ctx) = js {
                             let subject = format!("wf.{pid}.{iid}.wake");
                             let fire_at =
