@@ -83,11 +83,13 @@ function __createSeededRng(seedStr) {
 }
 
 function __createDurablePromise(promiseName, wfCtx) {
-  var cached = wfCtx.__promises[promiseName];
   return {
     get: function (opts) {
+      var cached = wfCtx.__promises[promiseName];
       if (cached && cached.status === "resolved") {
-        return Promise.resolve(cached.value);
+        return Promise.resolve(
+          cached.value !== undefined ? JSON.parse(cached.value) : null
+        );
       }
       if (cached && cached.status === "rejected") {
         return Promise.reject(new Error(cached.error || "promise rejected"));
@@ -104,9 +106,12 @@ function __createDurablePromise(promiseName, wfCtx) {
       });
     },
     resolve: function (value) {
-      return Promise.resolve(__baal_resolve_promise(promiseName, JSON.stringify(value)));
+      var valueJson = JSON.stringify(value === undefined ? null : value);
+      wfCtx.__promises[promiseName] = { status: "resolved", value: valueJson };
+      return Promise.resolve(__baal_resolve_promise(promiseName, valueJson));
     },
     reject: function (error) {
+      wfCtx.__promises[promiseName] = { status: "rejected", error: error };
       return Promise.resolve(__baal_reject_promise(promiseName, error));
     },
   };
@@ -115,7 +120,8 @@ function __createDurablePromise(promiseName, wfCtx) {
 function __createDurablePromiseHandle(promiseName) {
   return {
     resolve: function (value) {
-      return Promise.resolve(__baal_resolve_promise(promiseName, JSON.stringify(value)));
+      var valueJson = JSON.stringify(value === undefined ? null : value);
+      return Promise.resolve(__baal_resolve_promise(promiseName, valueJson));
     },
     reject: function (error) {
       return Promise.resolve(__baal_reject_promise(promiseName, error));
@@ -151,10 +157,12 @@ function __createWorkflowContext(wfCtx) {
       }).then(function (result) {
         var resultJson = JSON.stringify(result === undefined ? null : result);
         __baal_persist_step(name, resultJson, optsJson);
+        wfCtx.__steps[name] = { status: "completed", result: resultJson };
         return result;
       }).catch(function (err) {
         var isTerminal = !!(err && err.__isTerminal);
         __baal_persist_step_error(name, err.message || String(err), isTerminal, optsJson);
+        wfCtx.__steps[name] = { status: "failed", error: err.message || String(err), terminal: isTerminal };
         throw err;
       });
     },

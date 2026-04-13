@@ -6,7 +6,7 @@ export type ApproveOutput = { accepted: boolean };
 export type Input = void;
 export type Output = {
   staged: { batch: string };
-  approval: string;
+  approval: string | null;
   finalized: boolean;
 };
 

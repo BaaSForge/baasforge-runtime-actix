@@ -24,23 +24,20 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: baal-runtime-redis
-  #   command: >
-  #     redis-server
-  #     --requirepass 21HHzPvff9yZort
-  #     --appendonly yes
-  #     --appendfsync everysec
-  #   ports:
-  #     - "6379:6379"
-  #   volumes:
-  #     - .dev/redis-data:/data
-  #   logging:
-  #     driver: "json-file"
-  #     options:
-  #       max-size: "10m"
-  #       max-file: "3"
+  redis:
+    image: redis:8.2.1-alpine3.22
+    restart: always
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 1gb
+      --maxmemory-policy allkeys-lru
+      --tcp-keepalive 60
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./.dev/redis_data:/data
 
   loadbalancer:
     image: nginx:stable-alpine3.23-perl
