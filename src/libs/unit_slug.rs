@@ -10,6 +10,68 @@ pub fn is_valid_slug(s: &str) -> bool {
     !s.is_empty() && SLUG_RE.is_match(s)
 }
 
+const DIGIT_WORD: [&str; 10] = [
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+];
+
+/// Converts a filename stem (e.g. workflow JS basename without `.js`) into a slug that satisfies
+/// [`is_valid_slug`]. Separators `_`/`-`/`.`/space split letter groups; each digit becomes a
+/// spelled-out segment so names like `rand-uuidv4` become `rand-uuidv-four`.
+pub fn normalize_filename_stem_to_slug(stem: &str) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut letters = String::new();
+    let mut digits = String::new();
+
+    let flush_letters = |buf: &mut String, parts: &mut Vec<String>| {
+        if !buf.is_empty() {
+            parts.push(buf.clone());
+            buf.clear();
+        }
+    };
+
+    let flush_digits = |buf: &mut String, parts: &mut Vec<String>| {
+        if buf.is_empty() {
+            return;
+        }
+        for ch in buf.chars() {
+            let idx = (ch as u8).saturating_sub(b'0') as usize;
+            if idx < 10 {
+                parts.push(DIGIT_WORD[idx].to_string());
+            }
+        }
+        buf.clear();
+    };
+
+    for c in stem.to_lowercase().chars() {
+        match c {
+            'a'..='z' => {
+                flush_digits(&mut digits, &mut parts);
+                letters.push(c);
+            }
+            '0'..='9' => {
+                flush_letters(&mut letters, &mut parts);
+                digits.push(c);
+            }
+            '_' | '-' | ' ' | '.' => {
+                flush_digits(&mut digits, &mut parts);
+                flush_letters(&mut letters, &mut parts);
+            }
+            _ => {
+                flush_digits(&mut digits, &mut parts);
+                flush_letters(&mut letters, &mut parts);
+            }
+        }
+    }
+    flush_digits(&mut digits, &mut parts);
+    flush_letters(&mut letters, &mut parts);
+
+    if parts.is_empty() {
+        return None;
+    }
+    let out = parts.join("-");
+    is_valid_slug(&out).then_some(out)
+}
+
 /// Builds the canonical **full unit id** (five segments). The four-segment *unit path* is
 /// [`UnitPath`] / everything here except `revision`; see [`crate::models::projects::ProjectUnitRow::id`].
 pub fn compose_unit_id(

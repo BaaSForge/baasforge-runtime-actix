@@ -114,13 +114,21 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         None
     };
 
+    if settings.test_mode {
+        tracing::info!("[test_mode] seeding test entities into database");
+        crate::services::test_seed::seed_test_entities(&pool, &settings);
+        crate::services::test_seed::print_trigger_urls(&settings);
+    }
+
     let app_context = AppContext::new(
-        pool,
+        pool.clone(),
         settings.clone(),
         redis_conn,
         wf_redis,
         nats_client,
     );
+
+    let test_pool = if settings.test_mode { Some(pool) } else { None };
 
     use actix_web::guard;
 
@@ -197,6 +205,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     .bind(("127.0.0.1", port))?
     .run()
     .await?;
+
+    if let Some(pool) = test_pool {
+        crate::services::test_seed::teardown_test_entities(&pool);
+    }
 
     Ok(())
 }

@@ -51,6 +51,24 @@ pub struct Settings {
     /// NATS URL used by the workflow runtime for wake signals (sleep timers, promise resolution).
     /// Separate from the release NATS so workflow infra can be configured independently.
     pub wf_nats_url: Option<String>,
+
+    // -- Test mode --
+
+    /// When true, the server seeds deterministic test entities (project, runtime, release, units)
+    /// on startup and tears them down on shutdown. Requires `APP_ENV=production`.
+    pub test_mode: bool,
+    /// Comma-separated list of `label=path` entries pointing to compiled JS files whose contents
+    /// are injected as unit rows. Example: `runtime-check=units/runtime-check/dist/index.js`.
+    pub test_unit_files: Vec<TestUnitFile>,
+    /// Directory containing compiled workflow JS files to register as workflow units.
+    /// Files are discovered recursively; the path relative to this dir determines the unit slug.
+    pub test_workflow_dir: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestUnitFile {
+    pub label: String,
+    pub path: String,
 }
 
 impl Settings {
@@ -116,6 +134,32 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let test_mode = match env::var("TEST_MODE") {
+            Ok(s) => parse_env_bool(&s).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
+            Err(_) => false,
+        };
+
+        let test_unit_files: Vec<TestUnitFile> = env::var("TEST_UNIT_FILES")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|entry| {
+                        let entry = entry.trim();
+                        let (label, path) = entry.split_once('=')?;
+                        Some(TestUnitFile {
+                            label: label.trim().to_string(),
+                            path: path.trim().to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let test_workflow_dir = env::var("TEST_WORKFLOW_DIR")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Settings {
             port,
             app_environment,
@@ -130,6 +174,9 @@ impl Settings {
             nats_jetstream_consumer_release,
             wf_redis_url,
             wf_nats_url,
+            test_mode,
+            test_unit_files,
+            test_workflow_dir,
         })
     }
 }

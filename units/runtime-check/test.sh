@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# Runtime-check integration test
+# Runtime-check integration test (end-to-end)
 #
-# Builds the TypeScript health-check unit, starts a lightweight trigger server
-# (no DB / Redis / NATS), hits the trigger URL, and prints the response.
+# Builds the TypeScript health-check unit, starts the **real** application
+# server in TEST_MODE, seeds the unit into the database, hits the production
+# trigger URL, and prints the response.
 #
-# The trigger's index.js already runs all tests and produces a full report,
-# so this script simply returns its HTTP output.
+# Requires:
+#   - docker compose up -d   (Redis, NATS, Postgres)
+#   - .env / .env.local with valid DATABASE_URL
 #
 # Usage:
-#   ./units/runtime-check/test.sh                        # from project root
-#   TEST_PORT=4444 ./units/runtime-check/test.sh         # custom port
-#   SKIP_BUILD=1 ./units/runtime-check/test.sh           # skip cargo/npm build
+#   ./units/runtime-check/test.sh
+#   TEST_PORT=4444 ./units/runtime-check/test.sh
+#   SKIP_BUILD=1 ./units/runtime-check/test.sh
 #   HEALTH_CHECK_TIMEOUT=180 ./units/runtime-check/test.sh
 # ---------------------------------------------------------------------------
 set -euo pipefail
@@ -20,7 +22,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PORT="${TEST_PORT:-3333}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-120}"
-TRIGGER_PATH="/api/v1/trigger/00000000-0000-0000-0000-000000000000/test/runtime/check"
+
+TEST_PROJECT_ID="00000000-aaaa-bbbb-cccc-000000000010"
+TRIGGER_PATH="/api/v1/trigger/${TEST_PROJECT_ID}/test/runtime/check"
 BASE_URL="http://127.0.0.1:${PORT}${TRIGGER_PATH}"
 
 SERVER_PID=""
@@ -42,39 +46,46 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
   npx tsc --noEmit false --outDir dist
   echo "    dist/index.js ready"
 
-  echo "==> Building test_trigger binary (release)…"
+  echo "==> Building main server binary (release)…"
   cd "$PROJECT_ROOT"
-  cargo build --bin test_trigger --release 2>&1
+  cargo build --release 2>&1
 else
   echo "==> Skipping build (SKIP_BUILD=1)"
 fi
 
 # ------------------------------------------------------------------
-# 2. Start the trigger server
+# 2. Start the real server in TEST_MODE
 # ------------------------------------------------------------------
-echo "==> Starting trigger server on port ${PORT}…"
-UNIT_JS_FILE="$SCRIPT_DIR/dist/index.js" PORT="$PORT" TRIGGER_PATH="$TRIGGER_PATH" \
-  "$PROJECT_ROOT/target/release/test_trigger" &
+echo "==> Starting server on port ${PORT} (TEST_MODE)…"
+TEST_MODE=1 \
+APP_ENV=production \
+PORT="$PORT" \
+TEST_UNIT_FILES="runtime-check=$SCRIPT_DIR/dist/index.js" \
+  "$PROJECT_ROOT/target/release/baal-runtime-actix" &
 SERVER_PID=$!
 
-for _ in $(seq 1 30); do
-  if curl -sf "http://127.0.0.1:${PORT}/?_t=json" >/dev/null 2>&1; then
+echo "==> Waiting for server to be ready…"
+for _ in $(seq 1 60); do
+  if curl -sf "http://127.0.0.1:${PORT}/api/v1/trigger/${TEST_PROJECT_ID}/test/runtime/check?_t=json" >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
 done
 
 if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-  echo "FATAL: trigger server exited unexpectedly"
+  echo "FATAL: server exited unexpectedly"
   exit 1
 fi
 echo "    server ready (pid $SERVER_PID)"
+
+echo ""
+echo "  TRIGGER URL: $BASE_URL"
+echo ""
 
 # ------------------------------------------------------------------
 # 3. Hit the trigger and write the response to file
 # ------------------------------------------------------------------
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
-echo ""
 echo "==> Running trigger (timeout ${HEALTH_CHECK_TIMEOUT}s)…"
 curl -s --max-time "$HEALTH_CHECK_TIMEOUT" "$BASE_URL" > "$OUTPUT_FILE"
 echo "==> Done. Output written to:"
