@@ -1,7 +1,7 @@
 /**
  * Workflow Integration Test Runner (API unit)
  *
- * An API unit that exercises all 48 workflow tests end-to-end via HTTP.
+ * An API unit that exercises all workflow tests end-to-end via HTTP.
  * When triggered, it starts each workflow through the real trigger endpoints,
  * orchestrates suspend/resume cycles, calls shared handlers, and validates
  * the final results.
@@ -198,6 +198,12 @@ async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
 
         if (suspType === "sleep") {
           await sleep(200);
+        } else if (suspType === "step_retry") {
+          // The JetStream consumer NAKs the wake message with the backoff delay.
+          // Wait at least as long as the declared delayMs so we don't hammer the
+          // status endpoint while the NATS server is holding the NAK'd message.
+          const delayMs: number = statusResp?.meta?.suspended?.delayMs ?? 100;
+          await sleep(Math.min(delayMs + 100, 500));
         } else if (suspType === "promise") {
           if (test.timeoutPromise) {
             await sleep(300);
@@ -982,6 +988,25 @@ function allTests(): TestDef[] {
         { type: "eq", path: "projectA", expected: "00000000-0000-0000-0000-000000000001" },
         { type: "notNull", path: "stepSecret" },
         { type: "notNull", path: "instance" },
+      ],
+    },
+
+    // ---- timers (1) ----
+    // These tests specifically exercise the JetStream durable-timer paths:
+    // sleep (NAK-with-delay on the wake consumer) and step retry backoff
+    // (immediate JetStream publish with fire_at). Both paths must survive
+    // process restarts because the NATS server holds the NAK'd messages.
+    {
+      name: "sleep-then-retry", category: "timers",
+      workflowSlug: "sleep-then-retry",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "notNull", path: "token" },
+        { type: "true", path: "sleptOk" },
+        { type: "eq", path: "attempts", expected: 3 },
+        { type: "eq", path: "result", expected: "done" },
       ],
     },
   ];

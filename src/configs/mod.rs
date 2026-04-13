@@ -51,6 +51,10 @@ pub struct Settings {
     /// NATS URL used by the workflow runtime for wake signals (sleep timers, promise resolution).
     /// Separate from the release NATS so workflow infra can be configured independently.
     pub wf_nats_url: Option<String>,
+    /// JetStream stream name for durable workflow wake timers. Default: `"WF_WAKE"`.
+    pub wf_nats_jetstream_stream: Option<String>,
+    /// Durable pull consumer name shared by all `runtime_worker` replicas. Default: `"wf_wake_consumer"`.
+    pub wf_nats_jetstream_consumer: Option<String>,
 
     // -- Test mode --
 
@@ -133,6 +137,14 @@ impl Settings {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        let wf_nats_jetstream_stream = env::var("WF_NATS_JETSTREAM_STREAM")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let wf_nats_jetstream_consumer = env::var("WF_NATS_JETSTREAM_CONSUMER")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
 
         let test_mode = match env::var("TEST_MODE") {
             Ok(s) => parse_env_bool(&s).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
@@ -174,6 +186,8 @@ impl Settings {
             nats_jetstream_consumer_release,
             wf_redis_url,
             wf_nats_url,
+            wf_nats_jetstream_stream,
+            wf_nats_jetstream_consumer,
             test_mode,
             test_unit_files,
             test_workflow_dir,

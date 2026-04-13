@@ -121,6 +121,7 @@ async fn do_start_workflow(
     match workflow_engine::start_workflow(
         &wf_redis,
         &ctx.nats_client,
+        &ctx.wf_jetstream,
         &project_id_str,
         unit_path,
         &instance_id,
@@ -159,6 +160,7 @@ async fn do_call_handler(
     match workflow_engine::call_handler(
         &wf_redis,
         &ctx.nats_client,
+        &ctx.wf_jetstream,
         &project_id_str,
         instance_id,
         handler_name,
@@ -253,6 +255,9 @@ async fn do_get_result(ctx: &AppContext, project_id: Uuid, instance_id: &str) ->
                         "message": "workflow has not completed yet",
                     }));
                 }
+                // IMPORTANT: this is a synchronous sleep, so it will keep a thread open,
+                // don't use it for long sleeps!
+                // TODO: replace poll mechanism with something async
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(std::time::Duration::from_secs(2));
             }

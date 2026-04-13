@@ -4,6 +4,8 @@ const POLYFILLS_JS: &str = include_str!("../scripts/polyfills.js");
 
 fn host_sleep_sync(_ctx: Ctx<'_>, ms: f64) -> rquickjs::Result<()> {
     if ms > 0.0 {
+        // IMPORTANT: this is a synchronous sleep, so it will keep a thread open,
+        // don't use it for long sleeps!
         std::thread::sleep(std::time::Duration::from_millis(ms as u64));
     }
     Ok(())

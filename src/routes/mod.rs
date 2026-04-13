@@ -17,8 +17,10 @@ pub struct AppContext {
     pub redis_conn: SharedRedisConn,
     /// Dedicated Redis connection for workflow state (separate from cache Redis).
     pub wf_redis: Option<SharedRedis>,
-    /// NATS client for workflow wake signals.
+    /// NATS client for workflow wake signals (used for immediate publishes).
     pub nats_client: Option<async_nats::Client>,
+    /// JetStream context for durable workflow wake timer publishes.
+    pub wf_jetstream: Option<async_nats::jetstream::Context>,
 }
 
 impl AppContext {
@@ -28,6 +30,7 @@ impl AppContext {
         redis_conn: SharedRedisConn,
         wf_redis: Option<SharedRedis>,
         nats_client: Option<async_nats::Client>,
+        wf_jetstream: Option<async_nats::jetstream::Context>,
     ) -> Self {
         Self {
             pool,
@@ -35,6 +38,7 @@ impl AppContext {
             redis_conn,
             wf_redis,
             nats_client,
+            wf_jetstream,
         }
     }
 }
@@ -114,7 +118,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    // In test mode, run the NATS wake consumer in-process (normally handled
+    let wf_jetstream: Option<async_nats::jetstream::Context> =
+        nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
+
+    // In test mode, run the JetStream wake consumer in-process (normally handled
     // by the separate runtime_worker binary).
     if settings.test_mode {
         if let (Some(wr), Some(nc)) = (&wf_redis, &nats_client) {
@@ -122,10 +129,27 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let nc = nc.clone();
             let p = pool.clone();
             let rc = redis_conn.clone();
-            tracing::info!("[test_mode] starting inline NATS wake consumer");
+            let stream_name = settings
+                .wf_nats_jetstream_stream
+                .as_deref()
+                .unwrap_or("WF_WAKE")
+                .to_string();
+            let consumer_name = settings
+                .wf_nats_jetstream_consumer
+                .as_deref()
+                .unwrap_or("wf_wake_consumer")
+                .to_string();
+            tracing::info!("[test_mode] starting inline JetStream wake consumer");
             tokio::spawn(async move {
-                if let Err(e) =
-                    crate::services::runtime_worker::runner::run_wake_consumer(wr, nc, p, rc).await
+                if let Err(e) = crate::services::runtime_worker::runner::run_wake_consumer(
+                    wr,
+                    nc,
+                    p,
+                    rc,
+                    &stream_name,
+                    &consumer_name,
+                )
+                .await
                 {
                     tracing::error!(error = %e, "[test_mode] wake consumer exited with error");
                 }
@@ -143,6 +167,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         redis_conn,
         wf_redis,
         nats_client,
+        wf_jetstream,
     );
 
     let test_pool = if settings.test_mode { Some(pool) } else { None };

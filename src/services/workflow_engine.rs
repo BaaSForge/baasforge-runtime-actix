@@ -1,3 +1,5 @@
+use async_nats::jetstream;
+use async_nats::jetstream::stream;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,6 +14,23 @@ pub type SharedRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
 
 fn redis_key(project_id: &str, instance_id: &str, suffix: &str) -> String {
     format!("wf:{project_id}:{instance_id}:{suffix}")
+}
+
+/// Get or create the durable JetStream stream that captures all workflow wake subjects.
+/// The stream subject `wf.*.*.wake` matches every wake publish, including immediate
+/// core-NATS publishes (promise resolved, retry exhausted) which are auto-captured.
+pub async fn ensure_wf_wake_stream(
+    client: &async_nats::Client,
+    stream_name: &str,
+) -> Result<jetstream::stream::Stream, String> {
+    let js = jetstream::new(client.clone());
+    js.get_or_create_stream(stream::Config {
+        name: stream_name.to_string(),
+        subjects: vec!["wf.*.*.wake".to_string()],
+        ..Default::default()
+    })
+    .await
+    .map_err(|e| format!("JetStream stream setup failed: {e}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +49,7 @@ pub struct WorkflowMeta {
 pub async fn start_workflow(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
     project_id: &str,
     unit_path: &str,
     instance_id: &str,
@@ -71,7 +91,7 @@ pub async fn start_workflow(
         let _: () = conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
     }
 
-    execute_workflow(redis, nats, project_id, instance_id, input_json, source, None, None).await?;
+    execute_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await?;
 
     Ok(instance_id.to_string())
 }
@@ -80,6 +100,7 @@ pub async fn start_workflow(
 pub async fn resume_workflow(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
     project_id: &str,
     instance_id: &str,
     source: &str,
@@ -98,7 +119,7 @@ pub async fn resume_workflow(
         return Ok(());
     }
 
-    execute_workflow(redis, nats, project_id, instance_id, &meta.input, source, None, None).await?;
+    execute_workflow(redis, nats, js, project_id, instance_id, &meta.input, source, None, None).await?;
     Ok(())
 }
 
@@ -106,6 +127,7 @@ pub async fn resume_workflow(
 pub async fn call_handler(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
     project_id: &str,
     instance_id: &str,
     handler_name: &str,
@@ -115,6 +137,7 @@ pub async fn call_handler(
     let handler_result = execute_workflow(
         redis,
         nats,
+        js,
         project_id,
         instance_id,
         "",
@@ -127,7 +150,7 @@ pub async fn call_handler(
     // After the handler (which may have resolved a durable promise), eagerly
     // resume the main workflow so the caller sees updated state immediately
     // without waiting for the async NATS wake roundtrip.
-    let _ = resume_workflow(redis, nats, project_id, instance_id, source).await;
+    let _ = resume_workflow(redis, nats, js, project_id, instance_id, source).await;
 
     Ok(handler_result)
 }
@@ -311,6 +334,7 @@ async fn load_execution_context(
 async fn execute_workflow(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
     project_id: &str,
     instance_id: &str,
     input_json: &str,
@@ -415,17 +439,18 @@ async fn execute_workflow(
                     let _: () = conn.set(&suspended_key, &suspended_val).await.map_err(|e| e.to_string())?;
                     drop(conn);
 
-                    if let Some(nats_client) = nats {
+                    if let Some(js_ctx) = js {
                         let subject = format!("wf.{pid}.{iid}.wake");
+                        let fire_at = chrono::Utc::now().timestamp_millis() + delay_ms as i64;
                         let payload = serde_json::json!({
                             "reason": "step_retry",
                             "step": name,
+                            "fire_at": fire_at,
                         }).to_string();
-                        let nats_client = nats_client.clone();
-                        tokio::spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                            let _ = nats_client.publish(subject, bytes::Bytes::from(payload)).await;
-                        });
+                        js_ctx
+                            .publish(subject, bytes::Bytes::from(payload))
+                            .await
+                            .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
                     }
 
                     return Ok(serde_json::json!({
@@ -495,58 +520,47 @@ async fn execute_workflow(
             }
             drop(conn);
 
-            // Schedule sleep wake via NATS delayed publish
+            // Schedule sleep wake via JetStream publish with fire_at
             if suspension_type == "sleep" {
                 let duration_ms = config
                     .get("durationMs")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.0) as u64;
 
-                if let Some(nats_client) = nats {
+                if let Some(js_ctx) = js {
                     let subject = format!("wf.{pid}.{iid}.wake");
+                    let fire_at = chrono::Utc::now().timestamp_millis() + duration_ms as i64;
                     let payload = serde_json::json!({
                         "reason": "sleep_elapsed",
                         "sleep": name,
+                        "fire_at": fire_at,
                     })
                     .to_string();
-
-                    let nats_client = nats_client.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(duration_ms))
-                            .await;
-                        if let Err(e) =
-                            nats_client.publish(subject, bytes::Bytes::from(payload)).await
-                        {
-                            tracing::error!(error = %e, "failed to publish sleep wake signal");
-                        }
-                    });
+                    js_ctx
+                        .publish(subject, bytes::Bytes::from(payload))
+                        .await
+                        .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
                 }
             }
 
-            // Schedule promise timeout wake via NATS delayed publish
+            // Schedule promise timeout wake via JetStream publish with fire_at
             if suspension_type == "promise" {
                 if let Some(timeout_ms) = config.get("timeout").and_then(|v| v.as_f64()) {
                     if timeout_ms > 0.0 {
-                        if let Some(nats_client) = nats {
-                            let nats_client = nats_client.clone();
-                            let pid_c = pid.clone();
-                            let iid_c = iid.clone();
-                            let promise_name = name.clone();
-                            tokio::spawn(async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(
-                                    timeout_ms as u64,
-                                ))
-                                .await;
-                                let subject = format!("wf.{pid_c}.{iid_c}.wake");
-                                let payload = serde_json::json!({
-                                    "reason": "promise_timed_out",
-                                    "promise": promise_name,
-                                })
-                                .to_string();
-                                let _ = nats_client
-                                    .publish(subject, bytes::Bytes::from(payload))
-                                    .await;
-                            });
+                        if let Some(js_ctx) = js {
+                            let subject = format!("wf.{pid}.{iid}.wake");
+                            let fire_at =
+                                chrono::Utc::now().timestamp_millis() + timeout_ms as i64;
+                            let payload = serde_json::json!({
+                                "reason": "promise_timed_out",
+                                "promise": name,
+                                "fire_at": fire_at,
+                            })
+                            .to_string();
+                            js_ctx
+                                .publish(subject, bytes::Bytes::from(payload))
+                                .await
+                                .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
                         }
                     }
                 }

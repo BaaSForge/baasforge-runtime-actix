@@ -11,6 +11,8 @@
     var args = [].slice.call(arguments, 2);
     var ms = Number(_delay) || 0;
     if (ms > 0 && typeof __baal_sleep_sync === "function") {
+      // IMPORTANT: this is a synchronous sleep, so it will keep a thread open,
+      // don't use it for long sleeps!
       __baal_sleep_sync(ms);
     }
     queueMicrotask(function () {

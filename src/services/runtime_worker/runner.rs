@@ -1,9 +1,11 @@
+use async_nats::jetstream;
 use crate::configs::Settings;
 use crate::database::establish_pool;
 use crate::init_tracing;
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::load_unit_for_path_production;
 use crate::services::workflow_engine;
+use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -75,11 +77,23 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let nats = nats.clone();
         let pool = pool.clone();
         let redis_conn_for_load = redis_conn.clone();
+        let stream_name = settings
+            .wf_nats_jetstream_stream
+            .as_deref()
+            .unwrap_or("WF_WAKE")
+            .to_string();
+        let consumer_name = settings
+            .wf_nats_jetstream_consumer
+            .as_deref()
+            .unwrap_or("wf_wake_consumer")
+            .to_string();
 
-        info!("[workflow_wake] starting NATS consumer for wf.*.*.wake");
+        info!("[workflow_wake] starting JetStream pull consumer for wf.*.*.wake");
 
         tokio::spawn(async move {
-            if let Err(e) = run_wake_consumer(wf_redis, nats, pool, redis_conn_for_load).await {
+            if let Err(e) =
+                run_wake_consumer(wf_redis, nats, pool, redis_conn_for_load, &stream_name, &consumer_name).await
+            {
                 error!(error = %e, "[workflow_wake] consumer exited with error");
             }
         });
@@ -98,51 +112,111 @@ pub async fn run_wake_consumer(
     nats: async_nats::Client,
     pool: crate::database::DbPool,
     redis_conn: crate::database::SharedRedisConn,
+    stream_name: &str,
+    consumer_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use futures::StreamExt;
+    let js = jetstream::new(nats.clone());
 
-    let mut subscriber = nats.subscribe("wf.*.*.wake".to_string()).await?;
-    info!("[workflow_wake] subscribed to wf.*.*.wake");
+    let stream = js
+        .get_or_create_stream(async_nats::jetstream::stream::Config {
+            name: stream_name.to_string(),
+            subjects: vec!["wf.*.*.wake".to_string()],
+            ..Default::default()
+        })
+        .await?;
 
-    while let Some(msg) = subscriber.next().await {
-        let subject = msg.subject.to_string();
+    let consumer = stream
+        .get_or_create_consumer(
+            consumer_name,
+            async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some(consumer_name.to_string()),
+                filter_subject: "wf.*.*.wake".to_string(),
+                ack_wait: std::time::Duration::from_secs(30),
+                ..Default::default()
+            },
+        )
+        .await?;
 
-        // Parse subject: wf.{project_id}.{instance_id}.wake
-        let parts: Vec<&str> = subject.split('.').collect();
-        if parts.len() != 4 {
-            warn!(subject = %subject, "[workflow_wake] unexpected subject format");
-            continue;
-        }
-        let project_id = parts[1].to_string();
-        let instance_id = parts[2].to_string();
-        let payload: Option<serde_json::Value> =
-            serde_json::from_slice(&msg.payload).ok();
+    info!(
+        stream = %stream_name,
+        consumer = %consumer_name,
+        "[workflow_wake] JetStream pull consumer ready"
+    );
 
-        let wf_redis = wf_redis.clone();
-        let nats_client = Some(nats.clone());
-        let pool = pool.clone();
-        let redis_conn = redis_conn.clone();
+    let mut messages = consumer.messages().await?;
 
-        tokio::spawn(async move {
-            if let Err(e) = handle_wake(
-                &wf_redis,
-                &nats_client,
-                &pool,
-                &redis_conn,
-                &project_id,
-                &instance_id,
-                payload.as_ref(),
-            )
-            .await
-            {
-                error!(
-                    project_id = %project_id,
-                    instance_id = %instance_id,
-                    error = %e,
-                    "[workflow_wake] resume failed"
-                );
+    while let Some(result) = messages.next().await {
+        match result {
+            Ok(msg) => {
+                let subject = msg.subject.to_string();
+
+                // Parse subject: wf.{project_id}.{instance_id}.wake
+                let parts: Vec<&str> = subject.split('.').collect();
+                if parts.len() != 4 {
+                    warn!(subject = %subject, "[workflow_wake] unexpected subject format");
+                    let _ = msg.ack().await;
+                    continue;
+                }
+                let project_id = parts[1].to_string();
+                let instance_id = parts[2].to_string();
+
+                let payload: Option<serde_json::Value> =
+                    serde_json::from_slice(&msg.payload).ok();
+
+                // Check fire_at: if the message isn't due yet, NAK with remaining delay
+                // so the server redelivers it when the timer expires.
+                let fire_at = payload
+                    .as_ref()
+                    .and_then(|p| p.get("fire_at"))
+                    .and_then(|v| v.as_i64());
+
+                if let Some(fire_at_ms) = fire_at {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let remaining = fire_at_ms - now_ms;
+                    if remaining > 0 {
+                        let delay = std::time::Duration::from_millis(remaining as u64);
+                        if let Err(e) = msg
+                            .ack_with(async_nats::jetstream::AckKind::Nak(Some(delay)))
+                            .await
+                        {
+                            error!(error = %e, "[workflow_wake] nak_with_delay failed");
+                        }
+                        continue;
+                    }
+                }
+
+                let wf_redis = wf_redis.clone();
+                let nats_client = Some(nats.clone());
+                let pool = pool.clone();
+                let redis_conn = redis_conn.clone();
+
+                if let Err(e) = handle_wake(
+                    &wf_redis,
+                    &nats_client,
+                    &pool,
+                    &redis_conn,
+                    &project_id,
+                    &instance_id,
+                    payload.as_ref(),
+                )
+                .await
+                {
+                    error!(
+                        project_id = %project_id,
+                        instance_id = %instance_id,
+                        error = %e,
+                        "[workflow_wake] resume failed"
+                    );
+                }
+
+                if let Err(e) = msg.ack().await {
+                    error!(error = %e, "[workflow_wake] ack failed");
+                }
             }
-        });
+            Err(e) => {
+                error!(error = %e, "[workflow_wake] consumer stream error");
+            }
+        }
     }
 
     Ok(())
@@ -251,7 +325,10 @@ async fn handle_wake(
         .ok_or_else(|| "workflow unit has no compiled code".to_string())?
         .to_string();
 
-    workflow_engine::resume_workflow(wf_redis, nats_client, project_id, instance_id, &source)
+    let js = nats_client
+        .as_ref()
+        .map(|c| async_nats::jetstream::new(c.clone()));
+    workflow_engine::resume_workflow(wf_redis, nats_client, &js, project_id, instance_id, &source)
         .await?;
 
     Ok(())

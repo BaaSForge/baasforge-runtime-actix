@@ -345,6 +345,9 @@ fn host_call<'js>(ctx: Ctx<'js>, unit_path: String, data_json: String) -> rquick
                     return Ok(Some(raw));
                 }
                 drop(conn);
+                // IMPORTANT: this is a synchronous sleep, so it will keep a thread open,
+                // don't use it for long sleeps!
+                // TODO: replace poll mechanism with something async
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 delay_ms = (delay_ms * 2).min(2000);
                 conn = hctx.redis.lock().await;
