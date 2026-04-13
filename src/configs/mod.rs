@@ -42,6 +42,15 @@ pub struct Settings {
     pub nats_jetstream_stream_release: Option<String>,
     /// Durable pull consumer name shared by all `release_listener` replicas (queue-style load balancing).
     pub nats_jetstream_consumer_release: Option<String>,
+
+    // -- Workflow runtime infrastructure --
+
+    /// Dedicated Redis URL for workflow state persistence (step results, promises, timers).
+    /// Separate from the cache Redis so workflow durability is independent of cache config.
+    pub wf_redis_url: Option<String>,
+    /// NATS URL used by the workflow runtime for wake signals (sleep timers, promise resolution).
+    /// Separate from the release NATS so workflow infra can be configured independently.
+    pub wf_nats_url: Option<String>,
 }
 
 impl Settings {
@@ -98,6 +107,15 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let wf_redis_url = env::var("WF_REDIS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let wf_nats_url = env::var("WF_NATS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Settings {
             port,
             app_environment,
@@ -110,6 +128,8 @@ impl Settings {
             nats_subject_release,
             nats_jetstream_stream_release,
             nats_jetstream_consumer_release,
+            wf_redis_url,
+            wf_nats_url,
         })
     }
 }

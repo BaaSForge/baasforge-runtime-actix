@@ -1,7 +1,9 @@
 pub mod unit;
+pub mod workflow;
 
 use crate::configs::Settings;
 use crate::database::{establish_pool, DbPool, SharedRedisConn};
+use crate::services::workflow_engine::SharedRedis;
 use actix_web::Result;
 use actix_web::web;
 use std::error::Error;
@@ -13,6 +15,10 @@ pub struct AppContext {
     pub pool: DbPool,
     pub settings: Settings,
     pub redis_conn: SharedRedisConn,
+    /// Dedicated Redis connection for workflow state (separate from cache Redis).
+    pub wf_redis: Option<SharedRedis>,
+    /// NATS client for workflow wake signals.
+    pub nats_client: Option<async_nats::Client>,
 }
 
 impl AppContext {
@@ -20,11 +26,15 @@ impl AppContext {
         pool: DbPool,
         settings: Settings,
         redis_conn: SharedRedisConn,
+        wf_redis: Option<SharedRedis>,
+        nats_client: Option<async_nats::Client>,
     ) -> Self {
         Self {
             pool,
             settings,
             redis_conn,
+            wf_redis,
+            nats_client,
         }
     }
 }
@@ -66,10 +76,50 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             }
         }
     };
+    let wf_redis: Option<SharedRedis> = if let Some(url) = &settings.wf_redis_url {
+        match redis::Client::open(url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    tracing::info!("[wf_redis] workflow Redis connected");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[wf_redis] connection failed, workflows disabled");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "[wf_redis] client open failed, workflows disabled");
+                None
+            }
+        }
+    } else {
+        tracing::info!("[wf_redis] WF_REDIS_URL not set, workflows disabled");
+        None
+    };
+
+    let nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
+        match async_nats::connect(url).await {
+            Ok(client) => {
+                tracing::info!("[nats_wf] connected for workflow signals");
+                Some(client)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "[nats_wf] connection failed, workflow timers disabled");
+                None
+            }
+        }
+    } else {
+        tracing::info!("[nats_wf] NATS_WF_URL not set, workflow timers disabled");
+        None
+    };
+
     let app_context = AppContext::new(
         pool,
         settings.clone(),
         redis_conn,
+        wf_redis,
+        nats_client,
     );
 
     use actix_web::guard;
@@ -77,6 +127,51 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(app_context.clone()))
+            .service(
+                web::scope("/api/v1/trigger/wf")
+                    // -- Stage routes (must be registered first so `/stage/` is not swallowed by the production catch-all) --
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/handlers/{handler_name}",
+                        web::post().to(workflow::call_shared_handler_stage),
+                    )
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/status",
+                        web::get().to(workflow::get_workflow_status_stage),
+                    )
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/cancel",
+                        web::post().to(workflow::cancel_workflow_stage),
+                    )
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/result",
+                        web::get().to(workflow::get_workflow_result_stage),
+                    )
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{context_slug}/{module_slug}/{workflow_name_slug}",
+                        web::post().to(workflow::start_workflow_stage),
+                    )
+                    // -- Production routes --
+                    .route(
+                        "/{project_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/handlers/{handler_name}",
+                        web::post().to(workflow::call_shared_handler_production),
+                    )
+                    .route(
+                        "/{project_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/status",
+                        web::get().to(workflow::get_workflow_status_production),
+                    )
+                    .route(
+                        "/{project_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/cancel",
+                        web::post().to(workflow::cancel_workflow_production),
+                    )
+                    .route(
+                        "/{project_id}/{context_slug}/{module_slug}/{workflow_name_slug}/{instance_id}/result",
+                        web::get().to(workflow::get_workflow_result_production),
+                    )
+                    .route(
+                        "/{project_id}/{context_slug}/{module_slug}/{workflow_name_slug}",
+                        web::post().to(workflow::start_workflow_production),
+                    ),
+            )
             .service(
                 web::scope("/api/v1/trigger")
                     .service(

@@ -1,0 +1,9 @@
+{
+  "name": "@baal/workflow-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Source-of-truth tests for Durable Workflow SDK features",
+  "devDependencies": {
+    "@types/node": "^25.6.0"
+  }
+}

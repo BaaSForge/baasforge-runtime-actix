@@ -452,6 +452,7 @@ async fn load_unit_for_path_with_release(
 
 /// Loads the project’s live **production** release, then resolves `unit_path` via that release’s
 /// [`UnitsMetadata::combined_unit_ids`] before cache/DB (see module docs).
+/// TODO: make this performant! it's not optimized as it loads all units.
 pub async fn load_unit_for_path_production(
     pool: &DbPool,
     redis: &SharedRedisConn,

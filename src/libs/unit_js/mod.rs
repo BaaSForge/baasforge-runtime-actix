@@ -5,6 +5,7 @@
 
 pub mod modules;
 pub mod types;
+pub mod workflow_runner;
 
 mod error;
 mod runner;
