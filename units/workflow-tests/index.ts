@@ -1361,7 +1361,12 @@ function allEndpointTests(): EndpointTestDef[] {
           throw new Error(`signal.code mismatch: ${JSON.stringify(result?.signal)}`);
       },
     },
+
   ];
+  // Note: WebSocket tests (endpoint_ws) are intentionally absent here.
+  // They are run by ws-tests.mjs, a standalone Node.js script, because the
+  // QuickJS API runner is synchronous and cannot drive a real WebSocket event
+  // loop.  test.sh runs ws-tests.mjs after this suite and merges the reports.
 }
 
 // ---------------------------------------------------------------------------
