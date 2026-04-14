@@ -7,6 +7,13 @@ export type Output = {
   terminalInvocations: number;
 };
 
+// NOTE(ctx-set-in-failing-step): The invocation counter is incremented via ctx.set
+// inside a step closure that always throws TerminalError. This test is valid only if
+// ctx.set writes persist even when the enclosing step closure throws. If writes are
+// rolled back on failure the counter reads 0 after the catch, making the check
+// `terminalInvocations: 1` fail — masking rather than catching a retry bug.
+// Additionally, if TerminalError does NOT suppress retries, each retry increments
+// the counter, so a value > 1 would correctly indicate the bug.
 export default workflow(async (ctx, _input: Input): Promise<Output> => {
   void sdk;
 
