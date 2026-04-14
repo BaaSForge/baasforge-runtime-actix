@@ -1,3 +1,41 @@
+# Revising killers features document based on implemented units:
+
+check the document @docs/0. killers-features.md and answer this questions:
+
+we have developed workflow units just like Temporal and others, you can see it's test at @units/workflow-tests to figure out it's capabilities
+
+now I want to plan adding new units, but I need to first make sure we don't create new units unless it helps users and brings new powers which can't be done by the current unit types we already have
+
+so check the document and revise it
+
+at the end of that document clearly tell what kind of units can help user and bring new capabilities, and also write some codes
+
+IMPORTANT: your explanation is going to be used as revised version of @docs/0. killers-features.md so make sure you don't miss anything which is already in @docs/0. killers-features.md doc, that's our road map, and I just need to make sure it's chosen units carefully, thats it
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Creating new units prompt:
 
 take a look at @docs/killers-features.md 
 
