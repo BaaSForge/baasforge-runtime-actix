@@ -18,11 +18,11 @@ todos:
     content: Replace host_call polling loop in sdk.rs with NATS subscription wait on wf.events.{project_id}.workflow.{instance_id}
     status: pending
   - id: fix-settimeout-polyfill
-    content: Remove std::thread::sleep from setTimeout polyfill (Cloudflare model - ignore delay, execute as microtask). Add comments explaining why.
-    status: pending
+    content: Keep __baal_sleep_sync in setTimeout; replace the old comment with an accurate explanation of the QuickJS execution model vs. the Cloudflare model.
+    status: completed
   - id: check-tests-after-settimeout
-    content: "TODO: Check if removing setTimeout delay breaks any existing tests (especially timer-related workflow tests)"
-    status: pending
+    content: "Verified: removing the sleep broke 9 tests (sleep, retry, promise-timeout, timers) because the test-harness polling loop relies on real wall-clock delays via setTimeout. __baal_sleep_sync must stay."
+    status: completed
 isProject: false
 ---
 

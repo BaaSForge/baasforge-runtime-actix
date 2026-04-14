@@ -1,5 +1,6 @@
 pub mod unit;
 pub mod workflow;
+pub mod ws;
 
 use crate::configs::Settings;
 use crate::database::{establish_pool, DbPool, SharedRedisConn};
@@ -177,6 +178,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(app_context.clone()))
+            .route(
+                "/api/v1/ws/{project_id}",
+                web::get().to(ws::ws_project_events),
+            )
             .service(
                 web::scope("/api/v1/trigger/wf")
                     // -- Stage routes (must be registered first so `/stage/` is not swallowed by the production catch-all) --

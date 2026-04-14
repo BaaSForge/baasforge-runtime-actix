@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use rquickjs::{Ctx, Exception, Value, function::Func};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -293,7 +294,6 @@ fn host_call<'js>(ctx: Ctx<'js>, unit_path: String, data_json: String) -> rquick
 
             let callee_instance_id = crate::libs::ids::new_uuid().to_string();
             let meta_key = redis_key(&project_id, &callee_instance_id, "meta");
-            let result_key = redis_key(&project_id, &callee_instance_id, "result");
 
             let meta = serde_json::json!({
                 "name": unit_path,
@@ -312,46 +312,78 @@ fn host_call<'js>(ctx: Ctx<'js>, unit_path: String, data_json: String) -> rquick
                 .await
                 .map_err(|e| format!("redis SET meta failed: {e}"))?;
 
+            drop(conn);
+
             if let Some(nats) = &hctx.nats {
-                let subject = format!("wf.{project_id}.{callee_instance_id}.start");
-                let payload = serde_json::json!({
+                // Subscribe BEFORE publishing start to avoid a race where the
+                // workflow completes before we have a subscriber in place.
+                let event_subject =
+                    format!("wf.events.{project_id}.workflow.{callee_instance_id}");
+                let mut sub = nats
+                    .subscribe(event_subject)
+                    .await
+                    .map_err(|e| format!("sdk.call: NATS subscribe failed: {e}"))?;
+
+                let start_subject = format!("wf.{project_id}.{callee_instance_id}.start");
+                let start_payload = serde_json::json!({
                     "unitPath": unit_path,
                     "instanceId": callee_instance_id,
                     "input": data_json,
                 })
                 .to_string();
-                nats.publish(subject, bytes::Bytes::from(payload))
+                nats.publish(start_subject, bytes::Bytes::from(start_payload))
                     .await
                     .map_err(|e| format!("nats publish start failed: {e}"))?;
+
+                // Wait for workflow.completed or workflow.failed event (30s timeout)
+                let timeout_result = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    async {
+                        while let Some(msg) = sub.next().await {
+                            let Ok(payload_str) = std::str::from_utf8(&msg.payload) else {
+                                continue;
+                            };
+                            let Ok(evt) =
+                                serde_json::from_str::<serde_json::Value>(payload_str)
+                            else {
+                                continue;
+                            };
+                            match evt.get("event").and_then(|v| v.as_str()) {
+                                Some("workflow.completed") => {
+                                    let result = evt
+                                        .get("result")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_owned());
+                                    return Ok(result);
+                                }
+                                Some("workflow.failed") => {
+                                    let err = evt
+                                        .get("error")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("unknown error")
+                                        .to_owned();
+                                    return Err(format!(
+                                        "sdk.call: callee workflow failed: {err}"
+                                    ));
+                                }
+                                _ => {}
+                            }
+                        }
+                        Err(format!(
+                            "sdk.call: NATS subscription ended unexpectedly for '{unit_path}'"
+                        ))
+                    },
+                )
+                .await
+                .map_err(|_| {
+                    format!("sdk.call: workflow '{unit_path}' did not complete within 30s")
+                })??;
+
+                return Ok(timeout_result);
             }
 
-            // Poll for result (with backoff, max ~30s)
-            let mut delay_ms = 50u64;
-            let max_wait = std::time::Duration::from_secs(30);
-            let start = std::time::Instant::now();
-            loop {
-                if start.elapsed() > max_wait {
-                    return Err(format!(
-                        "sdk.call: workflow '{}' did not complete within 30s",
-                        unit_path
-                    ));
-                }
-                let result: Option<String> = redis::cmd("GET")
-                    .arg(&result_key)
-                    .query_async(&mut *conn)
-                    .await
-                    .map_err(|e| format!("redis GET result failed: {e}"))?;
-                if let Some(raw) = result {
-                    return Ok(Some(raw));
-                }
-                drop(conn);
-                // IMPORTANT: this is a synchronous sleep, so it will keep a thread open,
-                // don't use it for long sleeps!
-                // TODO: replace poll mechanism with something async
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                delay_ms = (delay_ms * 2).min(2000);
-                conn = hctx.redis.lock().await;
-            }
+            // NATS not configured — trigger sent but result cannot be awaited
+            Ok(None)
         })
     });
     match res {

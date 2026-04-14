@@ -234,37 +234,22 @@ async fn do_get_result(ctx: &AppContext, project_id: Uuid, instance_id: &str) ->
     };
 
     let project_id_str = project_id.to_string();
-    let start = std::time::Instant::now();
-    let max_wait = std::time::Duration::from_secs(30);
-    let mut delay = std::time::Duration::from_millis(100);
 
-    loop {
-        match workflow_engine::get_workflow_result(&wf_redis, &project_id_str, instance_id).await {
-            Ok(Some(result)) => {
-                let val: serde_json::Value =
-                    serde_json::from_str(&result).unwrap_or(json!(result));
-                return HttpResponse::Ok().json(json!({
-                    "status": "completed",
-                    "result": val,
-                }));
-            }
-            Ok(None) => {
-                if start.elapsed() > max_wait {
-                    return HttpResponse::Ok().json(json!({
-                        "status": "pending",
-                        "message": "workflow has not completed yet",
-                    }));
-                }
-                // IMPORTANT: this is a synchronous sleep, so it will keep a thread open,
-                // don't use it for long sleeps!
-                // TODO: replace poll mechanism with something async
-                tokio::time::sleep(delay).await;
-                delay = (delay * 2).min(std::time::Duration::from_secs(2));
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "workflow result error");
-                return HttpResponse::InternalServerError().json(api_error(&e, json!({})));
-            }
+    match workflow_engine::get_workflow_result(&wf_redis, &project_id_str, instance_id).await {
+        Ok(Some(result)) => {
+            let val: serde_json::Value = serde_json::from_str(&result).unwrap_or(json!(result));
+            HttpResponse::Ok().json(json!({
+                "status": "completed",
+                "result": val,
+            }))
+        }
+        Ok(None) => HttpResponse::Accepted().json(json!({
+            "status": "pending",
+            "message": "workflow has not completed yet",
+        })),
+        Err(e) => {
+            tracing::error!(error = %e, "workflow result error");
+            HttpResponse::InternalServerError().json(api_error(&e, json!({})))
         }
     }
 }

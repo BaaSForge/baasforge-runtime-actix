@@ -92,6 +92,16 @@ pub async fn start_workflow(
         let _: () = conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
     }
 
+    publish_wf_event(
+        nats,
+        project_id,
+        instance_id,
+        "workflow.started",
+        unit_path,
+        serde_json::json!({ "input": input_json }),
+    )
+    .await;
+
     execute_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await?;
 
     Ok(instance_id.to_string())
@@ -286,6 +296,39 @@ fn duration_to_ms(val: Option<&serde_json::Value>) -> Option<f64> {
     None
 }
 
+/// Publish a lifecycle event to core NATS for real-time broadcasting.
+/// Subject: `wf.events.{project_id}.workflow.{instance_id}`
+/// Non-fatal: publish errors are logged, not propagated.
+async fn publish_wf_event(
+    nats: &Option<async_nats::Client>,
+    project_id: &str,
+    instance_id: &str,
+    event_type: &str,
+    unit_path: &str,
+    extra: serde_json::Value,
+) {
+    let Some(nats_client) = nats else { return };
+    let subject = format!("wf.events.{project_id}.workflow.{instance_id}");
+    let mut payload = serde_json::json!({
+        "event": event_type,
+        "projectId": project_id,
+        "instanceId": instance_id,
+        "unitPath": unit_path,
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    });
+    if let serde_json::Value::Object(extras) = extra
+        && let serde_json::Value::Object(ref mut obj) = payload
+    {
+        obj.extend(extras);
+    }
+    if let Err(e) = nats_client
+        .publish(subject, bytes::Bytes::from(payload.to_string()))
+        .await
+    {
+        tracing::warn!(error = %e, "publish_wf_event failed");
+    }
+}
+
 // -- Internal helpers --
 
 /// Load all step/sleep/promise state from Redis for replay.
@@ -380,9 +423,11 @@ async fn execute_workflow(
                 .await
                 .map_err(|e| e.to_string())?;
 
+            let mut unit_path = String::new();
             if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
                 && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
             {
+                unit_path = meta.name.clone();
                 meta.status = "completed".to_string();
                 let updated = serde_json::to_string(&meta).unwrap_or_default();
                 let _: () = conn
@@ -390,6 +435,18 @@ async fn execute_workflow(
                     .await
                     .map_err(|e| e.to_string())?;
             }
+            drop(conn);
+
+            publish_wf_event(
+                nats,
+                &pid,
+                &iid,
+                "workflow.completed",
+                &unit_path,
+                serde_json::json!({ "result": value }),
+            )
+            .await;
+
             Ok(value.clone())
         }
         WorkflowExecutionResult::Suspended {
@@ -509,9 +566,11 @@ async fn execute_workflow(
                 .await
                 .map_err(|e| e.to_string())?;
 
+            let mut unit_path = String::new();
             if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
                 && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
             {
+                unit_path = meta.name.clone();
                 meta.status = "suspended".to_string();
                 let updated = serde_json::to_string(&meta).unwrap_or_default();
                 let _: () = conn
@@ -520,6 +579,16 @@ async fn execute_workflow(
                     .map_err(|e| e.to_string())?;
             }
             drop(conn);
+
+            publish_wf_event(
+                nats,
+                &pid,
+                &iid,
+                "workflow.suspended",
+                &unit_path,
+                serde_json::json!({ "suspensionType": suspension_type, "name": name }),
+            )
+            .await;
 
             // Schedule sleep wake via JetStream publish with fire_at
             if suspension_type == "sleep" {
@@ -585,9 +654,11 @@ async fn execute_workflow(
                 .await
                 .map_err(|e| e.to_string())?;
 
+            let mut unit_path = String::new();
             if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
                 && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
             {
+                unit_path = meta.name.clone();
                 meta.status = "failed".to_string();
                 let updated = serde_json::to_string(&meta).unwrap_or_default();
                 let _: () = conn
@@ -595,6 +666,17 @@ async fn execute_workflow(
                     .await
                     .map_err(|e| e.to_string())?;
             }
+            drop(conn);
+
+            publish_wf_event(
+                nats,
+                &pid,
+                &iid,
+                "workflow.failed",
+                &unit_path,
+                serde_json::json!({ "error": error }),
+            )
+            .await;
 
             Err(error.clone())
         }

@@ -1,7 +1,48 @@
 (function () {
   "use strict";
 
-  // ---- Timers (microtask-based for synchronous QuickJS) ----
+  // ---- Timers (synchronous QuickJS model) ----
+  //
+  // Our QuickJS executor is SYNCHRONOUS: there is no real async event loop.
+  // Every `await` ultimately blocks the underlying OS thread via Rust's
+  // `Handle::block_on`.  The only way to introduce real wall-clock delays is
+  // __baal_sleep_sync, which calls std::thread::sleep on the OS thread.
+  //
+  // How this compares to other platforms:
+  //
+  //   Platform                          | Timer model       | Blocks thread?
+  //   ────────────────────────────────── | ─────────────────  | ──────────────
+  //   V8 (Node.js / Deno /              | truly async        | no
+  //   Cloudflare Workers)               | event loop         |
+  //   Temporal workflow sandbox (V8     | setTimeout patched | no (async VM)
+  //   isolate, Node vm module)          | → workflow.sleep() |
+  //   Our QuickJS runtime               | __baal_sleep_sync  | yes (OS thread)
+  //
+  // RULE FOR WORKFLOW CODE
+  //   ctx.sleep("name", duration) is the correct primitive for durable delays.
+  //   It suspends the workflow entirely via JetStream and releases the thread —
+  //   it never calls __baal_sleep_sync.
+  //   Using setTimeout with a non-zero delay inside a workflow step is a misuse:
+  //   it blocks the OS thread for the delay duration, is non-deterministic on
+  //   replay, and cannot survive crashes or restarts.
+  //
+  // RULE FOR API UNITS
+  //   Short delays (e.g. a test-harness polling loop with `await sleep(100)`)
+  //   are fine — they hold the thread for a bounded, short duration.
+  //   Long delays will be silently capped to __BAAL_MAX_SLEEP_MS.  For delays
+  //   that must truly be long, restructure to use a workflow or another async
+  //   mechanism rather than setTimeout.
+  //
+  // Safety caps (prevents runaway thread exhaustion).
+  // These are also exposed on globalThis so unit code and tests can inspect them.
+  var __BAAL_MAX_SLEEP_MS       = 5000;  // per-call cap for setTimeout
+  var __BAAL_IV_MAX_TICK_MS     = 2000;  // per-tick cap for setInterval
+  var __BAAL_IV_MAX_TICKS_TIMED = 20;    // max ticks when delay > 0 (prevents
+                                          // indefinite thread blocking, since
+                                          // clearInterval cannot fire mid-tick)
+  globalThis.__BAAL_MAX_SLEEP_MS       = __BAAL_MAX_SLEEP_MS;
+  globalThis.__BAAL_IV_MAX_TICK_MS     = __BAAL_IV_MAX_TICK_MS;
+  globalThis.__BAAL_IV_MAX_TICKS_TIMED = __BAAL_IV_MAX_TICKS_TIMED;
 
   var __tid = 0;
   var __tc = {};
@@ -9,10 +50,8 @@
   globalThis.setTimeout = function (fn, _delay) {
     var id = ++__tid;
     var args = [].slice.call(arguments, 2);
-    var ms = Number(_delay) || 0;
+    var ms = Math.min(Math.max(Number(_delay) || 0, 0), __BAAL_MAX_SLEEP_MS);
     if (ms > 0 && typeof __baal_sleep_sync === "function") {
-      // IMPORTANT: this is a synchronous sleep, so it will keep a thread open,
-      // don't use it for long sleeps!
       __baal_sleep_sync(ms);
     }
     queueMicrotask(function () {
@@ -24,13 +63,31 @@
 
   globalThis.clearTimeout = function (id) { __tc[id] = true; };
 
+  // setInterval in synchronous QuickJS has two modes:
+  //
+  //   delay == 0  — pure microtask recursion, up to 1000 ticks, no blocking.
+  //                 Good for "run until done" loops and compatibility shims.
+  //
+  //   delay > 0   — __baal_sleep_sync per tick (capped), up to
+  //                 __BAAL_IV_MAX_TICKS_TIMED ticks.
+  //                 Worst case: 20 × 2000 ms = 40 s; practical example:
+  //                 setInterval(fn, 100) → 20 × 100 ms = 2 s max.
+  //                 clearInterval(id) stops the sequence at the NEXT tick
+  //                 boundary; it cannot interrupt an in-progress sleep.
+  //
+  // For long-lived periodic work use a workflow loop with ctx.sleep() instead.
   globalThis.setInterval = function (fn, _delay) {
     var id = ++__tid;
     var args = [].slice.call(arguments, 2);
+    var ms = Math.min(Math.max(Number(_delay) || 0, 0), __BAAL_IV_MAX_TICK_MS);
+    var maxTicks = ms > 0 ? __BAAL_IV_MAX_TICKS_TIMED : 1000;
     var count = 0;
     function tick() {
-      if (__tc[id] || count >= 1000) return;
+      if (__tc[id] || count >= maxTicks) return;
       count++;
+      if (ms > 0 && typeof __baal_sleep_sync === "function") {
+        __baal_sleep_sync(ms);
+      }
       fn.apply(null, args);
       queueMicrotask(tick);
     }

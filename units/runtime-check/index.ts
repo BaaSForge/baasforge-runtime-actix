@@ -1323,6 +1323,231 @@ async function checkTimers(): Promise<GroupedTests> {
 }
 
 // ---------------------------------------------------------------------------
+// 10b. Timer Semantics (BAAL QuickJS platform model)
+//
+// QuickJS is SYNCHRONOUS — there is no real event loop.  "Async" operations
+// ultimately block the underlying OS thread via Rust's Handle::block_on.
+// The only way to introduce wall-clock delays is __baal_sleep_sync(), which
+// calls std::thread::sleep.
+//
+// Key differences vs. Node.js / Deno / Cloudflare Workers (V8 async model):
+//   • setTimeout(fn, n>0)  — the OS thread blocks for n ms INSIDE the
+//     setTimeout() call itself, before it returns the timer id.  The
+//     callback is queued as a microtask after the sleep.
+//   • clearTimeout(id)     — ALWAYS prevents the callback from running,
+//     but CANNOT cancel the blocking sleep that already happened.
+//   • setInterval(fn, 0)   — pure microtask recursion, no sleep, up to
+//     1000 ticks automatically.
+//   • setInterval(fn, n>0) — __baal_sleep_sync per tick (capped at
+//     __BAAL_IV_MAX_TICK_MS), at most __BAAL_IV_MAX_TICKS_TIMED ticks.
+//   • clearInterval(id)    — stops at the next tick boundary; it cannot
+//     interrupt a sleep already in progress.
+//
+// Correct primitive for durable delays in workflow code: ctx.sleep("name", ms)
+// It suspends the entire workflow via JetStream and does NOT block the thread.
+// ---------------------------------------------------------------------------
+
+async function checkTimerSemantics(): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
+
+  // ── Cap constants ─────────────────────────────────────────────────────────
+
+  tests.push(runTest("cap: __BAAL_MAX_SLEEP_MS is 5000", () => {
+    const cap = (globalThis as any).__BAAL_MAX_SLEEP_MS;
+    assert(typeof cap === "number" && cap === 5000, `expected 5000, got ${cap}`);
+    return `${cap}ms`;
+  }));
+
+  tests.push(runTest("cap: __BAAL_IV_MAX_TICK_MS is 2000", () => {
+    const cap = (globalThis as any).__BAAL_IV_MAX_TICK_MS;
+    assert(typeof cap === "number" && cap === 2000, `expected 2000, got ${cap}`);
+    return `${cap}ms`;
+  }));
+
+  tests.push(runTest("cap: __BAAL_IV_MAX_TICKS_TIMED is 20", () => {
+    const cap = (globalThis as any).__BAAL_IV_MAX_TICKS_TIMED;
+    assert(typeof cap === "number" && cap === 20, `expected 20, got ${cap}`);
+    return `${cap} ticks`;
+  }));
+
+  // ── setTimeout ────────────────────────────────────────────────────────────
+
+  tests.push(await runTestAsync("setTimeout(fn, 0) fires via microtask (no sleep)", async () => {
+    // 0-delay: __baal_sleep_sync is NOT called; callback is queued as a microtask.
+    let fired = false;
+    await new Promise<void>((resolve) => {
+      setTimeout(() => { fired = true; resolve(); }, 0);
+    });
+    assert(fired, "callback did not fire");
+    return "fired=true";
+  }));
+
+  tests.push(await runTestAsync("setTimeout(fn, n) blocks the OS thread for ≥n ms", async () => {
+    // The sleep happens SYNCHRONOUSLY inside the setTimeout() call itself —
+    // not in the background.  By the time setTimeout() returns, the delay
+    // has already elapsed.
+    const DELAY = 10;
+    const before = Date.now();
+    await new Promise<void>((resolve) => setTimeout(resolve, DELAY));
+    const elapsed = Date.now() - before;
+    assert(elapsed >= DELAY - 2, `elapsed ${elapsed}ms, expected ≥${DELAY - 2}ms`);
+    return `delay=${DELAY}ms, elapsed=${elapsed}ms`;
+  }));
+
+  tests.push(await runTestAsync("setTimeout: sleep occurs before id is returned (id arrives late)", async () => {
+    // Because the sleep is synchronous INSIDE setTimeout(), the delay has
+    // already passed by the time you can call clearTimeout(id).
+    // This is the fundamental difference from browser/Node.js timers.
+    const DELAY = 8;
+    const before = Date.now();
+    const id = setTimeout(() => {}, DELAY);   // blocks DELAY ms here
+    const elapsed = Date.now() - before;
+    clearTimeout(id);
+    assert(elapsed >= DELAY - 2,
+      `expected ≥${DELAY - 2}ms elapsed before id returned, got ${elapsed}ms`);
+    return `delay=${DELAY}ms, elapsed_before_id=${elapsed}ms`;
+  }));
+
+  tests.push(await runTestAsync("clearTimeout prevents callback even after sleep has occurred", async () => {
+    // Key platform behaviour: the blocking sleep occurs synchronously INSIDE
+    // setTimeout() — before the id is returned.  clearTimeout() still prevents
+    // the callback, but cannot undo the time already spent sleeping.
+    const DELAY = 6;
+    const fired = { v: false };
+    const before = Date.now();
+    const id = setTimeout(() => { fired.v = true; }, DELAY);  // blocks DELAY ms here
+    const elapsed = Date.now() - before;
+    clearTimeout(id);   // marks the queued microtask as cancelled
+    // Drain remaining microtasks — the cancelled microtask must skip fn()
+    await new Promise<void>((r) => setTimeout(r, 0));
+    assert(elapsed >= DELAY - 2,
+      `sleep should have elapsed: got ${elapsed}ms, expected ≥${DELAY - 2}ms`);
+    assert(!fired.v, "cancelled callback still fired");
+    return `sleep_elapsed=${elapsed}ms, fired=${fired.v}`;
+  }));
+
+  tests.push(await runTestAsync("setTimeout 0-delay callbacks fire in registration order", async () => {
+    const order: number[] = [];
+    await new Promise<void>((resolve) => {
+      setTimeout(() => { order.push(1); }, 0);
+      setTimeout(() => { order.push(2); }, 0);
+      setTimeout(() => { order.push(3); resolve(); }, 0);
+    });
+    assert(order[0] === 1 && order[1] === 2 && order[2] === 3,
+      `unexpected order: ${JSON.stringify(order)}`);
+    return JSON.stringify(order);
+  }));
+
+  // ── setInterval (delay == 0) ──────────────────────────────────────────────
+
+  tests.push(await runTestAsync("setInterval(fn, 0): runs via microtask recursion (no sleep)", async () => {
+    // 0-delay intervals use queueMicrotask() — they never block the thread.
+    let count = 0;
+    await new Promise<void>((resolve) => {
+      const id = setInterval(() => {
+        count++;
+        if (count >= 5) { clearInterval(id); resolve(); }
+      }, 0);
+    });
+    assert(count >= 5, `only ran ${count} ticks`);
+    return `ticks=${count}`;
+  }));
+
+  tests.push(await runTestAsync("setInterval(fn, 0): clearInterval stops at next microtask", async () => {
+    let count = 0;
+    let idRef: ReturnType<typeof setInterval>;
+    await new Promise<void>((resolve) => {
+      idRef = setInterval(() => {
+        count++;
+        if (count === 3) {
+          clearInterval(idRef);
+          // Schedule resolve so remaining microtasks can drain first
+          queueMicrotask(resolve);
+        }
+      }, 0);
+    });
+    // After clearInterval at tick 3, no further ticks should have run
+    assert(count === 3, `expected exactly 3 ticks after clearInterval, got ${count}`);
+    return `ticks_after_clear=${count}`;
+  }));
+
+  tests.push(await runTestAsync("setInterval(fn, 0): auto-stops at 1000 ticks if never cleared", async () => {
+    // The polyfill enforces a hard cap of 1000 ticks for 0-delay intervals to
+    // prevent infinite microtask loops.  We run it without calling clearInterval
+    // and verify count reaches exactly 1000.
+    let count = 0;
+    await new Promise<void>((resolve) => {
+      setInterval(() => {
+        count++;
+        if (count === 1000) resolve();   // auto-stop fires resolve on tick 1000
+      }, 0);
+      // Safety net: if auto-stop breaks and count never reaches 1000,
+      // the test will hang (caught by outer test runner timeout).
+    });
+    assert(count === 1000, `expected 1000 ticks at auto-stop, got ${count}`);
+    return `auto_stopped_at=${count}`;
+  }));
+
+  // ── setInterval (delay > 0) ───────────────────────────────────────────────
+
+  tests.push(await runTestAsync("setInterval(fn, n>0): blocks per tick — elapsed ≥ ticks × n ms", async () => {
+    // Each tick calls __baal_sleep_sync(n) before invoking the callback.
+    const TICK_MS = 4;
+    const TARGET = 3;
+    let count = 0;
+    const before = Date.now();
+    await new Promise<void>((resolve) => {
+      const id = setInterval(() => {
+        count++;
+        if (count >= TARGET) { clearInterval(id); resolve(); }
+      }, TICK_MS);
+    });
+    const elapsed = Date.now() - before;
+    const minExpected = TICK_MS * TARGET - 2;
+    assert(elapsed >= minExpected,
+      `elapsed ${elapsed}ms < expected min ${minExpected}ms for ${TARGET}×${TICK_MS}ms ticks`);
+    return `ticks=${count}, elapsed=${elapsed}ms`;
+  }));
+
+  tests.push(await runTestAsync("setInterval(fn, n>0): clearInterval stops within next tick boundary", async () => {
+    // clearInterval marks the id; the stop takes effect when the current sleep
+    // finishes and the next tick() microtask checks the flag.
+    let count = 0;
+    await new Promise<void>((resolve) => {
+      const id = setInterval(() => {
+        count++;
+        if (count === 3) { clearInterval(id); resolve(); }
+      }, 2);
+    });
+    // Allow microtasks to drain — a 4th tick must NOT have run.
+    await new Promise<void>((r) => setTimeout(r, 0));
+    assert(count === 3, `expected 3 ticks, got ${count}`);
+    return `count=${count}`;
+  }));
+
+  tests.push(await runTestAsync("setInterval(fn, n>0): auto-stops at __BAAL_IV_MAX_TICKS_TIMED (20) ticks", async () => {
+    // When clearInterval is never called, the polyfill enforces a hard limit of
+    // __BAAL_IV_MAX_TICKS_TIMED ticks (default: 20) to bound thread blocking.
+    // Worst case: 20 × __BAAL_IV_MAX_TICK_MS = 40s; with 1ms ticks it's ~20ms.
+    let count = 0;
+    await new Promise<void>((resolve) => {
+      // Intentionally do NOT call clearInterval to exercise the auto-stop path.
+      setInterval(() => {
+        count++;
+        if (count === 20) resolve();  // the 20th callback fires before auto-stop check
+      }, 1);
+    });
+    // After the 20th callback resolved the promise, the next tick checks
+    // count >= maxTicks (20 >= 20) and returns without invoking fn again.
+    await new Promise<void>((r) => setTimeout(r, 0));  // drain any leftover microtasks
+    assert(count === 20, `expected exactly 20 ticks (auto-stop cap), got ${count}`);
+    return `auto_stopped_at=${count}`;
+  }));
+
+  return group(tests);
+}
+
+// ---------------------------------------------------------------------------
 // 11. Error Handling Patterns
 // ---------------------------------------------------------------------------
 
@@ -3740,8 +3965,9 @@ async function runHealthCheck(
   const host = req.headers.host ?? "localhost";
   const baseUrl = `http://${host}`;
 
-  const [timers, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep] = await Promise.all([
+  const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep] = await Promise.all([
     checkTimers(),
+    checkTimerSemantics(),
     checkAsyncPatterns(),
     checkFetchAPI(baseUrl),
     checkStreams(),
@@ -3762,6 +3988,7 @@ async function runHealthCheck(
     typed_arrays: checkTypedArrays(),
     date_intl: checkDateIntl(),
     timers,
+    timer_semantics: timerSemantics,
     error_handling: checkErrorHandling(),
     string_ops: checkStringOps(),
     math: checkMath(),
