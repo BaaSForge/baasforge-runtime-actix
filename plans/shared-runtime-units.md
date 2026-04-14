@@ -1,0 +1,1 @@
+- **Simple reusable logic**: Extract into a shared JS module, import from multiple units. This is standard JavaScript -- no platform concept needed.
