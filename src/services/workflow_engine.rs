@@ -56,8 +56,9 @@ pub async fn start_workflow(
     input_json: &str,
     source: &str,
 ) -> Result<String, String> {
-    // Workflow-name dedup: if an active/completed instance already exists for
-    // this unit_path, return it instead of creating a duplicate.
+    // Workflow-name dedup: only return an existing instance if it is still
+    // actively running or suspended. Completed/failed/cancelled instances are
+    // NOT reused so that subsequent triggers always start a fresh execution.
     let name_key = format!("wf:{project_id}:name:{unit_path}");
     {
         let mut conn = redis.lock().await;
@@ -67,7 +68,7 @@ pub async fn start_workflow(
             let eid_meta: Option<String> = conn.get(&eid_meta_key).await.map_err(|e| e.to_string())?;
             if let Some(raw) = eid_meta {
                 if let Ok(meta) = serde_json::from_str::<WorkflowMeta>(&raw) {
-                    if meta.status != "cancelled" && meta.status != "failed" {
+                    if meta.status == "running" || meta.status == "suspended" {
                         return Ok(eid);
                     }
                 }

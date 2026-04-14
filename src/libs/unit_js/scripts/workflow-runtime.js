@@ -12,6 +12,11 @@ var __SuspendExecution = (function () {
   return SuspendExecution;
 })();
 
+// Tracks the most recent suspension request. If workflow code catches a
+// __SuspendExecution instead of letting it propagate, this variable lets the
+// outer executor detect the swallowed suspension and honour it anyway.
+var __pendingSuspend = null;
+
 // TerminalError: non-retriable failure
 var TerminalError = (function () {
   function TerminalError(message, options) {
@@ -101,9 +106,11 @@ function __createDurablePromise(promiseName, wfCtx) {
       if (cached && cached.status === "timed_out") {
         return Promise.resolve(null);
       }
-      throw new __SuspendExecution("promise", promiseName, {
+      var __promiseSuspend = new __SuspendExecution("promise", promiseName, {
         timeout: timeoutMs,
       });
+      __pendingSuspend = __promiseSuspend;
+      throw __promiseSuspend;
     },
     resolve: function (value) {
       var valueJson = JSON.stringify(value === undefined ? null : value);
@@ -167,11 +174,13 @@ function __createWorkflowContext(wfCtx) {
         }
         var isTerminal = !!(err && err.__isTerminal);
         if (!isTerminal && retryPolicy) {
-          throw new __SuspendExecution("step_retry", name, {
+          var __retrySuspend = new __SuspendExecution("step_retry", name, {
             error: err.message || String(err),
             retryPolicy: retryPolicy,
             optsJson: optsJson,
           });
+          __pendingSuspend = __retrySuspend;
+          throw __retrySuspend;
         }
         __baal_persist_step_error(name, err.message || String(err), isTerminal, optsJson);
         wfCtx.__steps[name] = { status: "failed", error: err.message || String(err), terminal: isTerminal };
@@ -189,7 +198,9 @@ function __createWorkflowContext(wfCtx) {
         __baal_persist_sleep(name, 0);
         return Promise.resolve();
       }
-      throw new __SuspendExecution("sleep", name, { durationMs: ms });
+      var __sleepSuspend = new __SuspendExecution("sleep", name, { durationMs: ms });
+      __pendingSuspend = __sleepSuspend;
+      throw __sleepSuspend;
     },
 
     promise: function (name) {
@@ -299,11 +310,24 @@ globalThis.__baal_wf_result = (function () {
     return (async function () {
       try {
         var result = await __wfDef.run(ctx, input);
+        // A suspension may have been triggered but swallowed by workflow
+        // try-catch. Honour it even though the run() call resolved.
+        if (__pendingSuspend !== null) {
+          var e = __pendingSuspend;
+          __pendingSuspend = null;
+          return JSON.stringify({
+            __type: "suspended",
+            suspensionType: e.type,
+            name: e.name,
+            config: e.config,
+          });
+        }
         return JSON.stringify({
           __type: "completed",
           value: result === undefined ? null : result,
         });
       } catch (e) {
+        __pendingSuspend = null;
         if (e && e.__isSuspend) {
           return JSON.stringify({
             __type: "suspended",

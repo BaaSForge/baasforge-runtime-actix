@@ -86,6 +86,30 @@ async function httpGet(url: string): Promise<any> {
 }
 
 // ---------------------------------------------------------------------------
+// HTTP helpers (with status codes)
+// ---------------------------------------------------------------------------
+
+async function httpPostFull(url: string, body?: any): Promise<{ status: number; body: any }> {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body !== undefined ? JSON.stringify(body) : "{}",
+  });
+  const text = await resp.text();
+  let parsed: any;
+  try { parsed = JSON.parse(text); } catch { parsed = text; }
+  return { status: resp.status, body: parsed };
+}
+
+async function httpGetFull(url: string): Promise<{ status: number; body: any }> {
+  const resp = await fetch(url);
+  const text = await resp.text();
+  let parsed: any;
+  try { parsed = JSON.parse(text); } catch { parsed = text; }
+  return { status: resp.status, body: parsed };
+}
+
+// ---------------------------------------------------------------------------
 // JSON path helper
 // ---------------------------------------------------------------------------
 
@@ -313,25 +337,13 @@ async function runCancelTest(baseUrl: string, test: TestDef): Promise<TestResult
 async function runReplayTest(
   baseUrl: string,
   test: TestDef,
-  _firstInstanceId: string,
+  firstInstanceId: string,
   firstOutput: any,
 ): Promise<TestResult> {
+  // Re-fetch the result of the same instance to verify that completed steps
+  // return identical cached values (memoization), without relying on dedup.
   const wfBase = `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/test/wf/${test.workflowSlug}`;
-  const replayResp = await httpPost(wfBase, test.input);
-  if (!replayResp?.instanceId) return fail(test, `replay start failed`);
-  const replayId = replayResp.instanceId;
-  const replayBase = `${wfBase}/${replayId}`;
-
-  for (let i = 0; i < 50; i++) {
-    await sleep(100);
-    const s = await httpGet(`${replayBase}/status`);
-    const st = s?.meta?.status;
-    if (st === "completed") break;
-    if (st === "suspended") {
-      await sleep(200);
-      continue;
-    }
-  }
+  const replayBase = `${wfBase}/${firstInstanceId}`;
 
   const replayResult = await httpGet(`${replayBase}/result`);
   const replayOutput = replayResult?.result;
@@ -1068,6 +1080,291 @@ function buildReport(results: TestResult[]) {
 }
 
 // ---------------------------------------------------------------------------
+// Endpoint contract tests — validate HTTP status codes, response shapes,
+// and error handling for each production workflow endpoint.
+// ---------------------------------------------------------------------------
+
+interface EndpointTestDef {
+  name: string;
+  category: string;
+  run: (baseUrl: string) => Promise<void>;
+}
+
+async function runEndpointTest(baseUrl: string, test: EndpointTestDef): Promise<TestResult> {
+  const label = `${test.category}: ${test.name}`;
+  try {
+    await test.run(baseUrl);
+    return { name: label, pass: true };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { name: label, pass: false, error: msg };
+  }
+}
+
+function epWfUrl(baseUrl: string, slug: string): string {
+  return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/test/wf/${slug}`;
+}
+
+async function epStart(
+  baseUrl: string,
+  slug: string,
+  input?: any,
+): Promise<{ instanceId: string; base: string }> {
+  const resp = await httpPostFull(epWfUrl(baseUrl, slug), input ?? {});
+  if (resp.status !== 200 || !resp.body?.instanceId) {
+    throw new Error(`start ${slug} failed: ${resp.status} ${JSON.stringify(resp.body)}`);
+  }
+  return {
+    instanceId: resp.body.instanceId as string,
+    base: `${epWfUrl(baseUrl, slug)}/${resp.body.instanceId}`,
+  };
+}
+
+async function epPollStatus(instanceBase: string, target: string, maxIter = 120): Promise<any> {
+  const seen = new Set<string>();
+  for (let i = 0; i < maxIter; i++) {
+    await sleep(150);
+    const resp = await httpGetFull(`${instanceBase}/status`);
+    const st: unknown = resp.body?.meta?.status;
+    seen.add(`${String(st)}(http:${resp.status})`);
+    if (st === target) return resp.body;
+    if (st === "failed") throw new Error(`workflow failed while waiting for '${target}'`);
+    if (resp.status >= 500) throw new Error(`status endpoint returned ${resp.status}: ${JSON.stringify(resp.body)}`);
+  }
+  throw new Error(`timed out waiting for '${target}' (saw: ${[...seen].join(", ")})`);
+}
+
+function allEndpointTests(): EndpointTestDef[] {
+  const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  return [
+    // ── Start Workflow Endpoint ──────────────────────────────────────────
+    {
+      name: "start-returns-instance-id-and-running",
+      category: "endpoint_start",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfUrl(baseUrl, "echo-input"), { test: true });
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if (!resp.body?.instanceId)
+          throw new Error("missing instanceId in response");
+        if (resp.body?.status !== "running")
+          throw new Error(`expected status "running", got "${resp.body?.status}"`);
+        if (!UUID_RX.test(resp.body.instanceId))
+          throw new Error(`instanceId is not a valid UUID: ${resp.body.instanceId}`);
+      },
+    },
+    {
+      name: "start-passes-input-to-workflow",
+      category: "endpoint_start",
+      run: async (baseUrl) => {
+        const input = { greeting: "hello", n: 7, nested: { ok: true } };
+        const { base } = await epStart(baseUrl, "echo-verify-input", input);
+        await epPollStatus(base, "completed");
+        const res = await httpGetFull(`${base}/result`);
+        if (res.status !== 200)
+          throw new Error(`result endpoint returned ${res.status}`);
+        const r = res.body?.result;
+        if (r?.greeting !== "hello") throw new Error(`greeting mismatch: ${JSON.stringify(r)}`);
+        if (r?.n !== 7) throw new Error(`n mismatch: ${JSON.stringify(r)}`);
+        if (r?.nested?.ok !== true) throw new Error(`nested mismatch: ${JSON.stringify(r)}`);
+      },
+    },
+    {
+      name: "start-with-empty-body",
+      category: "endpoint_start",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfUrl(baseUrl, "echo-input"));
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if (!resp.body?.instanceId)
+          throw new Error("missing instanceId when started with empty body");
+      },
+    },
+    {
+      name: "start-nonexistent-workflow-404",
+      category: "endpoint_start",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(
+          epWfUrl(baseUrl, "this-workflow-does-not-exist"),
+          {},
+        );
+        if (resp.status !== 404)
+          throw new Error(`expected 404, got ${resp.status}: ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "start-invalid-slug-400",
+      category: "endpoint_start",
+      run: async (baseUrl) => {
+        const url = `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/test/wf/inv@lid!!`;
+        const resp = await httpPostFull(url, {});
+        if (resp.status !== 400)
+          throw new Error(`expected 400, got ${resp.status}: ${JSON.stringify(resp.body)}`);
+      },
+    },
+
+    // ── Get Status Endpoint ──────────────────────────────────────────────
+    {
+      name: "status-completed-workflow",
+      category: "endpoint_status",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "echo-input", { v: 1 });
+        const body = await epPollStatus(base, "completed");
+        if (body?.meta?.status !== "completed")
+          throw new Error(`expected "completed", got "${body?.meta?.status}"`);
+      },
+    },
+    {
+      name: "status-suspended-on-promise",
+      category: "endpoint_status",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "suspend-for-status", {});
+        const body = await epPollStatus(base, "suspended");
+        if (body?.meta?.status !== "suspended")
+          throw new Error(`expected "suspended", got "${body?.meta?.status}"`);
+        await httpPostFull(`${base}/handlers/resolve`, {});
+      },
+    },
+    {
+      name: "status-nonexistent-instance-404",
+      category: "endpoint_status",
+      run: async (baseUrl) => {
+        const fakeId = "00000000-dead-beef-0000-000000000000";
+        const url = `${epWfUrl(baseUrl, "echo-input")}/${fakeId}/status`;
+        const resp = await httpGetFull(url);
+        if (resp.status !== 404)
+          throw new Error(`expected 404, got ${resp.status}`);
+      },
+    },
+
+    // ── Get Result Endpoint ──────────────────────────────────────────────
+    {
+      name: "result-completed-response-shape",
+      category: "endpoint_result",
+      run: async (baseUrl) => {
+        const input = { tag: "result-shape-test" };
+        const { base } = await epStart(baseUrl, "echo-result-shape", input);
+        await epPollStatus(base, "completed");
+        const resp = await httpGetFull(`${base}/result`);
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if (resp.body?.status !== "completed")
+          throw new Error(`expected body.status "completed", got "${resp.body?.status}"`);
+        if (resp.body?.result === undefined || resp.body?.result === null)
+          throw new Error("result field is missing or null");
+        if (resp.body?.result?.tag !== "result-shape-test")
+          throw new Error(`result.tag mismatch: ${JSON.stringify(resp.body?.result)}`);
+      },
+    },
+    {
+      name: "result-preserves-complex-types",
+      category: "endpoint_result",
+      run: async (baseUrl) => {
+        const input = {
+          str: "hello",
+          num: -3.14,
+          bool: true,
+          nil: null,
+          arr: [1, "two", null],
+          nested: { deep: { value: 42 } },
+        };
+        const { base } = await epStart(baseUrl, "echo-result-types", input);
+        await epPollStatus(base, "completed");
+        const resp = await httpGetFull(`${base}/result`);
+        const r = resp.body?.result;
+        if (r?.str !== "hello") throw new Error("str mismatch");
+        if (r?.num !== -3.14) throw new Error("num mismatch");
+        if (r?.bool !== true) throw new Error("bool mismatch");
+        if (r?.nil !== null) throw new Error("nil mismatch");
+        if (!Array.isArray(r?.arr) || r.arr.length !== 3) throw new Error("arr mismatch");
+        if (r?.arr[0] !== 1) throw new Error("arr[0] mismatch");
+        if (r?.arr[1] !== "two") throw new Error("arr[1] mismatch");
+        if (r?.arr[2] !== null) throw new Error("arr[2] mismatch");
+        if (r?.nested?.deep?.value !== 42) throw new Error("nested mismatch");
+      },
+    },
+
+    // ── Cancel Endpoint ──────────────────────────────────────────────────
+    {
+      name: "cancel-suspended-and-verify-status",
+      category: "endpoint_cancel",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "suspend-for-cancel", {});
+        await epPollStatus(base, "suspended");
+
+        const cancelResp = await httpPostFull(`${base}/cancel`);
+        if (cancelResp.status !== 200)
+          throw new Error(`cancel returned ${cancelResp.status}`);
+        if (cancelResp.body?.status !== "cancelled")
+          throw new Error(`expected { status: "cancelled" }, got ${JSON.stringify(cancelResp.body)}`);
+
+        const statusResp = await httpGetFull(`${base}/status`);
+        if (statusResp.body?.meta?.status !== "cancelled")
+          throw new Error(`status not "cancelled" after cancel: ${statusResp.body?.meta?.status}`);
+      },
+    },
+    {
+      name: "cancel-completed-workflow-rejected",
+      category: "endpoint_cancel",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "echo-input", { x: 1 });
+        await epPollStatus(base, "completed");
+        const resp = await httpPostFull(`${base}/cancel`);
+        if (resp.status !== 400)
+          throw new Error(`expected 400 for cancelling completed workflow, got ${resp.status}`);
+      },
+    },
+
+    // ── Shared Handler Endpoint ──────────────────────────────────────────
+    // These tests share the same suspend-for-signal instance.
+    // handler-reads-workflow-state runs FIRST (non-destructive),
+    // then handler-resolves-and-returns-value calls signal (destructive).
+    {
+      name: "handler-reads-workflow-state",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "suspend-for-signal", {});
+        await epPollStatus(base, "suspended");
+
+        const resp = await httpPostFull(`${base}/handlers/getState`, {});
+        if (resp.status !== 200)
+          throw new Error(`getState handler returned ${resp.status}`);
+        if (resp.body?.phase !== "waiting")
+          throw new Error(`expected phase "waiting", got "${resp.body?.phase}"`);
+        if (resp.body?.counter !== 42)
+          throw new Error(`expected counter 42, got ${resp.body?.counter}`);
+      },
+    },
+    {
+      name: "handler-resolves-and-returns-value",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "suspend-for-signal", {});
+        await epPollStatus(base, "suspended");
+
+        const handlerInput = { payload: "from-handler", code: 99 };
+        const handlerResp = await httpPostFull(`${base}/handlers/signal`, handlerInput);
+        if (handlerResp.status !== 200)
+          throw new Error(`signal handler returned ${handlerResp.status}`);
+        if (handlerResp.body?.accepted !== true)
+          throw new Error(`expected { accepted: true }, got ${JSON.stringify(handlerResp.body)}`);
+
+        await epPollStatus(base, "completed");
+        const res = await httpGetFull(`${base}/result`);
+        const result = res.body?.result;
+        if (result?.phase !== "done")
+          throw new Error(`expected phase "done", got "${result?.phase}"`);
+        if (result?.signal?.payload !== "from-handler")
+          throw new Error(`signal.payload mismatch: ${JSON.stringify(result?.signal)}`);
+        if (result?.signal?.code !== 99)
+          throw new Error(`signal.code mismatch: ${JSON.stringify(result?.signal)}`);
+      },
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Handler
 // ---------------------------------------------------------------------------
 
@@ -1078,6 +1375,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
   for (const test of tests) {
     const result = await runTest(baseUrl, test);
+    results.push(result);
+  }
+
+  for (const et of allEndpointTests()) {
+    const result = await runEndpointTest(baseUrl, et);
     results.push(result);
   }
 
