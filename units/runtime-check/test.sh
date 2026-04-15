@@ -90,3 +90,11 @@ echo "==> Running trigger (timeout ${HEALTH_CHECK_TIMEOUT}s)…"
 curl -s --max-time "$HEALTH_CHECK_TIMEOUT" "$BASE_URL" > "$OUTPUT_FILE"
 echo "==> Done. Output written to:"
 echo "    $OUTPUT_FILE"
+echo ""
+
+if command -v jq &>/dev/null; then
+  PASSED=$(jq -r '.summary.total_passed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
+  TOTAL=$(jq -r '.summary.total_tests'    "$OUTPUT_FILE" 2>/dev/null || echo "?")
+  FAILED=$(jq -r '.summary.total_failed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
+  echo "==> ${PASSED}/${TOTAL} passed, ${FAILED} failed"
+fi

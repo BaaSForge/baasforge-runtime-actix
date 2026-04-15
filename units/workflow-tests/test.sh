@@ -119,11 +119,12 @@ if command -v jq &>/dev/null; then
     .[0] as $wf | .[1] as $ws |
     {
       summary: {
-        healthy:       ($wf.summary.healthy and $ws.summary.healthy),
-        total_tests:   ($wf.summary.total_tests   + $ws.summary.total_tests),
-        total_passed:  ($wf.summary.total_passed  + $ws.summary.total_passed),
-        total_failed:  ($wf.summary.total_failed  + $ws.summary.total_failed),
-        sections:      ($wf.summary.sections * $ws.summary.sections)
+        healthy:        ($wf.summary.healthy and $ws.summary.healthy),
+        total_tests:    ($wf.summary.total_tests    + $ws.summary.total_tests),
+        total_passed:   ($wf.summary.total_passed   + $ws.summary.total_passed),
+        total_failed:   ($wf.summary.total_failed   + $ws.summary.total_failed),
+        total_skipped:  (($wf.summary.total_skipped // 0) + ($ws.summary.total_skipped // 0)),
+        sections:       ($wf.summary.sections * $ws.summary.sections)
       },
       sections: ($wf.sections * $ws.sections),
       tests:    ($wf.tests    + $ws.tests)
@@ -145,8 +146,9 @@ echo "    $OUTPUT_FILE"
 echo ""
 
 if command -v jq &>/dev/null; then
-  PASSED=$(jq -r '.summary.total_passed' "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  TOTAL=$(jq -r '.summary.total_tests'   "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  FAILED=$(jq -r '.summary.total_failed' "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  echo "==> ${PASSED}/${TOTAL} passed, ${FAILED} failed"
+  PASSED=$(jq -r '.summary.total_passed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
+  TOTAL=$(jq -r '.summary.total_tests'    "$OUTPUT_FILE" 2>/dev/null || echo "?")
+  FAILED=$(jq -r '.summary.total_failed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
+  SKIPPED=$(jq -r '.summary.total_skipped // 0' "$OUTPUT_FILE" 2>/dev/null || echo "?")
+  echo "==> ${PASSED}/${TOTAL} passed, ${FAILED} failed, ${SKIPPED} skipped"
 fi

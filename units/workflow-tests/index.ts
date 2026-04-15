@@ -49,6 +49,8 @@ interface TestDef {
   checks: CheckDef[];
   replay: boolean;
   dedup: boolean;
+  /** When true the test is recorded as skipped (pending an unimplemented feature). */
+  skip?: string;
 }
 
 type CheckDef =
@@ -180,6 +182,11 @@ async function sleep(ms: number): Promise<void> {
 }
 
 async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
+  const label = `${test.category}: ${test.name}`;
+  if (test.skip) {
+    return { name: label, pass: true, detail: `SKIPPED: ${test.skip}` };
+  }
+
   const wfBase = `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/test/wf/${test.workflowSlug}`;
 
   try {
@@ -964,7 +971,7 @@ function allTests(): TestDef[] {
       checks: [],
     },
 
-    // ---- integration (2) ----
+    // ---- integration (6) ----
     {
       name: "sdk-call-unsupported-type", category: "integration",
       workflowSlug: "sdk-call-unsupported-type",
@@ -973,7 +980,62 @@ function allTests(): TestDef[] {
       replay: false, dedup: false,
       checks: [
         { type: "true", path: "ok" },
-        { type: "contains", path: "errorMessage", substr: "not supported" },
+        { type: "contains", path: "errorMessage", substr: "API unit" },
+      ],
+    },
+    {
+      // Validation fires before any NATS publish — works without Phase C.
+      name: "sdk-call-invalid-path", category: "integration",
+      workflowSlug: "sdk-call-invalid-path",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "ok" },
+        { type: "contains", path: "errorMessage", substr: "invalid unit path" },
+      ],
+    },
+    {
+      // Happy path: caller suspends, callee completes, caller resumes with result.
+      // REQUIRES Phase C (.start consumer in workflow_worker).
+      name: "sdk-call-basic", category: "integration",
+      workflowSlug: "sdk-call-basic",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip: "Phase C not implemented: .start consumer in workflow_worker required",
+      checks: [
+        { type: "true", path: "called" },
+        { type: "eq", path: "doubled", expected: 4 },
+      ],
+    },
+    {
+      // Callee failure must propagate as a rejected promise to the caller.
+      // REQUIRES Phase C (.start consumer in workflow_worker).
+      name: "sdk-call-failure-propagates", category: "integration",
+      workflowSlug: "sdk-call-failure-propagates",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip: "Phase C not implemented: .start consumer in workflow_worker required",
+      checks: [
+        { type: "true", path: "caught" },
+        { type: "contains", path: "errorMessage", substr: "callee-intentional-failure" },
+      ],
+    },
+    {
+      // Two sequential sdk.calls must use sdk_call_0 and sdk_call_1 independently.
+      // Verifies __sdkCallIdx counter and per-call promise key stability on replay.
+      // REQUIRES Phase C (.start consumer in workflow_worker).
+      name: "sdk-call-sequential", category: "integration",
+      workflowSlug: "sdk-call-sequential",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip: "Phase C not implemented: .start consumer in workflow_worker required",
+      checks: [
+        { type: "eq", path: "first", expected: 6 },
+        { type: "eq", path: "second", expected: 10 },
       ],
     },
     {
@@ -1030,8 +1092,9 @@ function allTests(): TestDef[] {
 
 function buildReport(results: TestResult[]) {
   const total = results.length;
-  const passed = results.filter((r) => r.pass).length;
-  const failed = total - passed;
+  const skipped = results.filter((r) => r.pass && r.detail?.startsWith("SKIPPED:")).length;
+  const passed = results.filter((r) => r.pass).length - skipped;
+  const failed = total - passed - skipped;
   const healthy = failed === 0;
 
   const sectionsMap: Record<string, TestResult[]> = {};
@@ -1073,7 +1136,7 @@ function buildReport(results: TestResult[]) {
   }
 
   return {
-    summary: { healthy, total_tests: total, total_passed: passed, total_failed: failed, sections: sectionSummaries },
+    summary: { healthy, total_tests: total, total_passed: passed, total_failed: failed, total_skipped: skipped, sections: sectionSummaries },
     sections: sectionDetails,
     tests: flatTests,
   };
@@ -1313,6 +1376,32 @@ function allEndpointTests(): EndpointTestDef[] {
         const resp = await httpPostFull(`${base}/cancel`);
         if (resp.status !== 400)
           throw new Error(`expected 400 for cancelling completed workflow, got ${resp.status}`);
+      },
+    },
+
+    // ── sdk.call suspension ──────────────────────────────────────────────
+    // Verifies that sdk.call suspends the caller workflow (durable promise)
+    // rather than blocking. The caller must be in "suspended" state immediately
+    // after starting, proving no thread is held. Does NOT require Phase C.
+    {
+      name: "sdk-call-caller-enters-suspended-state",
+      category: "endpoint_sdk_call",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "sdk-call-basic", {});
+        // Poll briefly — the caller should suspend quickly on the promise.
+        let sawSuspended = false;
+        for (let i = 0; i < 20; i++) {
+          await sleep(100);
+          const resp = await httpGetFull(`${base}/status`);
+          const st = resp.body?.meta?.status;
+          if (st === "suspended") { sawSuspended = true; break; }
+          // If it completes immediately something is wrong (callee can't run yet).
+          if (st === "completed") break;
+          if (st === "failed") break;
+        }
+        if (!sawSuspended) {
+          throw new Error("expected caller to enter 'suspended' state while waiting for callee; it did not");
+        }
       },
     },
 

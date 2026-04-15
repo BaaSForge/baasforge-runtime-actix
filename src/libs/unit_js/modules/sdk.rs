@@ -1,4 +1,3 @@
-use futures::StreamExt;
 use rquickjs::{Ctx, Exception, Value, function::Func};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -88,8 +87,8 @@ pub fn register(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
         Func::from(host_reject_promise),
     )?;
     ctx.globals().set(
-        "__baal_call",
-        Func::from(host_call),
+        "__baal_start_call",
+        Func::from(host_start_call),
     )?;
     Ok(())
 }
@@ -271,24 +270,33 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
     res.map_err(|e| Exception::throw_message(&ctx, &e))
 }
 
-/// `sdk.call(unitPath, dataJson)` — currently supports workflow units only.
-/// Starts a new workflow instance and polls for its completion.
-fn host_call<'js>(ctx: Ctx<'js>, unit_path: String, data_json: String) -> rquickjs::Result<Value<'js>> {
-    let res: Result<Option<String>, String> = with_host_ctx(|hctx| {
+/// `__baal_start_call(unitPath, dataJson, promiseName)` — seeds callee metadata
+/// in Redis and publishes a `.start` signal to NATS, then returns immediately.
+///
+/// The caller workflow suspends via a durable promise keyed on `promiseName`.
+/// When the callee completes or fails, `workflow_engine` automatically resolves
+/// or rejects that promise and publishes a wake signal to the caller — no thread
+/// is held during the wait. This mirrors how Temporal handles child workflows.
+fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_name: String) -> rquickjs::Result<()> {
+    let res: Result<(), String> = with_host_ctx(|hctx| {
         let project_id = hctx.project_id.clone();
+        let caller_instance_id = hctx.instance_id.clone();
         block_async(async {
             let parts: Vec<&str> = unit_path.split('.').collect();
             if parts.len() != 4 {
                 return Err(format!(
-                    "sdk.call: invalid unit path '{}' — expected context.module.unitType.name",
-                    unit_path
+                    "sdk.call: invalid unit path '{unit_path}' — expected context.module.unitType.name"
                 ));
             }
             let unit_type = parts[2];
+            if unit_type == "api" {
+                return Err(format!(
+                    "sdk.call does not support API unit targets — API units are HTTP-only"
+                ));
+            }
             if unit_type != "workflow" {
                 return Err(format!(
-                    "sdk.call: unit type '{}' is not supported yet — only 'workflow' units can be called",
-                    unit_type
+                    "sdk.call: unit type '{unit_type}' is not supported yet — only 'workflow' units can be called"
                 ));
             }
 
@@ -301,29 +309,22 @@ fn host_call<'js>(ctx: Ctx<'js>, unit_path: String, data_json: String) -> rquick
                 "input": data_json,
                 "createdAt": chrono::Utc::now().to_rfc3339(),
                 "callerTriggered": true,
+                "callerInstanceId": caller_instance_id,
+                "callerPromiseName": promise_name,
             })
             .to_string();
 
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("SET")
-                .arg(&meta_key)
-                .arg(&meta)
-                .query_async::<()>(&mut *conn)
-                .await
-                .map_err(|e| format!("redis SET meta failed: {e}"))?;
-
-            drop(conn);
+            {
+                let mut conn = hctx.redis.lock().await;
+                redis::cmd("SET")
+                    .arg(&meta_key)
+                    .arg(&meta)
+                    .query_async::<()>(&mut *conn)
+                    .await
+                    .map_err(|e| format!("sdk.call: redis SET meta failed: {e}"))?;
+            }
 
             if let Some(nats) = &hctx.nats {
-                // Subscribe BEFORE publishing start to avoid a race where the
-                // workflow completes before we have a subscriber in place.
-                let event_subject =
-                    format!("wf.events.{project_id}.workflow.{callee_instance_id}");
-                let mut sub = nats
-                    .subscribe(event_subject)
-                    .await
-                    .map_err(|e| format!("sdk.call: NATS subscribe failed: {e}"))?;
-
                 let start_subject = format!("wf.{project_id}.{callee_instance_id}.start");
                 let start_payload = serde_json::json!({
                     "unitPath": unit_path,
@@ -333,62 +334,11 @@ fn host_call<'js>(ctx: Ctx<'js>, unit_path: String, data_json: String) -> rquick
                 .to_string();
                 nats.publish(start_subject, bytes::Bytes::from(start_payload))
                     .await
-                    .map_err(|e| format!("nats publish start failed: {e}"))?;
-
-                // Wait for workflow.completed or workflow.failed event (30s timeout)
-                let timeout_result = tokio::time::timeout(
-                    std::time::Duration::from_secs(30),
-                    async {
-                        while let Some(msg) = sub.next().await {
-                            let Ok(payload_str) = std::str::from_utf8(&msg.payload) else {
-                                continue;
-                            };
-                            let Ok(evt) =
-                                serde_json::from_str::<serde_json::Value>(payload_str)
-                            else {
-                                continue;
-                            };
-                            match evt.get("event").and_then(|v| v.as_str()) {
-                                Some("workflow.completed") => {
-                                    let result = evt
-                                        .get("result")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_owned());
-                                    return Ok(result);
-                                }
-                                Some("workflow.failed") => {
-                                    let err = evt
-                                        .get("error")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("unknown error")
-                                        .to_owned();
-                                    return Err(format!(
-                                        "sdk.call: callee workflow failed: {err}"
-                                    ));
-                                }
-                                _ => {}
-                            }
-                        }
-                        Err(format!(
-                            "sdk.call: NATS subscription ended unexpectedly for '{unit_path}'"
-                        ))
-                    },
-                )
-                .await
-                .map_err(|_| {
-                    format!("sdk.call: workflow '{unit_path}' did not complete within 30s")
-                })??;
-
-                return Ok(timeout_result);
+                    .map_err(|e| format!("sdk.call: nats publish start failed: {e}"))?;
             }
 
-            // NATS not configured — trigger sent but result cannot be awaited
-            Ok(None)
+            Ok(())
         })
     });
-    match res {
-        Ok(Some(v)) => rquickjs::String::from_str(ctx.clone(), &v).map(|s| s.into_value()),
-        Ok(None) => Ok(Value::new_null(ctx)),
-        Err(e) => Err(Exception::throw_message(&ctx, &e)),
-    }
+    res.map_err(|e| Exception::throw_message(&ctx, &e))
 }

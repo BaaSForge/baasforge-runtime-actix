@@ -42,6 +42,15 @@ pub struct WorkflowMeta {
     pub created_at: String,
     #[serde(rename = "callerTriggered", default)]
     pub caller_triggered: bool,
+    /// Instance ID of the workflow that called this one via sdk.call.
+    /// Set when callerTriggered is true. Used to resolve the caller's
+    /// durable promise once this workflow completes or fails.
+    #[serde(rename = "callerInstanceId", default)]
+    pub caller_instance_id: Option<String>,
+    /// The promise name in the caller's context to resolve/reject.
+    /// Format: "sdk_call_N" where N is the call index.
+    #[serde(rename = "callerPromiseName", default)]
+    pub caller_promise_name: Option<String>,
 }
 
 /// Start a new workflow instance.
@@ -83,6 +92,8 @@ pub async fn start_workflow(
         input: input_json.to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         caller_triggered: false,
+        caller_instance_id: None,
+        caller_promise_name: None,
     };
     let meta_json = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
 
@@ -331,6 +342,65 @@ async fn publish_wf_event(
 
 // -- Internal helpers --
 
+/// Resolve the caller workflow's durable promise after a callee completes.
+/// Writes the promise state to Redis then publishes a wake signal to the caller.
+async fn resolve_caller_promise(
+    redis: &SharedRedis,
+    nats: &Option<async_nats::Client>,
+    project_id: &str,
+    caller_instance_id: &str,
+    promise_name: &str,
+    value_json: &str,
+) {
+    if let Err(e) = resolve_promise(redis, nats, project_id, caller_instance_id, promise_name, value_json).await {
+        tracing::warn!(
+            caller_iid = %caller_instance_id,
+            promise = %promise_name,
+            error = %e,
+            "resolve_caller_promise failed — caller may time out"
+        );
+    }
+}
+
+/// Reject the caller workflow's durable promise after a callee fails.
+async fn reject_caller_promise(
+    redis: &SharedRedis,
+    nats: &Option<async_nats::Client>,
+    project_id: &str,
+    caller_instance_id: &str,
+    promise_name: &str,
+    error: &str,
+) {
+    let rkey = redis_key(project_id, caller_instance_id, &format!("promise:{promise_name}"));
+    let value = serde_json::json!({ "status": "rejected", "error": error }).to_string();
+
+    let set_result: Result<(), _> = {
+        let mut conn = redis.lock().await;
+        redis::cmd("SET")
+            .arg(&rkey)
+            .arg(&value)
+            .query_async::<()>(&mut *conn)
+            .await
+    };
+
+    if let Err(e) = set_result {
+        tracing::warn!(error = %e, "reject_caller_promise: redis SET failed");
+        return;
+    }
+
+    if let Some(nats_client) = nats {
+        let subject = format!("wf.{project_id}.{caller_instance_id}.wake");
+        let payload = serde_json::json!({
+            "reason": "promise_rejected",
+            "promise": promise_name,
+        })
+        .to_string();
+        if let Err(e) = nats_client.publish(subject, bytes::Bytes::from(payload)).await {
+            tracing::warn!(error = %e, "reject_caller_promise: nats publish failed");
+        }
+    }
+}
+
 /// Load all step/sleep/promise state from Redis for replay.
 async fn load_execution_context(
     redis: &SharedRedis,
@@ -424,10 +494,16 @@ async fn execute_workflow(
                 .map_err(|e| e.to_string())?;
 
             let mut unit_path = String::new();
+            let mut caller_iid: Option<String> = None;
+            let mut caller_promise: Option<String> = None;
             if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
                 && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
             {
                 unit_path = meta.name.clone();
+                if meta.caller_triggered {
+                    caller_iid = meta.caller_instance_id.clone();
+                    caller_promise = meta.caller_promise_name.clone();
+                }
                 meta.status = "completed".to_string();
                 let updated = serde_json::to_string(&meta).unwrap_or_default();
                 let _: () = conn
@@ -446,6 +522,12 @@ async fn execute_workflow(
                 serde_json::json!({ "result": value }),
             )
             .await;
+
+            // If this workflow was started via sdk.call, resolve the caller's
+            // durable promise so the caller can resume without holding a thread.
+            if let (Some(ref ciid), Some(ref cpromise)) = (caller_iid, caller_promise) {
+                resolve_caller_promise(redis, nats, &pid, ciid, cpromise, value).await;
+            }
 
             Ok(value.clone())
         }
@@ -655,10 +737,16 @@ async fn execute_workflow(
                 .map_err(|e| e.to_string())?;
 
             let mut unit_path = String::new();
+            let mut caller_iid: Option<String> = None;
+            let mut caller_promise: Option<String> = None;
             if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
                 && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
             {
                 unit_path = meta.name.clone();
+                if meta.caller_triggered {
+                    caller_iid = meta.caller_instance_id.clone();
+                    caller_promise = meta.caller_promise_name.clone();
+                }
                 meta.status = "failed".to_string();
                 let updated = serde_json::to_string(&meta).unwrap_or_default();
                 let _: () = conn
@@ -677,6 +765,12 @@ async fn execute_workflow(
                 serde_json::json!({ "error": error }),
             )
             .await;
+
+            // If this workflow was started via sdk.call, reject the caller's
+            // durable promise so the caller can resume and surface the error.
+            if let (Some(ref ciid), Some(ref cpromise)) = (caller_iid, caller_promise) {
+                reject_caller_promise(redis, nats, &pid, ciid, cpromise, error).await;
+            }
 
             Err(error.clone())
         }

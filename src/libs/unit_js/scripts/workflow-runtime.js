@@ -306,6 +306,59 @@ globalThis.__baal_wf_result = (function () {
   } else {
     // Main run handler
     var ctx = __createWorkflowContext(__wfCtx);
+
+    // Override sdk.call for workflow context.
+    //
+    // Instead of blocking a thread while waiting for the callee, sdk.call
+    // suspends the caller via a durable promise and returns when the callee
+    // completes. This mirrors how Temporal handles child workflows:
+    //   1. First execution: seed callee meta in Redis, publish .start, suspend.
+    //   2. Callee completes → workflow_engine resolves promise → wakes caller.
+    //   3. On replay: promise is already in wfCtx.__promises → return cached.
+    //
+    // Promise names are "sdk_call_0", "sdk_call_1", ... based on call order.
+    // This counter resets to 0 each execution (fresh QuickJS runtime), which
+    // is safe because execution always replays the same call sequence.
+    var __sdkCallIdx = 0;
+    sdk.call = function (unitPath, data) {
+      var callName = "sdk_call_" + __sdkCallIdx++;
+
+      var cached = __wfCtx.__promises[callName];
+      if (cached) {
+        if (cached.status === "resolved") {
+          return Promise.resolve(
+            cached.value !== undefined ? JSON.parse(cached.value) : null
+          );
+        }
+        if (cached.status === "rejected") {
+          return Promise.reject(
+            new Error(cached.error || "sdk.call: callee workflow failed")
+          );
+        }
+        if (cached.status === "timed_out") {
+          return Promise.reject(
+            new Error("sdk.call timed out waiting for: " + unitPath)
+          );
+        }
+      }
+
+      if (typeof __baal_start_call !== "function") {
+        throw new Error("sdk.call is not available: NATS not configured");
+      }
+
+      var dataJson = data !== undefined ? JSON.stringify(data) : "null";
+      __baal_start_call(unitPath, dataJson, callName);
+
+      // Suspend for 5 minutes (300 000 ms). The promise timeout mechanism
+      // already handles this via the JetStream fire_at wake, so the timeout
+      // here is a safety net matching the promise infrastructure.
+      var suspend = new __SuspendExecution("promise", callName, {
+        timeout: 300000,
+      });
+      __pendingSuspend = suspend;
+      throw suspend;
+    };
+
     var input = __wfCtx.__input ? JSON.parse(__wfCtx.__input) : undefined;
     return (async function () {
       try {

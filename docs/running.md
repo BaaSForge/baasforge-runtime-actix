@@ -6,6 +6,8 @@
 - Redis (used for both cache and workflow state — can point to the same instance)
 - NATS with JetStream enabled
 
+** JetStream data must be persisted on disk (take a look at compose.yml)
+
 ## Required env vars
 
 Copy `.env` and fill in real values. Key variables:
@@ -55,6 +57,12 @@ cargo run --release --bin release_listener
 # or:
 ./target/release/release_listener
 ```
+
+## Redis (`WF_REDIS_URL`)
+
+- **Persistence must be enabled.** Workflow state (steps, sleeps, promises) lives in Redis. If it is wiped while a workflow is `suspended`, that instance can never resume. Use AOF (`appendonly yes`) or at minimum RDB snapshots (`save 60 1`).
+- **Keys are never auto-deleted.** There is no TTL or cleanup job. Redis will grow over time. See [workflow-internals.md](workflow-internals.md#redis-cleanup) for cleanup options.
+- **Do not set `maxmemory-policy allkeys-lru`** on the workflow Redis — evicting a suspended workflow's keys breaks resume.
 
 ## Stopping
 

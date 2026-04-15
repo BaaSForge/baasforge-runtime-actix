@@ -64,17 +64,11 @@ function __stripImports(source) {
 
 // --- sdk (inter-unit communication) ---
 
+// Default sdk.call — overridden by workflow-runtime.js with durable suspension.
+// For non-workflow contexts this throws immediately (sdk.call is workflow-only).
 var sdk = {
-  call: function (unitPath, data) {
-    if (typeof __baal_call !== 'function') {
-      throw new Error('sdk.call is not available in this unit type');
-    }
-    return Promise.resolve().then(function () {
-      var dataJson = data !== undefined ? JSON.stringify(data) : "null";
-      var resultJson = __baal_call(unitPath, dataJson);
-      if (resultJson === null || resultJson === undefined) return null;
-      return JSON.parse(resultJson);
-    });
+  call: function (_unitPath, _data) {
+    throw new Error('sdk.call is only available inside workflow units');
   },
 };
 
