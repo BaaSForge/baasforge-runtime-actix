@@ -117,20 +117,20 @@ pub async fn run_wake_consumer(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
 
-    let stream = js
-        .get_or_create_stream(async_nats::jetstream::stream::Config {
-            name: stream_name.to_string(),
-            subjects: vec!["wf.*.*.wake".to_string()],
-            ..Default::default()
-        })
-        .await?;
+    js.create_or_update_stream(async_nats::jetstream::stream::Config {
+        name: stream_name.to_string(),
+        subjects: vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()],
+        ..Default::default()
+    })
+    .await?;
 
-    let consumer = stream
-        .get_or_create_consumer(
-            consumer_name,
+    let stream = js.get_stream(stream_name).await?;
+
+    let consumer: async_nats::jetstream::consumer::Consumer<async_nats::jetstream::consumer::pull::Config> = stream
+        .create_consumer(
             async_nats::jetstream::consumer::pull::Config {
                 durable_name: Some(consumer_name.to_string()),
-                filter_subject: "wf.*.*.wake".to_string(),
+                filter_subjects: vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()],
                 ack_wait: std::time::Duration::from_secs(30),
                 ..Default::default()
             },
@@ -140,7 +140,7 @@ pub async fn run_wake_consumer(
     info!(
         stream = %stream_name,
         consumer = %consumer_name,
-        "[workflow_wake] JetStream pull consumer ready"
+        "[workflow_wake] JetStream pull consumer ready (wake + start)"
     );
 
     let mut messages = consumer.messages().await?;
@@ -150,7 +150,6 @@ pub async fn run_wake_consumer(
             Ok(msg) => {
                 let subject = msg.subject.to_string();
 
-                // Parse subject: wf.{project_id}.{instance_id}.wake
                 let parts: Vec<&str> = subject.split('.').collect();
                 if parts.len() != 4 {
                     warn!(subject = %subject, "[workflow_wake] unexpected subject format");
@@ -159,12 +158,41 @@ pub async fn run_wake_consumer(
                 }
                 let project_id = parts[1].to_string();
                 let instance_id = parts[2].to_string();
+                let msg_type = parts[3];
 
                 let payload: Option<serde_json::Value> =
                     serde_json::from_slice(&msg.payload).ok();
 
-                // Check fire_at: if the message isn't due yet, NAK with remaining delay
-                // so the server redelivers it when the timer expires.
+                if msg_type == "start" {
+                    let wf_redis = wf_redis.clone();
+                    let nats_client = Some(nats.clone());
+                    let pool = pool.clone();
+                    let redis_conn = redis_conn.clone();
+                    if let Err(e) = handle_start(
+                        &wf_redis,
+                        &nats_client,
+                        &pool,
+                        &redis_conn,
+                        &project_id,
+                        &instance_id,
+                        payload.as_ref(),
+                    )
+                    .await
+                    {
+                        error!(
+                            project_id = %project_id,
+                            instance_id = %instance_id,
+                            error = %e,
+                            "[workflow_wake] callee start failed"
+                        );
+                    }
+                    if let Err(e) = msg.ack().await {
+                        error!(error = %e, "[workflow_wake] ack failed");
+                    }
+                    continue;
+                }
+
+                // msg_type == "wake": check fire_at before processing
                 let fire_at = payload
                     .as_ref()
                     .and_then(|p| p.get("fire_at"))
@@ -220,6 +248,65 @@ pub async fn run_wake_consumer(
     }
 
     Ok(())
+}
+
+async fn handle_start(
+    wf_redis: &Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    nats_client: &Option<async_nats::Client>,
+    pool: &crate::database::DbPool,
+    redis_conn: &crate::database::SharedRedisConn,
+    project_id: &str,
+    instance_id: &str,
+    payload: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let unit_path = payload
+        .and_then(|p| p.get("unitPath"))
+        .and_then(|v| v.as_str())
+        .ok_or("handle_start: missing unitPath in payload")?
+        .to_string();
+
+    let input_json = payload
+        .and_then(|p| p.get("input"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("{}")
+        .to_string();
+
+    let project_uuid = uuid::Uuid::parse_str(project_id)
+        .map_err(|e| format!("invalid project_id: {e}"))?;
+
+    let unit = load_unit_for_path_production(
+        pool,
+        redis_conn,
+        project_uuid,
+        ProjectUnitType::Workflow,
+        &unit_path,
+    )
+    .await
+    .map_err(|e| format!("load unit: {e}"))?
+    .ok_or_else(|| format!("workflow unit not found: {unit_path}"))?;
+
+    let source = unit
+        .compiled_code
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "workflow unit has no compiled code".to_string())?
+        .to_string();
+
+    let js = nats_client
+        .as_ref()
+        .map(|c| async_nats::jetstream::new(c.clone()));
+
+    workflow_engine::launch_callee_workflow(
+        wf_redis,
+        nats_client,
+        &js,
+        project_id,
+        instance_id,
+        &input_json,
+        &source,
+        &unit_path,
+    )
+    .await
 }
 
 async fn handle_wake(

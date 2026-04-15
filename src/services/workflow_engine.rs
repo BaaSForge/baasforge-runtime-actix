@@ -24,13 +24,16 @@ pub async fn ensure_wf_wake_stream(
     stream_name: &str,
 ) -> Result<jetstream::stream::Stream, String> {
     let js = jetstream::new(client.clone());
-    js.get_or_create_stream(stream::Config {
+    js.create_or_update_stream(stream::Config {
         name: stream_name.to_string(),
-        subjects: vec!["wf.*.*.wake".to_string()],
+        subjects: vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()],
         ..Default::default()
     })
     .await
-    .map_err(|e| format!("JetStream stream setup failed: {e}"))
+    .map_err(|e| format!("JetStream stream setup failed: {e}"))?;
+    js.get_stream(stream_name)
+        .await
+        .map_err(|e| format!("JetStream get_stream failed: {e}"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +81,10 @@ pub async fn start_workflow(
             if let Some(raw) = eid_meta {
                 if let Ok(meta) = serde_json::from_str::<WorkflowMeta>(&raw) {
                     if meta.status == "running" || meta.status == "suspended" {
+                        drop(conn);
+                        if meta.status == "suspended" {
+                            let _ = resume_workflow(redis, nats, js, project_id, &eid, source).await;
+                        }
                         return Ok(eid);
                     }
                 }
@@ -443,6 +450,42 @@ async fn load_execution_context(
     }
 
     Ok((steps, sleeps, promises))
+}
+
+pub async fn launch_callee_workflow(
+    redis: &SharedRedis,
+    nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
+    project_id: &str,
+    instance_id: &str,
+    input_json: &str,
+    source: &str,
+    unit_path: &str,
+) -> Result<(), String> {
+    let meta_key = redis_key(project_id, instance_id, "meta");
+    let meta_json: String = {
+        let mut conn = redis.lock().await;
+        conn.get(&meta_key).await.map_err(|e| e.to_string())?
+    };
+    let mut meta: WorkflowMeta = serde_json::from_str(&meta_json)
+        .map_err(|e| format!("invalid callee meta: {e}"))?;
+
+    if meta.status != "pending" {
+        return Ok(());
+    }
+
+    meta.status = "running".to_string();
+    let updated_meta = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+    let name_key = format!("wf:{project_id}:name:{unit_path}");
+    {
+        let mut conn = redis.lock().await;
+        let _: () = conn.set(&meta_key, &updated_meta).await.map_err(|e| e.to_string())?;
+        let _: () = conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
+    }
+
+    publish_wf_event(nats, project_id, instance_id, "workflow.started", unit_path, serde_json::json!({ "input": input_json })).await;
+    execute_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await?;
+    Ok(())
 }
 
 async fn execute_workflow(

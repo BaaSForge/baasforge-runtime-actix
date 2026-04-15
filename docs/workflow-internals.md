@@ -104,6 +104,7 @@ sequenceDiagram
     participant WF_A as Caller Workflow (QuickJS)
     participant SDK as sdk.rs __baal_start_call
     participant Redis
+    participant NATS_JS as NATS JetStream (WF_WAKE)
     participant NATS_CORE as NATS Core
     participant Worker as runtime_worker
     participant Engine as workflow_engine.rs
@@ -111,13 +112,13 @@ sequenceDiagram
 
     WF_A->>SDK: __baal_start_call(unitPath, dataJson, "sdk_call_0")
     SDK->>Redis: SET wf:pid:callee_iid:meta  {callerTriggered, callerInstanceId, callerPromiseName}
-    SDK->>NATS_CORE: publish wf.pid.callee_iid.start
+    SDK->>NATS_JS: publish wf.pid.callee_iid.start
     SDK-->>WF_A: returns immediately
     Note over WF_A: throws __SuspendExecution("promise","sdk_call_0",{timeout:300000})
     Note over WF_A: QuickJS exits — thread freed
 
-    Worker->>NATS_CORE: picks up .start (Phase C)
-    Worker->>Engine: start_workflow(callee_iid)
+    Worker->>NATS_JS: picks up .start (WF_WAKE stream)
+    Worker->>Engine: launch_callee_workflow(callee_iid)
     Engine->>WF_B: execute callee
 
     alt Callee completes
@@ -148,8 +149,6 @@ Each `sdk.call` in a workflow gets a stable promise name (`sdk_call_0`, `sdk_cal
 | `wf:{pid}:{callee_iid}:meta` | `__baal_start_call` | Callee seed: `callerInstanceId`, `callerPromiseName`, `status:pending` |
 | `wf:{pid}:{caller_iid}:promise:sdk_call_N` | `workflow_engine` on callee completion/failure | Durable result — read during caller replay |
 
-> **Known gap:** `.start` signals are published to core NATS but the wake consumer only filters `wf.*.*.wake` (JetStream). Phase C of the plan adds `wf.*.*.start` to the WF_WAKE stream and a handler branch in the consumer.
-
 ---
 
 ## NATS Usage
@@ -158,7 +157,7 @@ Each `sdk.call` in a workflow gets a stable promise name (`sdk_call_0`, `sdk_cal
 |---|---|---|---|
 | `wf.*.*.wake` | **JetStream** `WF_WAKE` stream | Engine → Worker | Durable timer / wake signals (sleep, promise timeout, step retry) |
 | `wf.{pid}.{iid}.wake` | Same stream | Engine → Worker | Per-instance wake publish |
-| `wf.{pid}.{iid}.start` | Core NATS (publish only) | `sdk.call` → Worker | Start a new workflow instance via RPC |
+| `wf.{pid}.{iid}.start` | **JetStream** `WF_WAKE` stream | `sdk.call` → Worker | Start a callee workflow instance; captured durably so the worker survives restarts |
 | `wf.events.{pid}.workflow.{iid}` | Core NATS | Engine → Subscribers | Lifecycle broadcast: `workflow.started / completed / suspended / failed`. WebSocket clients subscribe here. `sdk.call` no longer listens to this — it uses the durable promise mechanism instead. |
 | `wf.events.{pid}.>` | Core NATS | Engine → WS clients | Full project event fan-out (wildcard). Best-effort — missing events on crash is acceptable for real-time UI. |
 
@@ -166,9 +165,9 @@ Each `sdk.call` in a workflow gets a stable promise name (`sdk_call_0`, `sdk_cal
 
 ```
 Name:     WF_WAKE  (env: WF_NATS_JETSTREAM_STREAM)
-Subjects: wf.*.*.wake
+Subjects: wf.*.*.wake, wf.*.*.start
 Consumer: wf_wake_consumer  (env: WF_NATS_JETSTREAM_CONSUMER)
-          durable, pull, ack_wait=30s, filter=wf.*.*.wake
+          durable, pull, ack_wait=30s, filter_subjects=[wf.*.*.wake, wf.*.*.start]
 ```
 
 Wake message payload:
