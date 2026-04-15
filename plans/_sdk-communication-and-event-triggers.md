@@ -1,3 +1,6 @@
+read workflow samples, make its types strict and exported by ts, so we can handle dependencies
+
+
 1. at // Publish via JetStream for durability; fall back to core NATS
             if let Some(js_ctx) = &js {
                 js_ctx
