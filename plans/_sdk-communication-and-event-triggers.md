@@ -1,3 +1,61 @@
+1. at // Publish via JetStream for durability; fall back to core NATS
+            if let Some(js_ctx) = &js {
+                js_ctx
+                    .publish(start_subject, bytes::Bytes::from(start_payload))
+                    .await
+                    .map_err(|e| format!("sdk.call: JetStream publish start failed: {e}"))?;
+            } else {
+                nats_client
+                    .publish(start_subject, bytes::Bytes::from(start_payload))
+                    .await
+                    .map_err(|e| format!("sdk.call: NATS publish start failed: {e}"))?;
+            }
+dont fallback to core NATS and assume jet stream is always necessary to have in this project 
+
+
+
+2. are you sure we don't have to create a separated worker (binary) for the jetstream oull consumer for evt.*.>? at @runner.rs (101-117) , I mean double check it and tell me if it's better or not, if it doesnt have too much overhead and is scalable, just leave it and it's ok, I just want to make sure we can scale it
+
+
+
+3. is this ack wait enough?                 ack_wait: std::time::Duration::from_secs(30), I mean does it wait for the unit trigger to be ran completly? or its just the trigger max timeout?
+at @runner.rs (163-167) 
+
+
+4. check and make sure the NATS and redis clients are passed correctly, I mean we have a nats and a redis for the runtime generic usages and another for workflows only, also Im not sure if you wrote the minimum code at @runner.rs (1-745)  or not, I see compiled_code multiple times, and also I see workflow_engine::start_workflow multiple times, are you sure there is no single place in code to minimize the code you wrote? and also Im not sure if you wrote the codes at runner.rs src/services/runtime_worker/runner.rs exclusively for the workflows only or not, note we have events which start workflows, and also events which can trigger other unit types, find best place to write the code consuming and triggering based on the target unit type (I know new units are not implemented yet, but add a placeholder comment) 
+
+
+5. @mod.rs (251-253) how is that working? how did you designed the subscribers? I mean the subscribers can be designed this way:
+
+- any unit which is going to be listening to an event, can have list of wake up events in its metadata, then when the consumer receives a new event, it loads all units and find those which have these events set inside their metatada then triggers them, why you didn't use this solution instead of inserting list of subscribers per event? when did you insert those subscribers? I just saw @workflow_units.rs (8-20)  and noticed you parsed the js code to extract the triggering events, thats not proper solution as we have metadata for each units, is that test only?? @units/communication-tests/@sdk.d.ts:1-239 
+
+6. the codes @@sdk.d.ts (1-239) are duplicated between two folders inside @units/ , share it into a proper place
+
+7. What if we create a new unit type named `Event` which is just a typescript type then use that to be able to track the relationship and dependency between units instead of relying on strings like `sdk.emit("some-event")`, the second form can't be detected automatically during refactors, but we have developed a dependency layer to figure out the relationships to make the codes be lintable automatically to prevent having dangling events
+
+8. I think the `sdk.call` cant be generic as different units might have different handlers and options to be called, so propose a new sdk design instead of call and be explicit about the target unit types
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ---
 name: SDK Communication Event Triggers
 overview: "Implement sdk.emit (fire-and-forget event broadcast), fix sdk.call (workflow-to-workflow RPC via start consumer), add event triggers on workflow units, and enable sdk.call/sdk.emit in API units -- all with QuickJS lifecycle safety (no long-running JS, all waiting in NATS/Rust). TDD-first with 30+ test scenarios. API units are HTTP-only: no event triggers, no sdk.call targeting them."
