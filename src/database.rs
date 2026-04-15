@@ -67,7 +67,7 @@ where
     }
 }
 
-/// Same as `block_on_db` but for tokio runtimes (e.g. the runtime_worker binary).
+/// Same as `block_on_db` but for tokio runtimes (e.g. the workflow_worker binary).
 /// Use this in async code that runs on tokio so blocking r2d2/Diesel work doesn't block worker threads.
 pub async fn block_on_db_tokio<F, R>(pool: &DbPool, f: F) -> Result<R, BlockingDbError>
 where

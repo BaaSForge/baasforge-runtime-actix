@@ -123,7 +123,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
 
     // In test mode, run the JetStream wake consumer in-process (normally handled
-    // by the separate runtime_worker binary).
+    // by the separate workflow_worker binary).
     if settings.test_mode {
         if let (Some(wr), Some(nc)) = (&wf_redis, &nats_client) {
             let wr = wr.clone();
@@ -142,7 +142,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 .to_string();
             tracing::info!("[test_mode] starting inline JetStream wake consumer");
             tokio::spawn(async move {
-                if let Err(e) = crate::services::runtime_worker::runner::run_wake_consumer(
+                if let Err(e) = crate::services::workflow_worker::runner::run_wake_consumer(
                     wr,
                     nc,
                     p,

@@ -100,9 +100,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     // Keep the worker running
-    info!("runtime_worker running, press Ctrl+C to stop");
+    info!("workflow_worker running, press Ctrl+C to stop");
     tokio::signal::ctrl_c().await?;
-    info!("runtime_worker shutting down");
+    info!("workflow_worker shutting down");
 
     Ok(())
 }

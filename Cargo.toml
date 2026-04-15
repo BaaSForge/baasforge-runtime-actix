@@ -7,8 +7,8 @@ edition = "2024"
 default-run = "baal-runtime-actix"
 
 [[bin]]
-name = "runtime_worker"
-path = "src/bin/runtime_worker.rs"
+name = "workflow_worker"
+path = "src/bin/workflow_worker.rs"
 
 [[bin]]
 name = "release_listener"

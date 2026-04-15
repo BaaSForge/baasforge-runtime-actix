@@ -1,4 +1,4 @@
-use baal_runtime_actix::services::runtime_worker::runner;
+use baal_runtime_actix::services::workflow_worker::runner;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -53,7 +53,7 @@ pub struct Settings {
     pub wf_nats_url: Option<String>,
     /// JetStream stream name for durable workflow wake timers. Default: `"WF_WAKE"`.
     pub wf_nats_jetstream_stream: Option<String>,
-    /// Durable pull consumer name shared by all `runtime_worker` replicas. Default: `"wf_wake_consumer"`.
+    /// Durable pull consumer name shared by all `workflow_worker` replicas. Default: `"wf_wake_consumer"`.
     pub wf_nats_jetstream_consumer: Option<String>,
 
     // -- Test mode --

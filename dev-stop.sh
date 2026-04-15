@@ -22,10 +22,10 @@ for port in "${PORTS[@]}"; do
   fi
 done
 
-# Binary name from Cargo.toml: [[bin]] name = "runtime_worker" (path src/bin/runtime_worker.rs)
-echo "==> Stopping runtime worker processes..."
-pkill -x runtime_worker 2>/dev/null && echo "    pkill -x runtime_worker" || true
-pkill -f 'run --bin runtime_worker' 2>/dev/null && echo "    pkill -f 'run --bin runtime_worker'" || true
+# Binary name from Cargo.toml: [[bin]] name = "workflow_worker" (path src/bin/workflow_worker.rs)
+echo "==> Stopping workflow worker processes..."
+pkill -x workflow_worker 2>/dev/null && echo "    pkill -x workflow_worker" || true
+pkill -f 'run --bin workflow_worker' 2>/dev/null && echo "    pkill -f 'run --bin workflow_worker'" || true
 
 # Binary name from Cargo.toml: [[bin]] name = "release_listener" (path src/bin/release_listener.rs)
 echo "==> Stopping release listener processes..."
