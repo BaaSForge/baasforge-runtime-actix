@@ -1048,6 +1048,87 @@ function allTests(): TestDef[] {
         { type: "notNull", path: "completedAt" },
       ],
     },
+    {
+      name: "sdk-call-nested", category: "integration",
+      workflowSlug: "sdk-call-nested",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false, internalResolution: true,
+      checks: [
+        { type: "eq", path: "result", expected: 9 },
+      ],
+    },
+    {
+      name: "sdk-call-parallel", category: "integration",
+      workflowSlug: "sdk-call-parallel",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false, internalResolution: true,
+      checks: [
+        { type: "eq", path: "a", expected: 6 },
+        { type: "eq", path: "b", expected: 14 },
+        { type: "eq", path: "sum", expected: 20 },
+      ],
+    },
+    {
+      name: "sdk-call-with-steps-callee", category: "integration",
+      workflowSlug: "sdk-call-with-steps-callee",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false, internalResolution: true,
+      checks: [
+        { type: "eq", path: "calleeStep1", expected: 5 },
+        { type: "eq", path: "calleeStep2", expected: 10 },
+        { type: "eq", path: "combined", expected: 15 },
+      ],
+    },
+    {
+      name: "sdk-call-between-steps", category: "integration",
+      workflowSlug: "sdk-call-between-steps",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false, internalResolution: true,
+      checks: [
+        { type: "eq", path: "before", expected: 10 },
+        { type: "eq", path: "callResult", expected: 10 },
+        { type: "eq", path: "after", expected: 20 },
+      ],
+    },
+    {
+      name: "sdk-call-catch-callee-step-failure", category: "integration",
+      workflowSlug: "sdk-call-catch-callee-step-failure",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false, internalResolution: true,
+      checks: [
+        { type: "true", path: "caught" },
+        { type: "contains", path: "errorMessage", substr: "callee-failed-after-steps" },
+      ],
+    },
+    {
+      name: "sdk-emit-basic", category: "integration",
+      workflowSlug: "sdk-emit-basic",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip: "sdk.emit not yet implemented",
+      checks: [
+        { type: "notNull", path: "eventId" },
+        { type: "eq", path: "emitted", expected: true },
+      ],
+    },
+    {
+      name: "sdk-emit-in-ctx-run", category: "integration",
+      workflowSlug: "sdk-emit-in-ctx-run",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip: "sdk.emit not yet implemented",
+      checks: [
+        { type: "notNull", path: "eventId" },
+        { type: "eq", path: "idempotent", expected: true },
+      ],
+    },
 
     // ---- isolation (1) ----
     {
