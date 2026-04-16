@@ -273,10 +273,10 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
 /// `__baal_start_call(unitPath, dataJson, promiseName)` — seeds callee metadata
 /// in Redis and publishes a `.start` signal to NATS, then returns immediately.
 ///
-/// The caller workflow suspends via a durable promise keyed on `promiseName`.
-/// When the callee completes or fails, `workflow_engine` automatically resolves
-/// or rejects that promise and publishes a wake signal to the caller — no thread
-/// is held during the wait. This mirrors how Temporal handles child workflows.
+/// Backing host function for `sdk.callWorkflow`. The caller workflow suspends
+/// via a durable promise keyed on `promiseName`. When the callee completes or
+/// fails, `workflow_engine` resolves/rejects that promise and wakes the caller —
+/// no thread is held during the wait. This mirrors how Temporal handles child workflows.
 fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_name: String) -> rquickjs::Result<()> {
     let res: Result<(), String> = with_host_ctx(|hctx| {
         let project_id = hctx.project_id.clone();
@@ -285,18 +285,18 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
             let parts: Vec<&str> = unit_path.split('.').collect();
             if parts.len() != 4 {
                 return Err(format!(
-                    "sdk.call: invalid unit path '{unit_path}' — expected context.module.unitType.name"
+                    "sdk.callWorkflow: invalid unit path '{unit_path}' — expected context.module.unitType.name"
                 ));
             }
             let unit_type = parts[2];
             if unit_type == "api" {
                 return Err(format!(
-                    "sdk.call does not support API unit targets — API units are HTTP-only"
+                    "sdk.callWorkflow does not support API unit targets — API units are HTTP-only"
                 ));
             }
             if unit_type != "workflow" {
                 return Err(format!(
-                    "sdk.call: unit type '{unit_type}' is not supported yet — only 'workflow' units can be called"
+                    "sdk.callWorkflow: unit type '{unit_type}' is not supported — use sdk.callWorkflow only for workflow units"
                 ));
             }
 
@@ -321,7 +321,7 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
                     .arg(&meta)
                     .query_async::<()>(&mut *conn)
                     .await
-                    .map_err(|e| format!("sdk.call: redis SET meta failed: {e}"))?;
+                    .map_err(|e| format!("sdk.callWorkflow: redis SET meta failed: {e}"))?;
             }
 
             if let Some(nats) = &hctx.nats {
@@ -334,7 +334,7 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
                 .to_string();
                 nats.publish(start_subject, bytes::Bytes::from(start_payload))
                     .await
-                    .map_err(|e| format!("sdk.call: nats publish start failed: {e}"))?;
+                    .map_err(|e| format!("sdk.callWorkflow: nats publish start failed: {e}"))?;
             }
 
             Ok(())

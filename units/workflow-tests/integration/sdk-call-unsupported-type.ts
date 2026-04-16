@@ -6,7 +6,7 @@ export type Output =
   | { ok: false; reason: string };
 
 /**
- * sdk.call only supports workflow units; targeting an `api` unit must fail clearly.
+ * sdk.callWorkflow only supports workflow units; targeting an `api` unit must fail clearly.
  */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
@@ -14,8 +14,8 @@ export default workflow<Input, Output>(async (ctx) => {
   const target = "workflowtests.integration.api.not_a_workflow_unit";
 
   try {
-    await sdk.call(target, {});
-    return { ok: false, reason: "expected sdk.call to reject non-workflow units" };
+    await sdk.callWorkflow(target, {});
+    return { ok: false, reason: "expected sdk.callWorkflow to reject non-workflow units" };
   } catch (e) {
     const err = e as Error;
     return {

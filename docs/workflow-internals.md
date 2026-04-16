@@ -95,14 +95,16 @@ sequenceDiagram
 
 ---
 
-## sdk.call Flow (RPC between workflows)
+## sdk.callWorkflow Flow (RPC between workflows)
 
-`sdk.call` suspends the caller workflow via a durable promise — **no thread is held** while waiting for the callee. This mirrors how Temporal handles child workflows.
+`sdk.callWorkflow` suspends the caller workflow via a durable promise — **no thread is held** while waiting for the callee. This mirrors how Temporal handles child workflows.
+
+> **Design decision — no generic `sdk.call`:** We deliberately have no `sdk.call`. A generic call primitive is ambiguous: the suspension model, timeout semantics, and result shape differ between unit types. Each unit type that supports being invoked gets its own explicit SDK function (`sdk.callWorkflow`, and future equivalents for other types). This makes the behavior unambiguous at the call site and avoids a single overloaded primitive.
 
 ```mermaid
 sequenceDiagram
     participant WF_A as Caller Workflow (QuickJS)
-    participant SDK as sdk.rs __baal_start_call
+    participant SDK as sdk.rs __baal_start_call (sdk.callWorkflow)
     participant Redis
     participant NATS_JS as NATS JetStream (WF_WAKE)
     participant NATS_CORE as NATS Core
@@ -110,7 +112,7 @@ sequenceDiagram
     participant Engine as workflow_engine.rs
     participant WF_B as Callee Workflow (QuickJS)
 
-    WF_A->>SDK: __baal_start_call(unitPath, dataJson, "sdk_call_0")
+    WF_A->>SDK: sdk.callWorkflow → __baal_start_call(unitPath, dataJson, "sdk_call_0")
     SDK->>Redis: SET wf:pid:callee_iid:meta  {callerTriggered, callerInstanceId, callerPromiseName}
     SDK->>NATS_JS: publish wf.pid.callee_iid.start
     SDK-->>WF_A: returns immediately
@@ -128,25 +130,25 @@ sequenceDiagram
         Engine->>NATS_JS: publish wf.pid.caller_iid.wake  {reason:promise_resolved}
         Worker->>Engine: resume_workflow(caller_iid)
         Engine->>Redis: KEYS wf:pid:caller_iid:*  — loads promise:sdk_call_0 as resolved
-        Engine->>WF_A: re-run from top; sdk.call sees cached promise → returns result
+        Engine->>WF_A: re-run from top; sdk.callWorkflow sees cached promise → returns result
     else Callee fails
         WF_B-->>Engine: Failed(error)
         Engine->>Redis: SET NX wf:pid:caller_iid:promise:sdk_call_0  {status:rejected, error}
         Engine->>NATS_JS: publish wf.pid.caller_iid.wake  {reason:promise_rejected}
         Worker->>Engine: resume_workflow(caller_iid)
-        Engine->>WF_A: re-run; sdk.call sees rejected promise → throws error
+        Engine->>WF_A: re-run; sdk.callWorkflow sees rejected promise → throws error
     end
 ```
 
 ### How the call index works
 
-Each `sdk.call` in a workflow gets a stable promise name (`sdk_call_0`, `sdk_call_1`, …) based on a counter that resets to 0 for every QuickJS execution. This is safe because execution always replays the same call sequence in the same order. On replay, calls whose promise is already in `wfCtx.__promises` short-circuit instantly — `__baal_start_call` is never invoked again.
+Each `sdk.callWorkflow` in a workflow gets a stable promise name (`sdk_call_0`, `sdk_call_1`, …) based on a counter that resets to 0 for every QuickJS execution. This is safe because execution always replays the same call sequence in the same order. On replay, calls whose promise is already in `wfCtx.__promises` short-circuit instantly — `__baal_start_call` is never invoked again.
 
-### Redis keys added by sdk.call
+### Redis keys added by sdk.callWorkflow
 
 | Key | Set by | Purpose |
 |---|---|---|
-| `wf:{pid}:{callee_iid}:meta` | `__baal_start_call` | Callee seed: `callerInstanceId`, `callerPromiseName`, `status:pending` |
+| `wf:{pid}:{callee_iid}:meta` | `sdk.callWorkflow` (`__baal_start_call`) | Callee seed: `callerInstanceId`, `callerPromiseName`, `status:pending` |
 | `wf:{pid}:{caller_iid}:promise:sdk_call_N` | `workflow_engine` on callee completion/failure | Durable result — read during caller replay |
 
 ---
@@ -157,8 +159,8 @@ Each `sdk.call` in a workflow gets a stable promise name (`sdk_call_0`, `sdk_cal
 |---|---|---|---|
 | `wf.*.*.wake` | **JetStream** `WF_WAKE` stream | Engine → Worker | Durable timer / wake signals (sleep, promise timeout, step retry) |
 | `wf.{pid}.{iid}.wake` | Same stream | Engine → Worker | Per-instance wake publish |
-| `wf.{pid}.{iid}.start` | **JetStream** `WF_WAKE` stream | `sdk.call` → Worker | Start a callee workflow instance; captured durably so the worker survives restarts |
-| `wf.events.{pid}.workflow.{iid}` | Core NATS | Engine → Subscribers | Lifecycle broadcast: `workflow.started / completed / suspended / failed`. WebSocket clients subscribe here. `sdk.call` no longer listens to this — it uses the durable promise mechanism instead. |
+| `wf.{pid}.{iid}.start` | **JetStream** `WF_WAKE` stream | `sdk.callWorkflow` → Worker | Start a callee workflow instance; captured durably so the worker survives restarts |
+| `wf.events.{pid}.workflow.{iid}` | Core NATS | Engine → Subscribers | Lifecycle broadcast: `workflow.started / completed / suspended / failed`. WebSocket clients subscribe here. `sdk.callWorkflow` no longer listens to this — it uses the durable promise mechanism instead. |
 | `wf.events.{pid}.>` | Core NATS | Engine → WS clients | Full project event fan-out (wildcard). Best-effort — missing events on crash is acceptable for real-time UI. |
 
 ### JetStream Stream: `WF_WAKE`

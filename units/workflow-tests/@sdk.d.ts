@@ -5,16 +5,17 @@ declare module "@sdk" {
 
   export const sdk: {
     /**
-     * Invoke another unit by its path (`context.module.unitType.name`).
+     * Invoke another workflow by its path (`context.module.workflow.name`).
      *
-     * Currently supports triggering **workflow units only**.
-     * Returns a Promise that resolves with the workflow's final result.
+     * Suspends the caller via a durable promise until the callee workflow
+     * completes. No thread is held while waiting.
      *
-     * Can be called from any unit type (workflow, api, and future unit types).
-     * Support for triggering other unit types (api, actors, sagas, etc.)
-     * will be added as each unit type is implemented.
+     * There is no generic `sdk.call` — each unit type that supports being
+     * called has its own explicit function (e.g. `sdk.callWorkflow`).
+     * This makes call semantics unambiguous and avoids a single overloaded
+     * primitive that behaves differently per target.
      */
-    call<T = any>(unitPath: string, data?: any): Promise<T>;
+    callWorkflow<T = any>(unitPath: string, data?: any): Promise<T>;
 
     /**
      * Fire-and-forget event emission. Publishes the event on JetStream

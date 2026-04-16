@@ -4,9 +4,9 @@ export type Input = void;
 export type Output = { called: true; doubled: number };
 
 /**
- * Caller workflow: invokes sdk-call-callee via sdk.call and returns its result.
+ * Caller workflow: invokes sdk-call-callee via sdk.callWorkflow and returns its result.
  *
- * Happy-path test for durable sdk.call suspension:
+ * Happy-path test for durable sdk.callWorkflow suspension:
  *   1. Caller suspends on sdk_call_0 (durable promise).
  *   2. Worker picks up .start signal (Phase C), runs callee.
  *   3. workflow_engine resolves promise:sdk_call_0 on caller, publishes wake.
@@ -17,6 +17,6 @@ export type Output = { called: true; doubled: number };
  */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const result = await sdk.call("test.wf.workflow.sdk-call-callee", { n: 2 });
+  const result = await sdk.callWorkflow("test.wf.workflow.sdk-call-callee", { n: 2 });
   return { called: true, doubled: result?.doubled };
 });

@@ -4,7 +4,7 @@ export type Input = void;
 export type Output = { result: number };
 
 export default workflow<Input, Output>(async (_ctx) => {
-  const middle = await sdk.call<{ value: number }>(
+  const middle = await sdk.callWorkflow<{ value: number }>(
     "test.wf.workflow.sdk-call-nested-middle",
     { n: 3 },
   );

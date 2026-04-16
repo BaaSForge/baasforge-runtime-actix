@@ -45,7 +45,7 @@ pub struct WorkflowMeta {
     pub created_at: String,
     #[serde(rename = "callerTriggered", default)]
     pub caller_triggered: bool,
-    /// Instance ID of the workflow that called this one via sdk.call.
+    /// Instance ID of the workflow that called this one via sdk.callWorkflow.
     /// Set when callerTriggered is true. Used to resolve the caller's
     /// durable promise once this workflow completes or fails.
     #[serde(rename = "callerInstanceId", default)]

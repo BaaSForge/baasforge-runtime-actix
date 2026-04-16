@@ -4,7 +4,7 @@ export type Input = void;
 export type Output = { calleeStep1: number; calleeStep2: number; combined: number };
 
 export default workflow<Input, Output>(async (_ctx) => {
-  const result = await sdk.call<{ step1: number; step2: number }>(
+  const result = await sdk.callWorkflow<{ step1: number; step2: number }>(
     "test.wf.workflow.sdk-call-callee-with-steps",
     { n: 4 },
   );

@@ -307,9 +307,9 @@ globalThis.__baal_wf_result = (function () {
     // Main run handler
     var ctx = __createWorkflowContext(__wfCtx);
 
-    // Override sdk.call for workflow context.
+    // Override sdk.callWorkflow for workflow context.
     //
-    // Instead of blocking a thread while waiting for the callee, sdk.call
+    // Instead of blocking a thread while waiting for the callee, sdk.callWorkflow
     // suspends the caller via a durable promise and returns when the callee
     // completes. This mirrors how Temporal handles child workflows:
     //   1. First execution: seed callee meta in Redis, publish .start, suspend.
@@ -320,7 +320,7 @@ globalThis.__baal_wf_result = (function () {
     // This counter resets to 0 each execution (fresh QuickJS runtime), which
     // is safe because execution always replays the same call sequence.
     var __sdkCallIdx = 0;
-    sdk.call = function (unitPath, data) {
+    sdk.callWorkflow = function (unitPath, data) {
       var callName = "sdk_call_" + __sdkCallIdx++;
 
       var cached = __wfCtx.__promises[callName];
@@ -332,18 +332,18 @@ globalThis.__baal_wf_result = (function () {
         }
         if (cached.status === "rejected") {
           return Promise.reject(
-            new Error(cached.error || "sdk.call: callee workflow failed")
+            new Error(cached.error || "sdk.callWorkflow: callee workflow failed")
           );
         }
         if (cached.status === "timed_out") {
           return Promise.reject(
-            new Error("sdk.call timed out waiting for: " + unitPath)
+            new Error("sdk.callWorkflow timed out waiting for: " + unitPath)
           );
         }
       }
 
       if (typeof __baal_start_call !== "function") {
-        throw new Error("sdk.call is not available: NATS not configured");
+        throw new Error("sdk.callWorkflow is not available: NATS not configured");
       }
 
       var dataJson = data !== undefined ? JSON.stringify(data) : "null";

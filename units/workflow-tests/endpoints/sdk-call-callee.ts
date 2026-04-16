@@ -4,7 +4,7 @@ export type Input = { n: number };
 export type Output = { doubled: number };
 
 /**
- * Simple callee for sdk.call tests.
+ * Simple callee for sdk.callWorkflow tests.
  * Returns the input number doubled — predictable, fast, no steps/sleeps.
  * Used by sdk-call-basic, sdk-call-sequential, sdk-call-with-steps tests.
  */

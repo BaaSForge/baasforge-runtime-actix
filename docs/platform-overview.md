@@ -45,7 +45,7 @@ Each unit type has its own trigger URL prefix:
 - **API units**: `/api/v1/trigger/{project_id}/{context}/{module}/{unit_name}`
 - **Workflow units**: `/api/v1/trigger/wf/{project_id}/{context}/{module}/{workflow_name}`
 
-Units can also be triggered internally via `sdk.call(unitPath, data)` from within any unit's code.
+Units can also be triggered internally via `sdk.callWorkflow(unitPath, data)` (and future per-type equivalents) from within any unit's code.
 
 ## The `@sdk` Module
 
@@ -57,17 +57,19 @@ import { workflow, sdk } from "@sdk";
 
 At runtime, `import` statements are stripped and `workflow`, `sdk`, etc. are available as pre-initialized globals. No user setup or configuration is needed — every tool is initialized and managed by the platform, scoped to the unit's project.
 
-### `sdk.call()` — Inter-Unit Communication
+### `sdk.callWorkflow()` — Workflow Invocation
 
-`sdk.call(unitPath, data)` is the universal primitive for inter-unit communication. Currently it supports triggering **workflow units only**. It can be called from any unit type. Support for other unit types will be added as they are implemented.
+`sdk.callWorkflow(unitPath, data)` invokes a workflow unit and suspends the caller durably until the callee completes.
 
 ```typescript
-const result = await sdk.call("billing.payments.workflow.charge", { orderId, amount });
+const result = await sdk.callWorkflow("billing.payments.workflow.charge", { orderId, amount });
 ```
+
+> **No generic `sdk.call`:** We deliberately avoid a single overloaded `sdk.call`. Calling a workflow involves durable suspension; calling an API unit or actor would require completely different semantics. Each unit type that supports being invoked gets its own explicit SDK function. `sdk.callWorkflow` is the first; others will follow as new unit types are implemented.
 
 ## Cross-Unit Type Exports and Imports
 
-Units can export TypeScript types that other units import for compile-time type safety when calling them via `sdk.call()`. This is **compile-time only** — type imports are stripped at runtime just like `node:`* imports.
+Units can export TypeScript types that other units import for compile-time type safety when calling them via `sdk.callWorkflow()` (or future per-type SDK functions). This is **compile-time only** — type imports are stripped at runtime just like `node:`* imports.
 
 ### Import Syntax
 
@@ -103,14 +105,14 @@ Lint/type-checking of unit code is performed by the **dashboard platform** (a co
 
 This runtime project does not implement or test these lint rules — it only needs to be aware of the convention so the SDK types are compatible.
 
-> **Convention note for future unit types:** Every unit type that supports `sdk.call()` must define its own export convention following this same pattern. This ensures a consistent, lintable pattern across all unit types.
+> **Convention note for future unit types:** Every unit type that supports being invoked must define its own export convention and its own explicit SDK function following this same pattern. This ensures a consistent, lintable pattern across all unit types.
 
 ## The `units/` Folder — Source of Truth
 
 The `units/` folder in this repository is the **source of truth** for what code is allowed inside units:
 
 - `**units/runtime-check/`** — Tests all core language and Node.js API features available in the QuickJS runtime (ES language features, `node:crypto`, `node:buffer`, `node:url`, `node:querystring`, `node:util`, `node:timers/promises`, `fetch`, `URL`, `TextEncoder`/`TextDecoder`, etc.). The runtime supports the **exact same features** listed here.
-- `**units/workflow-tests/`** — Tests all Durable Workflow SDK features (`ctx.run`, `ctx.sleep`, `ctx.promise`, `ctx.set`/`get`, `ctx.rand`, `ctx.date`, `TerminalError`, compensation, parallel execution, `sdk.call` for workflow triggering, shared handlers, crash recovery, and cross-project isolation).
+- `**units/workflow-tests/`** — Tests all Durable Workflow SDK features (`ctx.run`, `ctx.sleep`, `ctx.promise`, `ctx.set`/`get`, `ctx.rand`, `ctx.date`, `TerminalError`, compensation, parallel execution, `sdk.callWorkflow` for workflow triggering, shared handlers, crash recovery, and cross-project isolation).
 
 ### Allowed Imports
 
@@ -129,7 +131,7 @@ Projects are **completely isolated**. Every SDK tool is scoped by `project_id`, 
 - **Redis keys**: Prefixed with `wf:{project_id}:` — a unit in Project A cannot read or write keys belonging to Project B.
 - **NATS subjects**: Scoped as `wf.{project_id}.{instance_id}.wake` — subscriptions are filtered by project.
 - **Workflow state**: All step results, promises, state, and metadata are keyed by project ID.
-- `**sdk.call`**: Can only invoke units within the same project.
+- **`sdk.callWorkflow`**: Can only invoke units within the same project.
 
 This isolation is enforced at the Rust host function layer, not at the infrastructure level. A single shared Redis instance and NATS cluster serve all projects.
 

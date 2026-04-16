@@ -64,11 +64,11 @@ function __stripImports(source) {
 
 // --- sdk (inter-unit communication) ---
 
-// Default sdk.call — overridden by workflow-runtime.js with durable suspension.
-// For non-workflow contexts this throws immediately (sdk.call is workflow-only).
+// Default sdk.callWorkflow — overridden by workflow-runtime.js with durable suspension.
+// For non-workflow contexts this throws immediately (sdk.callWorkflow is workflow-only).
 var sdk = {
-  call: function (_unitPath, _data) {
-    throw new Error('sdk.call is only available inside workflow units');
+  callWorkflow: function (_unitPath, _data) {
+    throw new Error('sdk.callWorkflow is only available inside workflow units');
   },
 };
 

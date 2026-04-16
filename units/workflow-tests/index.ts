@@ -51,7 +51,7 @@ interface TestDef {
   dedup: boolean;
   /**
    * When true, a promise suspension with no remaining handlers is expected — the
-   * promise will be resolved internally (e.g. by an sdk.call callee completing).
+   * promise will be resolved internally (e.g. by an sdk.callWorkflow callee completing).
    * The runner sleeps and keeps polling instead of failing immediately.
    */
   internalResolution?: boolean;
@@ -1306,7 +1306,7 @@ function allTests(): TestDef[] {
       input: {},
       handlers: [], timeoutPromise: false, cancelOnSuspend: false,
       replay: false, dedup: false,
-      skip: "sdk.call caller-side timeout not yet implemented",
+      skip: "sdk.callWorkflow caller-side timeout not yet implemented",
       checks: [
         { type: "notNull", path: "result" },
       ],
@@ -1690,8 +1690,8 @@ function allEndpointTests(): EndpointTestDef[] {
       },
     },
 
-    // ── sdk.call suspension ──────────────────────────────────────────────
-    // Verifies that sdk.call does NOT block the caller thread. The caller
+    // ── sdk.callWorkflow suspension ──────────────────────────────────────
+    // Verifies that sdk.callWorkflow does NOT block the caller thread. The caller
     // must pass through "suspended" state (durable promise) before the callee
     // resolves it. With the full .start pipeline active the callee may
     // complete so quickly that by the first poll the caller has already

@@ -4,7 +4,7 @@ export type Input = void;
 export type Output = { first: number; second: number };
 
 /**
- * Makes two sequential sdk.call invocations to verify the call-index counter
+ * Makes two sequential sdk.callWorkflow invocations to verify the call-index counter
  * (sdk_call_0, sdk_call_1) works correctly for multiple calls in one workflow.
  *
  * On replay:
@@ -17,7 +17,7 @@ export type Output = { first: number; second: number };
  */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const a = await sdk.call("test.wf.workflow.sdk-call-callee", { n: 3 });
-  const b = await sdk.call("test.wf.workflow.sdk-call-callee", { n: 5 });
+  const a = await sdk.callWorkflow("test.wf.workflow.sdk-call-callee", { n: 3 });
+  const b = await sdk.callWorkflow("test.wf.workflow.sdk-call-callee", { n: 5 });
   return { first: a?.doubled, second: b?.doubled };
 });

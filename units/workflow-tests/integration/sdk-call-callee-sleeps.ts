@@ -5,7 +5,7 @@ export type Output = { callResult: { n_doubled: number; slept: boolean }; caller
 
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const callResult = await sdk.call<{ n_doubled: number; slept: boolean }>(
+  const callResult = await sdk.callWorkflow<{ n_doubled: number; slept: boolean }>(
     "test.wf.workflow.sdk-call-sleeping-callee",
     { n: 5 },
   );
