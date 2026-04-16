@@ -57,6 +57,8 @@ interface TestDef {
   internalResolution?: boolean;
   /** When true the test is recorded as skipped (pending an unimplemented feature). */
   skip?: string;
+  /** Override the default 100-iteration poll cap. Use for long-running steps. */
+  maxIterations?: number;
 }
 
 type CheckDef =
@@ -212,7 +214,7 @@ async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
 
     let handlerIdx = 0;
 
-    for (let iter = 0; iter < 100; iter++) {
+    for (let iter = 0; iter < (test.maxIterations ?? 100); iter++) {
       await sleep(100);
 
       const statusResp = await httpGet(`${instanceBase}/status`);
@@ -1220,6 +1222,19 @@ function allTests(): TestDef[] {
         { type: "eq", path: "beforeSleep", expected: "before-sleep" },
         { type: "eq", path: "afterSleep", expected: "before-sleep" },
         { type: "true", path: "persisted" },
+      ],
+    },
+
+    {
+      name: "ack-boundary-long-step", category: "durability",
+      workflowSlug: "ack-boundary-long-step",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      maxIterations: 500,
+      checks: [
+        { type: "true", path: "done" },
+        { type: "true", path: "exceededAckWait" },
       ],
     },
 
