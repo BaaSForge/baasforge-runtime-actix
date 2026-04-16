@@ -3,7 +3,7 @@ name: WebSocket Event Broadcasting
 overview: Replace the polling loops in workflow.rs and sdk.rs with a NATS-based event broadcasting system, exposed to external clients via a per-project WebSocket endpoint using actix-ws.
 todos:
   - id: publish-events
-    content: Add `publish_wf_event` helper in workflow_engine.rs and publish events (started, completed, failed, suspended) at each state transition in execute_workflow + start_workflow
+    content: Add `publish_wf_event` helper in workflow_engine.rs and publish events (started, completed, failed, suspended) at each state transition in drive_workflow + start_workflow
     status: pending
   - id: ws-endpoint
     content: Create src/routes/ws.rs with actix-ws WebSocket handler that subscribes to NATS wf.events.{project_id}.> and forwards to client, with filter/subscribe support
@@ -38,7 +38,7 @@ isProject: false
 ```mermaid
 flowchart TB
     subgraph producers [Event Producers]
-        WFEngine["workflow_engine::execute_workflow"]
+        WFEngine["workflow_engine::drive_workflow"]
     end
 
     subgraph nats [NATS]
@@ -77,7 +77,7 @@ These are **core NATS** publishes (not JetStream) -- events are ephemeral/real-t
 
 ## 2. Publish lifecycle events from `workflow_engine`
 
-In [`src/services/workflow_engine.rs`](src/services/workflow_engine.rs) `execute_workflow` (line 334), after each terminal state transition, publish an event:
+In [`src/services/workflow_engine.rs`](src/services/workflow_engine.rs) `drive_workflow` (line 334), after each terminal state transition, publish an event:
 
 - **`completed`**: after setting the result key (line 373-392)
 - **`failed`**: after setting the failed meta (line 576-598)

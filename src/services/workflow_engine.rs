@@ -152,7 +152,7 @@ pub async fn start_workflow(
     // Swallow workflow-level failures: a workflow that immediately fails is a valid
     // terminal state. The instanceId was created and meta was written; the caller
     // can query /status to see the failed result.
-    let _ = execute_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await;
+    let _ = drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await;
 
     Ok(instance_id.to_string())
 }
@@ -178,7 +178,7 @@ pub async fn resume_workflow(
             _ => return Ok(()),
         }
     };
-    execute_workflow(redis, nats, js, project_id, instance_id, &old_meta.input, source, None, None)
+    drive_workflow(redis, nats, js, project_id, instance_id, &old_meta.input, source, None, None)
         .await?;
     Ok(())
 }
@@ -194,7 +194,7 @@ pub async fn call_handler(
     handler_input_json: &str,
     source: &str,
 ) -> Result<String, String> {
-    let handler_result = execute_workflow(
+    let handler_result = drive_workflow(
         redis,
         nats,
         js,
@@ -587,11 +587,11 @@ pub async fn launch_callee_workflow(
     }
 
     publish_wf_event(nats, project_id, instance_id, "workflow.started", unit_path, serde_json::json!({ "input": input_json })).await;
-    execute_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await?;
+    drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await?;
     Ok(())
 }
 
-async fn execute_workflow(
+async fn drive_workflow(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
     js: &Option<jetstream::Context>,

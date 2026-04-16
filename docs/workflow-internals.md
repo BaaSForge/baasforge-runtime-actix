@@ -39,7 +39,7 @@ graph LR
     WC -->|pull messages| JS_WF
     WC -->|read meta/steps| Redis
     WC -->|load source| PG
-    WC -->|execute_workflow| Redis
+    WC -->|drive_workflow| Redis
     WC -->|publish lifecycle| CORE
 
     WS -->|subscribe| CORE
@@ -183,10 +183,10 @@ The consumer NAKs with remaining delay if `fire_at` is still in the future, so N
 
 `ack_wait=300s` is the NATS redelivery ceiling -- not a max workflow duration.
 
-**The ack is sent after `execute_workflow` returns** (`runner.rs`). `ack_wait` bounds one **execution segment** (all code between two suspension points), not the total workflow lifetime.
+**The ack is sent after `drive_workflow` returns** (`runner.rs`). `ack_wait` bounds one **execution segment** (all code between two suspension points), not the total workflow lifetime.
 
 **For sleep/timer workflows this is safe:**
-- When a workflow calls `ctx.sleep(hours)`, `execute_workflow` suspends and returns immediately
+- When a workflow calls `ctx.sleep(hours)`, `drive_workflow` suspends and returns immediately
 - A new wake message with `fire_at` is published to JetStream
 - The consumer NAKs with the remaining delay -- so the message is not redelivered until `fire_at`
 - No ack is held open during the sleep
@@ -206,13 +206,13 @@ Key pattern: `wf:{project_id}:{instance_id}:{suffix}`
 | Key | Written by | Read by | Purpose |
 |---|---|---|---|
 | `wf:{pid}:name:{unitPath}` | `start_workflow` | `start_workflow` | Dedup: maps unit path → active instance ID. Only reused if status is `running` or `suspended`. |
-| `wf:{pid}:{iid}:meta` | `start_workflow`, `execute_workflow` | `handle_wake`, `resume_workflow`, `get_workflow_status` | Workflow metadata: `name` (unit path), `status`, `input`, `createdAt`, `callerTriggered` |
-| `wf:{pid}:{iid}:result` | `execute_workflow` on complete/fail | `get_workflow_result`, `get_workflow_status` | Final return value or `{"error":"..."}` |
-| `wf:{pid}:{iid}:suspended` | `execute_workflow` on suspend | `handle_wake`, `get_workflow_status` | Suspension descriptor: `{type, name, config}`. Used by wake handler to know which sleep/promise to mark. |
+| `wf:{pid}:{iid}:meta` | `start_workflow`, `drive_workflow` | `handle_wake`, `resume_workflow`, `get_workflow_status` | Workflow metadata: `name` (unit path), `status`, `input`, `createdAt`, `callerTriggered` |
+| `wf:{pid}:{iid}:result` | `drive_workflow` on complete/fail | `get_workflow_result`, `get_workflow_status` | Final return value or `{"error":"..."}` |
+| `wf:{pid}:{iid}:suspended` | `drive_workflow` on suspend | `handle_wake`, `get_workflow_status` | Suspension descriptor: `{type, name, config}`. Used by wake handler to know which sleep/promise to mark. |
 | `wf:{pid}:{iid}:step:{name}` | `host_persist_step` / `host_persist_step_error` | `load_execution_context` (replay) | Memoized step result. Replay checks this map — if present, skips re-executing the step function. Core of durability. |
 | `wf:{pid}:{iid}:sleep:{name}` | `handle_wake` (on timer fire) | `load_execution_context` (replay) | `{elapsed:true}` flag. On replay, `ctx.sleep` checks this to decide whether to continue or suspend again. |
 | `wf:{pid}:{iid}:promise:{name}` | `resolve_promise` / `reject_promise` / `handle_wake` (timeout) | `load_execution_context` (replay) | `{status:"resolved"|"rejected"|"timed_out", value?}`. On replay, `ctx.promise` checks this. |
-| `wf:{pid}:{iid}:step_retry:{name}` | `execute_workflow` (retry branch) | `execute_workflow` (retry branch) | Retry attempt counter `{attempt: N}`. Enforces `maxAttempts`. Deleted when retries exhaust. |
+| `wf:{pid}:{iid}:step_retry:{name}` | `drive_workflow` (retry branch) | `drive_workflow` (retry branch) | Retry attempt counter `{attempt: N}`. Enforces `maxAttempts`. Deleted when retries exhaust. |
 | `wf:{pid}:{iid}:state:{key}` | `host_persist_state` (`sdk.setState`) | `host_read_state` (`sdk.getState`) | Arbitrary user-managed persistent state. Read/written on demand, not loaded during replay. |
 
 ### Replay Bulk Load
@@ -264,9 +264,9 @@ The correct long-term solution is a `DELETE /workflows/{id}` API that removes al
 ```mermaid
 stateDiagram-v2
     [*] --> running : start_workflow
-    running --> completed : execute_workflow → Completed
-    running --> suspended : execute_workflow → Suspended
-    running --> failed : execute_workflow → Failed
+    running --> completed : drive_workflow → Completed
+    running --> suspended : drive_workflow → Suspended
+    running --> failed : drive_workflow → Failed
     suspended --> running : resume_workflow (wake received)
     running --> cancelled : cancel_workflow (HTTP)
     completed --> [*]
@@ -279,9 +279,9 @@ All transitions are atomic via a Redis Lua CAS script (`transition_status`). The
 | Transition | Allowed from | To | Caller |
 |---|---|---|---|
 | `cancel_workflow` | running, suspended | cancelled | HTTP route |
-| `execute_workflow` Completed | running | completed | worker |
-| `execute_workflow` Failed | running | failed | worker |
-| `execute_workflow` Suspended | running | suspended | worker |
+| `drive_workflow` Completed | running | completed | worker |
+| `drive_workflow` Failed | running | failed | worker |
+| `drive_workflow` Suspended | running | suspended | worker |
 
 ---
 
