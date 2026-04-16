@@ -13,15 +13,44 @@ struct FilterMsg {
     instance_id: Option<String>,
 }
 
+enum WsSubjectSet {
+    Single(String),
+    Dual(String, String),
+}
+
+fn build_ws_subject_set(
+    project_id: &str,
+    unit_type: Option<&str>,
+    instance_id: Option<&str>,
+) -> WsSubjectSet {
+    match (unit_type, instance_id) {
+        (Some("queue-worker"), Some(iid)) => {
+            WsSubjectSet::Single(format!("qw.events.{project_id}.queue-worker.{iid}"))
+        }
+        (Some("queue-worker"), None) => {
+            WsSubjectSet::Single(format!("qw.events.{project_id}.queue-worker.>"))
+        }
+        (Some(ut), Some(iid)) => {
+            WsSubjectSet::Single(format!("wf.events.{project_id}.{ut}.{iid}"))
+        }
+        (Some(ut), None) => {
+            WsSubjectSet::Single(format!("wf.events.{project_id}.{ut}.>"))
+        }
+        (None, _) => WsSubjectSet::Dual(
+            format!("wf.events.{project_id}.>"),
+            format!("qw.events.{project_id}.>"),
+        ),
+    }
+}
+
 /// WebSocket endpoint: `GET /api/v1/ws/{project_id}`
 ///
-/// Upgrades the connection to a WebSocket and subscribes to
-/// `wf.events.{project_id}.>` on core NATS, forwarding every
-/// matching event as a JSON text frame.
+/// Upgrades the connection and subscribes to NATS lifecycle event subjects,
+/// forwarding every matching event as a JSON text frame.
 ///
 /// Clients may send filter messages to narrow the subscription:
 /// ```json
-/// {"action":"subscribe","unitType":"workflow","instanceId":"abc-123"}
+/// {"action":"subscribe","unitType":"queue-worker","instanceId":"abc-123"}
 /// {"action":"subscribe","unitType":"workflow"}
 /// {"action":"subscribe"}
 /// ```
@@ -33,71 +62,154 @@ pub async fn ws_project_events(
 ) -> Result<HttpResponse, actix_web::Error> {
     let project_id = path.into_inner();
 
-    let Some(nats) = ctx.nats_client.clone() else {
+    if ctx.wf_nats_client.is_none() && ctx.wq_nats_client.is_none() {
         return Ok(HttpResponse::ServiceUnavailable().body("NATS not configured"));
-    };
+    }
 
     let (resp, session, msg_stream) = actix_ws::handle(&req, stream)?;
 
-    actix_web::rt::spawn(run_ws(session, msg_stream, nats, project_id));
+    actix_web::rt::spawn(run_ws(
+        session,
+        msg_stream,
+        ctx.wf_nats_client.clone(),
+        ctx.wq_nats_client.clone(),
+        project_id,
+    ));
 
     Ok(resp)
+}
+
+async fn subscribe_single(
+    wf_nats: &Option<async_nats::Client>,
+    wq_nats: &Option<async_nats::Client>,
+    subject: &str,
+) -> Option<async_nats::Subscriber> {
+    let client = if subject.starts_with("qw.") {
+        wq_nats.as_ref()?
+    } else {
+        wf_nats.as_ref()?
+    };
+    client.subscribe(subject.to_string()).await.ok()
 }
 
 async fn run_ws(
     mut session: actix_ws::Session,
     mut msg_stream: actix_ws::MessageStream,
-    nats: async_nats::Client,
+    wf_nats: Option<async_nats::Client>,
+    wq_nats: Option<async_nats::Client>,
     project_id: String,
 ) {
-    let mut current_subject = format!("wf.events.{project_id}.>");
+    let mut current_unit_type: Option<String> = None;
+    let mut current_instance_id: Option<String> = None;
 
     'outer: loop {
-        let mut subscriber = match nats.subscribe(current_subject.clone()).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "WS: NATS subscribe failed");
-                break;
-            }
-        };
+        let subject_set = build_ws_subject_set(
+            &project_id,
+            current_unit_type.as_deref(),
+            current_instance_id.as_deref(),
+        );
 
-        loop {
-            tokio::select! {
-                ws_msg = msg_stream.next() => {
-                    match ws_msg {
-                        Some(Ok(actix_ws::Message::Text(text))) => {
-                            if let Ok(filter) = serde_json::from_str::<FilterMsg>(&text)
-                                && filter.action == "subscribe"
-                            {
-                                current_subject = build_subject(
-                                    &project_id,
-                                    filter.unit_type.as_deref(),
-                                    filter.instance_id.as_deref(),
-                                );
-                                // Drop old subscription and resubscribe on next outer iteration
-                                drop(subscriber);
-                                continue 'outer;
+        match subject_set {
+            WsSubjectSet::Single(subject) => {
+                let mut subscriber =
+                    match subscribe_single(&wf_nats, &wq_nats, &subject).await {
+                        Some(s) => s,
+                        None => {
+                            tracing::warn!(subject, "WS: NATS subscribe failed (client unavailable)");
+                            break;
+                        }
+                    };
+
+                loop {
+                    tokio::select! {
+                        ws_msg = msg_stream.next() => {
+                            match ws_msg {
+                                Some(Ok(actix_ws::Message::Text(text))) => {
+                                    if let Ok(filter) = serde_json::from_str::<FilterMsg>(&text)
+                                        && filter.action == "subscribe"
+                                    {
+                                        current_unit_type = filter.unit_type;
+                                        current_instance_id = filter.instance_id;
+                                        drop(subscriber);
+                                        continue 'outer;
+                                    }
+                                }
+                                Some(Ok(actix_ws::Message::Ping(bytes))) => {
+                                    if session.pong(&bytes).await.is_err() {
+                                        break 'outer;
+                                    }
+                                }
+                                Some(Ok(actix_ws::Message::Close(_))) | None => break 'outer,
+                                _ => {}
                             }
                         }
-                        Some(Ok(actix_ws::Message::Ping(bytes))) => {
-                            if session.pong(&bytes).await.is_err() {
-                                break 'outer;
+                        nats_msg = subscriber.next() => {
+                            match nats_msg {
+                                Some(msg) => {
+                                    if let Ok(text) = std::str::from_utf8(&msg.payload)
+                                        && session.text(text.to_owned()).await.is_err()
+                                    {
+                                        break 'outer;
+                                    }
+                                }
+                                None => break 'outer,
                             }
                         }
-                        Some(Ok(actix_ws::Message::Close(_))) | None => break 'outer,
-                        _ => {}
                     }
                 }
-                nats_msg = subscriber.next() => {
-                    match nats_msg {
-                        Some(msg) => {
-                            if let Ok(text) = std::str::from_utf8(&msg.payload)
-                                && session.text(text.to_owned()).await.is_err()
-                            {
-                                break 'outer;
+            }
+            WsSubjectSet::Dual(wf_subject, wq_subject) => {
+                let mut streams: Vec<async_nats::Subscriber> = Vec::new();
+                if let Some(c) = &wf_nats {
+                    if let Ok(s) = c.subscribe(wf_subject).await {
+                        streams.push(s);
+                    }
+                }
+                if let Some(c) = &wq_nats {
+                    if let Ok(s) = c.subscribe(wq_subject).await {
+                        streams.push(s);
+                    }
+                }
+                if streams.is_empty() {
+                    break;
+                }
+                let mut merged = futures::stream::select_all(streams);
+
+                loop {
+                    tokio::select! {
+                        ws_msg = msg_stream.next() => {
+                            match ws_msg {
+                                Some(Ok(actix_ws::Message::Text(text))) => {
+                                    if let Ok(filter) = serde_json::from_str::<FilterMsg>(&text)
+                                        && filter.action == "subscribe"
+                                    {
+                                        current_unit_type = filter.unit_type;
+                                        current_instance_id = filter.instance_id;
+                                        drop(merged);
+                                        continue 'outer;
+                                    }
+                                }
+                                Some(Ok(actix_ws::Message::Ping(bytes))) => {
+                                    if session.pong(&bytes).await.is_err() {
+                                        break 'outer;
+                                    }
+                                }
+                                Some(Ok(actix_ws::Message::Close(_))) | None => break 'outer,
+                                _ => {}
                             }
                         }
-                        None => break 'outer,
+                        nats_msg = merged.next() => {
+                            match nats_msg {
+                                Some(msg) => {
+                                    if let Ok(text) = std::str::from_utf8(&msg.payload)
+                                        && session.text(text.to_owned()).await.is_err()
+                                    {
+                                        break 'outer;
+                                    }
+                                }
+                                None => break 'outer,
+                            }
+                        }
                     }
                 }
             }
@@ -105,12 +217,4 @@ async fn run_ws(
     }
 
     let _ = session.close(None).await;
-}
-
-fn build_subject(project_id: &str, unit_type: Option<&str>, instance_id: Option<&str>) -> String {
-    match (unit_type, instance_id) {
-        (Some(ut), Some(iid)) => format!("wf.events.{project_id}.{ut}.{iid}"),
-        (Some(ut), None) => format!("wf.events.{project_id}.{ut}.>"),
-        _ => format!("wf.events.{project_id}.>"),
-    }
 }

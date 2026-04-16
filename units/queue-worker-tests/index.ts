@@ -14,7 +14,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // Config
 // ---------------------------------------------------------------------------
 
-const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000011";
+const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 
 function getBaseUrl(req: IncomingMessage): string {
@@ -26,8 +26,8 @@ function workerUrl(baseUrl: string, slug: string, projectId = PROJECT_ID): strin
   return `${baseUrl}/api/v1/trigger/workerQueue/${projectId}/test/queue-worker/${slug}`;
 }
 
-function workerRunUrl(baseUrl: string, slug: string, runId: string, suffix: string): string {
-  return `${workerUrl(baseUrl, slug)}/${runId}/${suffix}`;
+function workerRunUrl(baseUrl: string, slug: string, runId: string, suffix: string, projectId = PROJECT_ID): string {
+  return `${workerUrl(baseUrl, slug, projectId)}/${runId}/${suffix}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,16 +186,17 @@ async function pollWorker(
   slug: string,
   runId: string,
   maxIter = 100,
+  projectId = PROJECT_ID,
 ): Promise<{ status: string; result?: any }> {
   for (let i = 0; i < maxIter; i++) {
     await sleep(150);
-    const statusResp = await httpGet(workerRunUrl(baseUrl, slug, runId, "status"));
+    const statusResp = await httpGet(workerRunUrl(baseUrl, slug, runId, "status", projectId));
     const status: string = statusResp?.status ?? "unknown";
     if (status === "completed") {
-      const resultResp = await httpGet(workerRunUrl(baseUrl, slug, runId, "result"));
+      const resultResp = await httpGet(workerRunUrl(baseUrl, slug, runId, "result", projectId));
       return { status, result: resultResp?.result };
     }
-    if (status === "dead_letter" || status === "failed") {
+    if (status === "dead_letter" || status === "failed" || status === "cancelled") {
       return { status };
     }
   }
@@ -271,7 +272,7 @@ function allWorkerTests(): WorkerTestDef[] {
     // ---- basic (5) ----
     {
       name: "process-and-return", category: "basic",
-      workerSlug: "basic/process-and-return",
+      workerSlug: "process-and-return",
       data: { value: 42, label: "hello" },
       checks: [
         { type: "eq", path: "received.value", expected: 42 },
@@ -281,7 +282,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "empty-data", category: "basic",
-      workerSlug: "basic/empty-data",
+      workerSlug: "empty-data",
       data: {},
       checks: [
         { type: "true", path: "receivedEmpty" },
@@ -290,7 +291,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "return-types", category: "basic",
-      workerSlug: "basic/return-types",
+      workerSlug: "return-types",
       data: {},
       checks: [
         { type: "eq", path: "str", expected: "queue-worker" },
@@ -303,7 +304,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "async-processing", category: "basic",
-      workerSlug: "basic/async-processing",
+      workerSlug: "async-processing",
       data: { n: 7 },
       checks: [
         { type: "eq", path: "doubled", expected: 14 },
@@ -314,7 +315,7 @@ function allWorkerTests(): WorkerTestDef[] {
     // ---- retry (8) ----
     {
       name: "default-retry", category: "retry",
-      workerSlug: "retry/default-retry",
+      workerSlug: "default-retry",
       data: {},
       checks: [
         { type: "eq", path: "finalAttempt", expected: 3 },
@@ -323,7 +324,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "custom-retry-policy", category: "retry",
-      workerSlug: "retry/custom-retry-policy",
+      workerSlug: "custom-retry-policy",
       data: {},
       maxIterations: 300,
       checks: [
@@ -333,7 +334,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "retry-attempt-counter", category: "retry",
-      workerSlug: "retry/retry-attempt-counter",
+      workerSlug: "retry-attempt-counter",
       data: { targetAttempt: 4 },
       checks: [
         { type: "eq", path: "attempt", expected: 4 },
@@ -341,10 +342,9 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "retry-exponential-backoff", category: "retry",
-      workerSlug: "retry/retry-exponential-backoff",
+      workerSlug: "retry-exponential-backoff",
       data: {},
       maxIterations: 500,
-      skip: "requires timing verification infrastructure to assert interval doubling",
       checks: [
         { type: "eq", path: "attempt", expected: 4 },
         { type: "notNull", path: "completedAt" },
@@ -352,14 +352,14 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "terminal-error-no-retry", category: "retry",
-      workerSlug: "retry/terminal-error-no-retry",
+      workerSlug: "terminal-error-no-retry",
       data: {},
       expectDeadLetter: true,
       checks: [],
     },
     {
       name: "retry-succeeds-on-last-attempt", category: "retry",
-      workerSlug: "retry/retry-succeeds-on-last-attempt",
+      workerSlug: "retry-succeeds-on-last-attempt",
       data: {},
       maxIterations: 300,
       checks: [
@@ -369,7 +369,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "retry-preserves-data", category: "retry",
-      workerSlug: "retry/retry-preserves-data",
+      workerSlug: "retry-preserves-data",
       data: { secret: "unchanged", value: 99 },
       checks: [
         { type: "eq", path: "dataOnFinalAttempt.secret", expected: "unchanged" },
@@ -379,7 +379,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "retry-then-success-return-value", category: "retry",
-      workerSlug: "retry/retry-then-success-return-value",
+      workerSlug: "retry-then-success-return-value",
       data: {},
       checks: [
         { type: "eq", path: "successValue", expected: "from-successful-attempt" },
@@ -389,44 +389,42 @@ function allWorkerTests(): WorkerTestDef[] {
     // ---- dead-letter (6) ----
     {
       name: "dead-letter-handler-called", category: "dead-letter",
-      workerSlug: "dead-letter/dead-letter-handler-called",
+      workerSlug: "dead-letter-handler-called",
       data: {},
       expectDeadLetter: true,
       checks: [],
     },
     {
       name: "dead-letter-receives-error", category: "dead-letter",
-      workerSlug: "dead-letter/dead-letter-receives-error",
+      workerSlug: "dead-letter-receives-error",
       data: {},
       expectDeadLetter: true,
-      skip: "requires dead-letter handler output introspection endpoint",
       checks: [],
     },
     {
       name: "dead-letter-receives-data", category: "dead-letter",
-      workerSlug: "dead-letter/dead-letter-receives-data",
+      workerSlug: "dead-letter-receives-data",
       data: { originalValue: "test-payload" },
       expectDeadLetter: true,
-      skip: "requires dead-letter handler output introspection endpoint",
       checks: [],
     },
     {
       name: "dead-letter-no-handler", category: "dead-letter",
-      workerSlug: "dead-letter/dead-letter-no-handler",
+      workerSlug: "dead-letter-no-handler",
       data: {},
       expectDeadLetter: true,
       checks: [],
     },
     {
       name: "dead-letter-handler-throws", category: "dead-letter",
-      workerSlug: "dead-letter/dead-letter-handler-throws",
+      workerSlug: "dead-letter-handler-throws",
       data: {},
       expectDeadLetter: true,
       checks: [],
     },
     {
       name: "dead-letter-after-terminal-error", category: "dead-letter",
-      workerSlug: "dead-letter/dead-letter-after-terminal-error",
+      workerSlug: "dead-letter-after-terminal-error",
       data: {},
       expectDeadLetter: true,
       checks: [],
@@ -435,173 +433,114 @@ function allWorkerTests(): WorkerTestDef[] {
     // ---- concurrency (4) — all skip until concurrency control is implemented ----
     {
       name: "concurrency-limit", category: "concurrency",
-      workerSlug: "concurrency/concurrency-limit",
+      workerSlug: "concurrency-limit",
       data: { id: 1 },
-      skip: "requires concurrency enforcement; verify max simultaneous runs via timing",
       checks: [{ type: "notNull", path: "completedAt" }],
     },
     {
       name: "concurrency-default", category: "concurrency",
-      workerSlug: "concurrency/concurrency-default",
+      workerSlug: "concurrency-default",
       data: { id: 1 },
-      skip: "requires multi-enqueue concurrency assertion infrastructure",
       checks: [{ type: "notNull", path: "startedAt" }],
     },
     {
       name: "concurrency-slot-release", category: "concurrency",
-      workerSlug: "concurrency/concurrency-slot-release",
+      workerSlug: "concurrency-slot-release",
       data: { id: 1 },
-      skip: "requires sequential timing verification across multiple enqueued items",
       checks: [{ type: "notNull", path: "completedAt" }],
     },
     {
       name: "concurrency-with-failure", category: "concurrency",
-      workerSlug: "concurrency/concurrency-with-failure",
+      workerSlug: "concurrency-with-failure",
       data: { id: 1 },
-      skip: "requires concurrency + retry interaction verification",
       checks: [{ type: "notNull", path: "completedAt" }],
     },
 
     // ---- rate-limit (4) — all skip until rate limiting is implemented ----
     {
       name: "rate-limit-basic", category: "rate-limit",
-      workerSlug: "rate-limit/rate-limit-basic",
+      workerSlug: "rate-limit-basic",
       data: { id: 1 },
-      skip: "rate limiting not yet implemented",
       checks: [{ type: "notNull", path: "startedAt" }],
     },
     {
       name: "rate-limit-window-reset", category: "rate-limit",
-      workerSlug: "rate-limit/rate-limit-window-reset",
+      workerSlug: "rate-limit-window-reset",
       data: { id: 1 },
-      skip: "rate limiting not yet implemented",
       checks: [{ type: "notNull", path: "startedAt" }],
     },
     {
       name: "rate-limit-burst-not-dropped", category: "rate-limit",
-      workerSlug: "rate-limit/rate-limit-burst-not-dropped",
+      workerSlug: "rate-limit-burst-not-dropped",
       data: { id: 1 },
-      skip: "rate limiting not yet implemented",
       checks: [{ type: "true", path: "processed" }],
     },
     {
       name: "rate-limit-with-concurrency", category: "rate-limit",
-      workerSlug: "rate-limit/rate-limit-with-concurrency",
+      workerSlug: "rate-limit-with-concurrency",
       data: { id: 1 },
-      skip: "rate limiting not yet implemented",
       checks: [{ type: "notNull", path: "startedAt" }],
     },
 
-    // ---- batch (5) — all skip until batch mode is implemented ----
-    {
-      name: "batch-size-trigger", category: "batch",
-      workerSlug: "batch/batch-size-trigger",
-      data: { item: "a" },
-      skip: "batch mode not yet implemented",
-      checks: [{ type: "eq", path: "count", expected: 3 }],
-    },
-    {
-      name: "batch-timeout-trigger", category: "batch",
-      workerSlug: "batch/batch-timeout-trigger",
-      data: { item: "a" },
-      skip: "batch mode not yet implemented",
-      checks: [
-        { type: "eq", path: "count", expected: 2 },
-        { type: "true", path: "timedOut" },
-      ],
-    },
-    {
-      name: "batch-single-item", category: "batch",
-      workerSlug: "batch/batch-single-item",
-      data: { item: "only" },
-      skip: "batch mode not yet implemented",
-      checks: [{ type: "eq", path: "count", expected: 1 }],
-    },
-    {
-      name: "batch-error-retries-whole-batch", category: "batch",
-      workerSlug: "batch/batch-error-retries-whole-batch",
-      data: { item: "a" },
-      skip: "batch mode not yet implemented",
-      checks: [
-        { type: "eq", path: "count", expected: 3 },
-        { type: "eq", path: "attempt", expected: 2 },
-      ],
-    },
-    {
-      name: "batch-return-value", category: "batch",
-      workerSlug: "batch/batch-return-value",
-      data: { id: 1, value: 5 },
-      skip: "batch mode not yet implemented",
-      checks: [{ type: "eq", path: "results.0.doubled", expected: 10 }],
-    },
 
     // ---- delay (3) — all skip until delay feature is implemented ----
     {
       name: "delay-basic", category: "delay",
-      workerSlug: "delay/delay-basic",
+      workerSlug: "delay-basic",
       data: { enqueuedAt: Date.now() },
-      skip: "delay enqueue option not yet implemented",
       checks: [{ type: "notNull", path: "processedAt" }],
     },
     {
       name: "delay-ordering", category: "delay",
-      workerSlug: "delay/delay-ordering",
+      workerSlug: "delay-ordering",
       data: { id: "delayed" },
-      skip: "delay enqueue option not yet implemented",
       checks: [{ type: "notNull", path: "processedAt" }],
     },
     {
       name: "delay-with-retry", category: "delay",
-      workerSlug: "delay/delay-with-retry",
+      workerSlug: "delay-with-retry",
       data: { enqueuedAt: Date.now() },
-      skip: "delay enqueue option not yet implemented",
       checks: [{ type: "notNull", path: "processedAt" }],
     },
 
     // ---- deduplication (4) ----
     {
       name: "dedup-key-prevents-duplicate", category: "deduplication",
-      workerSlug: "dedup/dedup-target",
+      workerSlug: "dedup-target",
       data: { value: "dedup-test" },
-      skip: "deduplicationKey enqueue option not yet implemented",
       checks: [{ type: "eq", path: "value", expected: "dedup-test" }],
     },
     {
       name: "dedup-different-keys", category: "deduplication",
-      workerSlug: "dedup/dedup-target",
+      workerSlug: "dedup-target",
       data: { value: "key-abc" },
-      skip: "deduplicationKey enqueue option not yet implemented",
       checks: [{ type: "eq", path: "value", expected: "key-abc" }],
     },
     {
       name: "dedup-after-completion", category: "deduplication",
-      workerSlug: "dedup/dedup-target",
+      workerSlug: "dedup-target",
       data: { value: "after-complete" },
-      skip: "deduplicationKey enqueue option not yet implemented",
       checks: [{ type: "eq", path: "value", expected: "after-complete" }],
     },
     {
       name: "dedup-during-retry", category: "deduplication",
-      workerSlug: "dedup/dedup-retry-target",
+      workerSlug: "dedup-retry-target",
       data: { value: "during-retry" },
-      skip: "deduplicationKey enqueue option not yet implemented",
       checks: [{ type: "eq", path: "value", expected: "during-retry" }],
     },
 
     // ---- timeout (3) — all skip until timeout is implemented ----
     {
       name: "timeout-basic", category: "timeout",
-      workerSlug: "timeout/timeout-basic",
+      workerSlug: "timeout-basic",
       data: {},
       expectDeadLetter: true,
-      skip: "worker timeout not yet implemented",
       checks: [],
     },
     {
       name: "timeout-triggers-retry", category: "timeout",
-      workerSlug: "timeout/timeout-triggers-retry",
+      workerSlug: "timeout-triggers-retry",
       data: {},
-      skip: "worker timeout not yet implemented",
       checks: [
         { type: "eq", path: "attempt", expected: 2 },
         { type: "true", path: "ok" },
@@ -609,17 +548,16 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "timeout-then-dead-letter", category: "timeout",
-      workerSlug: "timeout/timeout-then-dead-letter",
+      workerSlug: "timeout-then-dead-letter",
       data: {},
       expectDeadLetter: true,
-      skip: "worker timeout not yet implemented",
       checks: [],
     },
 
     // ---- sdk-interface (4) ----
     {
       name: "simple-handler-form", category: "sdk-interface",
-      workerSlug: "sdk-interface/simple-handler-form",
+      workerSlug: "simple-handler-form",
       data: { x: 6 },
       checks: [
         { type: "eq", path: "doubled", expected: 12 },
@@ -628,7 +566,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "full-handler-form", category: "sdk-interface",
-      workerSlug: "sdk-interface/full-handler-form",
+      workerSlug: "full-handler-form",
       data: { x: 6 },
       checks: [
         { type: "eq", path: "doubled", expected: 12 },
@@ -637,7 +575,7 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "ctx-properties", category: "sdk-interface",
-      workerSlug: "sdk-interface/ctx-properties",
+      workerSlug: "ctx-properties",
       data: {},
       checks: [
         { type: "true", path: "idIsUuid" },
@@ -650,16 +588,14 @@ function allWorkerTests(): WorkerTestDef[] {
     // ---- cross-unit (5) ----
     {
       name: "enqueue-from-worker", category: "cross-unit",
-      workerSlug: "cross-unit/enqueue-from-worker-a",
+      workerSlug: "enqueue-from-worker-a",
       data: { value: 5 },
-      skip: "requires sdk.enqueueWorker implementation in queue worker context",
       checks: [{ type: "notNull", path: "enqueuedRunId" }],
     },
     {
       name: "worker-calls-workflow", category: "cross-unit",
-      workerSlug: "cross-unit/worker-calls-workflow",
+      workerSlug: "worker-calls-workflow",
       data: { n: 4 },
-      skip: "requires sdk.callWorkflow from queue worker context",
       checks: [
         { type: "eq", path: "n", expected: 4 },
         { type: "eq", path: "doubled", expected: 8 },
@@ -668,9 +604,8 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "worker-emits-event", category: "cross-unit",
-      workerSlug: "cross-unit/worker-emits-event",
+      workerSlug: "worker-emits-event",
       data: { eventName: "test.worker.event", payload: { ok: true } },
-      skip: "sdk.emit not yet implemented",
       checks: [
         { type: "notNull", path: "eventId" },
         { type: "true", path: "emitted" },
@@ -680,7 +615,7 @@ function allWorkerTests(): WorkerTestDef[] {
     // ---- isolation (2) ----
     {
       name: "queue-isolation", category: "isolation",
-      workerSlug: "isolation/queue-a-worker",
+      workerSlug: "queue-a-worker",
       data: { value: "test-a" },
       checks: [
         { type: "eq", path: "queue", expected: "a" },
@@ -691,9 +626,8 @@ function allWorkerTests(): WorkerTestDef[] {
     // ---- durability (3) ----
     {
       name: "redelivery-on-crash", category: "durability",
-      workerSlug: "durability/redelivery-worker",
+      workerSlug: "redelivery-worker",
       data: {},
-      skip: "TerminalError skips retries — redelivery simulation requires runtime-level crash injection",
       checks: [
         { type: "eq", path: "attempt", expected: 2 },
         { type: "true", path: "ok" },
@@ -701,9 +635,8 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "enqueued-items-survive-restart", category: "durability",
-      workerSlug: "durability/survive-restart-worker",
+      workerSlug: "survive-restart-worker",
       data: { enqueuedBeforeRestart: true },
-      skip: "requires process restart between enqueue and processing",
       checks: [
         { type: "true", path: "processed" },
         { type: "true", path: "enqueuedBeforeRestart" },
@@ -711,9 +644,8 @@ function allWorkerTests(): WorkerTestDef[] {
     },
     {
       name: "no-double-processing", category: "durability",
-      workerSlug: "durability/no-double-processing-worker",
+      workerSlug: "no-double-processing-worker",
       data: { runId: "test-run-1" },
-      skip: "requires concurrent dispatcher instances to verify exec lock",
       checks: [
         { type: "eq", path: "processedRunId", expected: "test-run-1" },
         { type: "notNull", path: "processedAt" },
@@ -736,14 +668,14 @@ function allInlineTests(): WorkerInlineTestDef[] {
       category: "basic",
       run: async (baseUrl) => {
         const [ra, rb] = await Promise.all([
-          enqueue(baseUrl, "basic/multiple-workers-a", { tag: "from-a" }),
-          enqueue(baseUrl, "basic/multiple-workers-b", { tag: "from-b" }),
+          enqueue(baseUrl, "multiple-workers-a", { tag: "from-a" }),
+          enqueue(baseUrl, "multiple-workers-b", { tag: "from-b" }),
         ]);
         if (!ra || !rb) throw new Error("enqueue failed for one or both workers");
 
         const [da, db] = await Promise.all([
-          pollWorker(baseUrl, "basic/multiple-workers-a", ra.runId),
-          pollWorker(baseUrl, "basic/multiple-workers-b", rb.runId),
+          pollWorker(baseUrl, "multiple-workers-a", ra.runId),
+          pollWorker(baseUrl, "multiple-workers-b", rb.runId),
         ]);
 
         if (da.status !== "completed") throw new Error(`worker-a status: ${da.status}`);
@@ -759,12 +691,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
     {
       name: "status-queued",
       category: "lifecycle",
-      skip: "requires immediate status check before dispatcher picks up item; timing-sensitive",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 3000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 3000 });
         if (!enqueued) throw new Error("enqueue failed");
         const statusResp = await httpGet(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "status"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "status"),
         );
         const status = statusResp?.status;
         if (status !== "queued" && status !== "processing")
@@ -774,13 +705,12 @@ function allInlineTests(): WorkerInlineTestDef[] {
     {
       name: "status-processing",
       category: "lifecycle",
-      skip: "requires timing window to observe 'processing' status before completion",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 3000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 3000 });
         if (!enqueued) throw new Error("enqueue failed");
-        await sleep(200);
+        await sleep(500);
         const statusResp = await httpGet(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "status"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "status"),
         );
         if (statusResp?.status !== "processing")
           throw new Error(`expected 'processing', got '${statusResp?.status}'`);
@@ -790,12 +720,12 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "status-completed",
       category: "lifecycle",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "basic/process-and-return", {
+        const enqueued = await enqueue(baseUrl, "process-and-return", {
           value: 1,
           label: "lifecycle-test",
         });
         if (!enqueued) throw new Error("enqueue failed");
-        const { status } = await pollWorker(baseUrl, "basic/process-and-return", enqueued.runId);
+        const { status } = await pollWorker(baseUrl, "process-and-return", enqueued.runId);
         if (status !== "completed") throw new Error(`expected 'completed', got '${status}'`);
       },
     },
@@ -803,11 +733,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "status-dead-letter",
       category: "lifecycle",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/always-fail-worker", {});
+        const enqueued = await enqueue(baseUrl, "always-fail-worker", {});
         if (!enqueued) throw new Error("enqueue failed");
         const { status } = await pollWorker(
           baseUrl,
-          "lifecycle/always-fail-worker",
+          "always-fail-worker",
           enqueued.runId,
           200,
         );
@@ -817,16 +747,15 @@ function allInlineTests(): WorkerInlineTestDef[] {
     {
       name: "status-retrying",
       category: "lifecycle",
-      skip: "requires timing window to observe 'retrying' status between attempts",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/fail-twice-worker", {});
+        const enqueued = await enqueue(baseUrl, "fail-twice-worker", {});
         if (!enqueued) throw new Error("enqueue failed");
 
         let sawRetrying = false;
         for (let i = 0; i < 50; i++) {
           await sleep(200);
           const statusResp = await httpGet(
-            workerRunUrl(baseUrl, "lifecycle/fail-twice-worker", enqueued.runId, "status"),
+            workerRunUrl(baseUrl, "fail-twice-worker", enqueued.runId, "status"),
           );
           if (statusResp?.status === "retrying") { sawRetrying = true; break; }
           if (statusResp?.status === "completed") break;
@@ -839,15 +768,14 @@ function allInlineTests(): WorkerInlineTestDef[] {
     {
       name: "enqueue-options",
       category: "sdk-interface",
-      skip: "delay and deduplicationKey options not yet implemented",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "sdk-interface/enqueue-options-target", {
+        const enqueued = await enqueue(baseUrl, "enqueue-options-target", {
           label: "with-options",
         });
         if (!enqueued) throw new Error("enqueue failed");
         const { status, result } = await pollWorker(
           baseUrl,
-          "sdk-interface/enqueue-options-target",
+          "enqueue-options-target",
           enqueued.runId,
         );
         if (status !== "completed") throw new Error(`expected completed, got ${status}`);
@@ -860,7 +788,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "enqueue-from-api",
       category: "cross-unit",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "cross-unit/target-worker", {
+        const enqueued = await enqueue(baseUrl, "target-worker", {
           payload: { source: "api-unit" },
         });
         if (!enqueued) throw new Error("enqueue failed: no runId");
@@ -868,7 +796,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
           throw new Error(`runId is not a UUID: ${enqueued.runId}`);
         const { status, result } = await pollWorker(
           baseUrl,
-          "cross-unit/target-worker",
+          "target-worker",
           enqueued.runId,
         );
         if (status !== "completed") throw new Error(`expected completed, got ${status}`);
@@ -878,27 +806,24 @@ function allInlineTests(): WorkerInlineTestDef[] {
     {
       name: "enqueue-from-workflow",
       category: "cross-unit",
-      skip: "requires workflow → sdk.enqueueWorker integration",
-      run: async (_baseUrl) => {
-        throw new Error("not yet runnable");
-      },
+      skip: "workflow-to-worker SDK not yet implemented",
+      run: async (_baseUrl) => {},
     },
 
     // ---- isolation: cross-project-isolation ----
     {
       name: "cross-project-isolation",
       category: "isolation",
-      skip: "requires two project IDs routed to same runtime; verify data does not leak between projects",
       run: async (baseUrl) => {
         const [ra, rb] = await Promise.all([
-          enqueue(baseUrl, "isolation/isolated-worker", { projectTag: "A" }, PROJECT_ID),
-          enqueue(baseUrl, "isolation/isolated-worker", { projectTag: "B" }, ALT_PROJECT_ID),
+          enqueue(baseUrl, "isolated-worker", { projectTag: "A" }, PROJECT_ID),
+          enqueue(baseUrl, "isolated-worker", { projectTag: "B" }, ALT_PROJECT_ID),
         ]);
         if (!ra || !rb) throw new Error("enqueue failed");
 
         const [da, db] = await Promise.all([
-          pollWorker(baseUrl, "isolation/isolated-worker", ra.runId),
-          pollWorker(baseUrl, "isolation/isolated-worker", rb.runId),
+          pollWorker(baseUrl, "isolated-worker", ra.runId, 100, PROJECT_ID),
+          pollWorker(baseUrl, "isolated-worker", rb.runId, 100, ALT_PROJECT_ID),
         ]);
 
         if (da.result?.projectTag !== "A") throw new Error("project A data leaked");
@@ -912,7 +837,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "enqueue-returns-run-id",
       category: "endpoint",
       run: async (baseUrl) => {
-        const resp = await httpPostFull(workerUrl(baseUrl, "endpoint/echo-worker"), { v: 1 });
+        const resp = await httpPostFull(workerUrl(baseUrl, "echo-worker"), { v: 1 });
         if (resp.status !== 200)
           throw new Error(`expected 200, got ${resp.status}`);
         if (!resp.body?.runId)
@@ -928,11 +853,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       category: "endpoint",
       run: async (baseUrl) => {
         const payload = { tag: "endpoint-test", nested: { n: 7 } };
-        const enqueued = await enqueue(baseUrl, "endpoint/echo-worker", payload);
+        const enqueued = await enqueue(baseUrl, "echo-worker", payload);
         if (!enqueued) throw new Error("enqueue failed");
         const { status, result } = await pollWorker(
           baseUrl,
-          "endpoint/echo-worker",
+          "echo-worker",
           enqueued.runId,
         );
         if (status !== "completed") throw new Error(`expected completed, got ${status}`);
@@ -946,7 +871,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "enqueue-empty-body",
       category: "endpoint",
       run: async (baseUrl) => {
-        const resp = await httpPostFull(workerUrl(baseUrl, "endpoint/echo-worker"));
+        const resp = await httpPostFull(workerUrl(baseUrl, "echo-worker"));
         if (resp.status !== 200)
           throw new Error(`expected 200, got ${resp.status}`);
         if (!resp.body?.runId)
@@ -969,7 +894,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "enqueue-invalid-slug-400",
       category: "endpoint",
       run: async (baseUrl) => {
-        const url = `${workerUrl(baseUrl, "inv@lid!!")}`; 
+        const url = `${workerUrl(baseUrl, "@@@")}`; 
         const resp = await httpPostFull(url, {});
         if (resp.status !== 400)
           throw new Error(`expected 400, got ${resp.status}: ${JSON.stringify(resp.body)}`);
@@ -980,7 +905,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
       category: "endpoint",
       run: async (baseUrl) => {
         const fakeId = "00000000-dead-beef-0000-000000000000";
-        const url = workerRunUrl(baseUrl, "endpoint/echo-worker", fakeId, "status");
+        const url = workerRunUrl(baseUrl, "echo-worker", fakeId, "status");
         const resp = await httpGetFull(url);
         if (resp.status !== 404)
           throw new Error(`expected 404, got ${resp.status}`);
@@ -990,11 +915,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "result-before-completion",
       category: "endpoint",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 3000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 3000 });
         if (!enqueued) throw new Error("enqueue failed");
         await sleep(100);
         const res = await httpGetFull(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "result"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "result"),
         );
         if (res.status === 200 && res.body?.result !== undefined && res.body?.result !== null)
           throw new Error("got non-null result while worker is still running");
@@ -1003,10 +928,8 @@ function allInlineTests(): WorkerInlineTestDef[] {
     {
       name: "enqueue-dedup-conflict-409",
       category: "endpoint",
-      skip: "deduplicationKey option not yet implemented",
-      run: async (_baseUrl) => {
-        throw new Error("not yet runnable");
-      },
+      skip: "dedup conflict 409 response not yet implemented",
+      run: async (_baseUrl) => {},
     },
 
     // ---- endpoint: status response shape ----
@@ -1014,11 +937,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "status-response-shape",
       category: "endpoint",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "endpoint/echo-worker", { v: 10 });
+        const enqueued = await enqueue(baseUrl, "echo-worker", { v: 10 });
         if (!enqueued) throw new Error("enqueue failed");
-        await pollWorker(baseUrl, "endpoint/echo-worker", enqueued.runId);
+        await pollWorker(baseUrl, "echo-worker", enqueued.runId);
         const resp = await httpGetFull(
-          workerRunUrl(baseUrl, "endpoint/echo-worker", enqueued.runId, "status"),
+          workerRunUrl(baseUrl, "echo-worker", enqueued.runId, "status"),
         );
         if (resp.status !== 200)
           throw new Error(`expected 200, got ${resp.status}`);
@@ -1040,11 +963,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "result-completed-response-shape",
       category: "endpoint",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "endpoint/echo-worker", { v: 11 });
+        const enqueued = await enqueue(baseUrl, "echo-worker", { v: 11 });
         if (!enqueued) throw new Error("enqueue failed");
-        await pollWorker(baseUrl, "endpoint/echo-worker", enqueued.runId);
+        await pollWorker(baseUrl, "echo-worker", enqueued.runId);
         const resp = await httpGetFull(
-          workerRunUrl(baseUrl, "endpoint/echo-worker", enqueued.runId, "result"),
+          workerRunUrl(baseUrl, "echo-worker", enqueued.runId, "result"),
         );
         if (resp.status !== 200)
           throw new Error(`expected 200, got ${resp.status}`);
@@ -1058,9 +981,9 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "result-preserves-complex-types",
       category: "endpoint",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "basic/return-types", {});
+        const enqueued = await enqueue(baseUrl, "return-types", {});
         if (!enqueued) throw new Error("enqueue failed");
-        const { status, result } = await pollWorker(baseUrl, "basic/return-types", enqueued.runId);
+        const { status, result } = await pollWorker(baseUrl, "return-types", enqueued.runId);
         if (status !== "completed") throw new Error(`expected completed, got ${status}`);
         if (result?.str !== "queue-worker") throw new Error(`str mismatch: ${String(result?.str)}`);
         if (result?.num !== -3.5) throw new Error(`num mismatch: ${String(result?.num)}`);
@@ -1075,11 +998,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "result-after-dead-letter",
       category: "endpoint",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/always-fail-worker", {});
+        const enqueued = await enqueue(baseUrl, "always-fail-worker", {});
         if (!enqueued) throw new Error("enqueue failed");
-        await pollWorker(baseUrl, "lifecycle/always-fail-worker", enqueued.runId, 200);
+        await pollWorker(baseUrl, "always-fail-worker", enqueued.runId, 200);
         const resp = await httpGetFull(
-          workerRunUrl(baseUrl, "lifecycle/always-fail-worker", enqueued.runId, "result"),
+          workerRunUrl(baseUrl, "always-fail-worker", enqueued.runId, "result"),
         );
         if (resp.status !== 200)
           throw new Error(`expected 200, got ${resp.status}`);
@@ -1095,10 +1018,86 @@ function allInlineTests(): WorkerInlineTestDef[] {
       run: async (baseUrl) => {
         const fakeId = "00000000-dead-beef-0000-000000000001";
         const resp = await httpGetFull(
-          workerRunUrl(baseUrl, "endpoint/echo-worker", fakeId, "result"),
+          workerRunUrl(baseUrl, "echo-worker", fakeId, "result"),
         );
         if (resp.status !== 404)
           throw new Error(`expected 404, got ${resp.status}`);
+      },
+    },
+
+    // ---- batch (5) ----
+    {
+      name: "batch-size-trigger",
+      category: "batch",
+      run: async (baseUrl) => {
+        const [r1, r2, r3] = await Promise.all([
+          enqueue(baseUrl, "batch-size-trigger", { item: "a" }),
+          enqueue(baseUrl, "batch-size-trigger", { item: "b" }),
+          enqueue(baseUrl, "batch-size-trigger", { item: "c" }),
+        ]);
+        if (!r1 || !r2 || !r3) throw new Error("enqueue failed");
+        const { status, result } = await pollWorker(baseUrl, "batch-size-trigger", r3.runId, 200);
+        if (status !== "completed") throw new Error(`expected completed, got ${status}`);
+        if (result?.count !== 3) throw new Error(`expected count=3, got ${JSON.stringify(result?.count)}`);
+      },
+    },
+    {
+      name: "batch-timeout-trigger",
+      category: "batch",
+      run: async (baseUrl) => {
+        const [r1, r2] = await Promise.all([
+          enqueue(baseUrl, "batch-timeout-trigger", { item: "a" }),
+          enqueue(baseUrl, "batch-timeout-trigger", { item: "b" }),
+        ]);
+        if (!r1 || !r2) throw new Error("enqueue failed");
+        const { status, result } = await pollWorker(baseUrl, "batch-timeout-trigger", r2.runId, 200);
+        if (status !== "completed") throw new Error(`expected completed, got ${status}`);
+        if (result?.count !== 2) throw new Error(`expected count=2, got ${JSON.stringify(result?.count)}`);
+        if (!result?.timedOut) throw new Error("expected timedOut=true");
+      },
+    },
+    {
+      name: "batch-single-item",
+      category: "batch",
+      run: async (baseUrl) => {
+        const r = await enqueue(baseUrl, "batch-single-item", { item: "only" });
+        if (!r) throw new Error("enqueue failed");
+        const { status, result } = await pollWorker(baseUrl, "batch-single-item", r.runId, 200);
+        if (status !== "completed") throw new Error(`expected completed, got ${status}`);
+        if (result?.count !== 1) throw new Error(`expected count=1, got ${JSON.stringify(result?.count)}`);
+      },
+    },
+    {
+      name: "batch-error-retries-whole-batch",
+      category: "batch",
+      run: async (baseUrl) => {
+        const [r1, r2, r3] = await Promise.all([
+          enqueue(baseUrl, "batch-error-retries-whole-batch", { item: "a" }),
+          enqueue(baseUrl, "batch-error-retries-whole-batch", { item: "b" }),
+          enqueue(baseUrl, "batch-error-retries-whole-batch", { item: "c" }),
+        ]);
+        if (!r1 || !r2 || !r3) throw new Error("enqueue failed");
+        const { status, result } = await pollWorker(baseUrl, "batch-error-retries-whole-batch", r3.runId, 300);
+        if (status !== "completed") throw new Error(`expected completed, got ${status}`);
+        if (result?.count !== 3) throw new Error(`expected count=3, got ${JSON.stringify(result?.count)}`);
+        if (result?.attempt !== 2) throw new Error(`expected attempt=2, got ${JSON.stringify(result?.attempt)}`);
+      },
+    },
+    {
+      name: "batch-return-value",
+      category: "batch",
+      run: async (baseUrl) => {
+        const [r1, r2, r3] = await Promise.all([
+          enqueue(baseUrl, "batch-return-value", { id: 1, value: 5 }),
+          enqueue(baseUrl, "batch-return-value", { id: 2, value: 10 }),
+          enqueue(baseUrl, "batch-return-value", { id: 3, value: 15 }),
+        ]);
+        if (!r1 || !r2 || !r3) throw new Error("enqueue failed");
+        const { status, result } = await pollWorker(baseUrl, "batch-return-value", r1.runId, 200);
+        if (status !== "completed") throw new Error(`expected completed, got ${status}`);
+        const item1 = (result?.results as Array<{ id: number; doubled: number }> | undefined)
+          ?.find((x) => x.id === 1);
+        if (item1?.doubled !== 10) throw new Error(`expected doubled=10 for id=1, got ${JSON.stringify(item1?.doubled)}`);
       },
     },
 
@@ -1107,10 +1106,10 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "cancel-queued-run",
       category: "endpoint_cancel",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 10_000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 10_000 });
         if (!enqueued) throw new Error("enqueue failed");
         const cancelResp = await httpPostFull(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "cancel"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel"),
         );
         if (cancelResp.status !== 200)
           throw new Error(`expected 200, got ${cancelResp.status}`);
@@ -1119,7 +1118,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
         for (let i = 0; i < 20; i++) {
           await sleep(150);
           const st = await httpGet(
-            workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "status"),
+            workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "status"),
           );
           const s = (st?.status ?? (st?.meta as Record<string, unknown>)?.["status"]) as string | undefined;
           if (s === "cancelled") return;
@@ -1131,17 +1130,17 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "cancel-processing-run",
       category: "endpoint_cancel",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 10_000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 10_000 });
         if (!enqueued) throw new Error("enqueue failed");
         await sleep(300);
         const cancelResp = await httpPostFull(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "cancel"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel"),
         );
         if (cancelResp.status !== 200)
           throw new Error(`expected 200 on cancel, got ${cancelResp.status}`);
         const { status } = await pollWorker(
           baseUrl,
-          "lifecycle/slow-worker",
+          "slow-worker",
           enqueued.runId,
           60,
         );
@@ -1152,19 +1151,18 @@ function allInlineTests(): WorkerInlineTestDef[] {
     {
       name: "cancel-retrying-run",
       category: "endpoint_cancel",
-      skip: "requires precise timing to cancel during retry backoff window",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/fail-twice-worker", {});
+        const enqueued = await enqueue(baseUrl, "fail-twice-worker", {});
         if (!enqueued) throw new Error("enqueue failed");
         for (let i = 0; i < 60; i++) {
           await sleep(200);
           const st = await httpGet(
-            workerRunUrl(baseUrl, "lifecycle/fail-twice-worker", enqueued.runId, "status"),
+            workerRunUrl(baseUrl, "fail-twice-worker", enqueued.runId, "status"),
           );
           const s = (st?.status ?? (st?.meta as Record<string, unknown>)?.["status"]) as string | undefined;
           if (s === "retrying") {
             const cancelResp = await httpPostFull(
-              workerRunUrl(baseUrl, "lifecycle/fail-twice-worker", enqueued.runId, "cancel"),
+              workerRunUrl(baseUrl, "fail-twice-worker", enqueued.runId, "cancel"),
             );
             if (cancelResp.status !== 200)
               throw new Error(`cancel during retrying returned ${cancelResp.status}`);
@@ -1179,11 +1177,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "cancel-completed-rejected",
       category: "endpoint_cancel",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "endpoint/echo-worker", { v: 20 });
+        const enqueued = await enqueue(baseUrl, "echo-worker", { v: 20 });
         if (!enqueued) throw new Error("enqueue failed");
-        await pollWorker(baseUrl, "endpoint/echo-worker", enqueued.runId);
+        await pollWorker(baseUrl, "echo-worker", enqueued.runId);
         const cancelResp = await httpPostFull(
-          workerRunUrl(baseUrl, "endpoint/echo-worker", enqueued.runId, "cancel"),
+          workerRunUrl(baseUrl, "echo-worker", enqueued.runId, "cancel"),
         );
         if (cancelResp.status !== 400)
           throw new Error(
@@ -1195,11 +1193,11 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "cancel-dead-letter-rejected",
       category: "endpoint_cancel",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/always-fail-worker", {});
+        const enqueued = await enqueue(baseUrl, "always-fail-worker", {});
         if (!enqueued) throw new Error("enqueue failed");
-        await pollWorker(baseUrl, "lifecycle/always-fail-worker", enqueued.runId, 200);
+        await pollWorker(baseUrl, "always-fail-worker", enqueued.runId, 200);
         const cancelResp = await httpPostFull(
-          workerRunUrl(baseUrl, "lifecycle/always-fail-worker", enqueued.runId, "cancel"),
+          workerRunUrl(baseUrl, "always-fail-worker", enqueued.runId, "cancel"),
         );
         if (cancelResp.status !== 400)
           throw new Error(
@@ -1211,15 +1209,15 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "cancel-already-cancelled-idempotent",
       category: "endpoint_cancel",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 10_000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 10_000 });
         if (!enqueued) throw new Error("enqueue failed");
         const r1 = await httpPostFull(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "cancel"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel"),
         );
         if (r1.status !== 200)
           throw new Error(`first cancel returned ${r1.status}`);
         const r2 = await httpPostFull(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "cancel"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel"),
         );
         if (r2.status !== 200)
           throw new Error(`second (idempotent) cancel returned ${r2.status}, expected 200`);
@@ -1231,7 +1229,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
       run: async (baseUrl) => {
         const fakeId = "00000000-dead-beef-0000-000000000002";
         const resp = await httpPostFull(
-          workerRunUrl(baseUrl, "endpoint/echo-worker", fakeId, "cancel"),
+          workerRunUrl(baseUrl, "echo-worker", fakeId, "cancel"),
         );
         if (resp.status !== 404)
           throw new Error(`expected 404, got ${resp.status}`);
@@ -1246,7 +1244,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
         const N = 10;
         const responses = await Promise.all(
           Array.from({ length: N }, () =>
-            httpPostFull(workerUrl(baseUrl, "endpoint/echo-worker"), { concurrent: true }),
+            httpPostFull(workerUrl(baseUrl, "echo-worker"), { concurrent: true }),
           ),
         );
         const failed = responses.filter((r) => r.status !== 200);
@@ -1266,14 +1264,14 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "concurrent-status-polling",
       category: "endpoint_concurrent",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 2_000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 2_000 });
         if (!enqueued) throw new Error("enqueue failed");
         await sleep(100);
         const N = 5;
         const responses = await Promise.all(
           Array.from({ length: N }, () =>
             httpGetFull(
-              workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "status"),
+              workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "status"),
             ),
           ),
         );
@@ -1300,20 +1298,20 @@ function allInlineTests(): WorkerInlineTestDef[] {
       name: "concurrent-cancel-race",
       category: "endpoint_concurrent",
       run: async (baseUrl) => {
-        const enqueued = await enqueue(baseUrl, "lifecycle/slow-worker", { sleepMs: 10_000 });
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 10_000 });
         if (!enqueued) throw new Error("enqueue failed");
         const [r1, r2] = await Promise.all([
           httpPostFull(
-            workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "cancel"),
+            workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel"),
           ),
           httpPostFull(
-            workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "cancel"),
+            workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel"),
           ),
         ]);
         if (r1.status === 500 || r2.status === 500)
           throw new Error(`race condition caused 500: ${r1.status} / ${r2.status}`);
         const statusResp = await httpGetFull(
-          workerRunUrl(baseUrl, "lifecycle/slow-worker", enqueued.runId, "status"),
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "status"),
         );
         const st = (statusResp.body?.status ?? (statusResp.body?.meta as Record<string, unknown>)?.["status"]) as string | undefined;
         if (st !== "cancelled")

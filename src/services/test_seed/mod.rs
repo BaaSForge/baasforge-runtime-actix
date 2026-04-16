@@ -9,6 +9,7 @@
 //! here merges into a single release.
 
 mod api_units;
+mod queue_worker_units;
 mod workflow_units;
 
 use crate::configs::Settings;
@@ -22,6 +23,11 @@ pub(crate) const TEST_PROJECT_ID: &str = "00000000-aaaa-bbbb-cccc-000000000010";
 pub(crate) const TEST_RUNTIME_ID: &str = "00000000-aaaa-bbbb-cccc-000000000020";
 pub(crate) const TEST_RELEASE_ID: &str = "00000000-aaaa-bbbb-cccc-000000000030";
 pub(crate) const TEST_CHAT_SESSION_ID: &str = "00000000-aaaa-bbbb-cccc-000000000040";
+
+pub(crate) const TEST_ALT_PROJECT_ID: &str = "00000000-aaaa-bbbb-cccc-000000000012";
+pub(crate) const TEST_ALT_RUNTIME_ID: &str = "00000000-aaaa-bbbb-cccc-000000000021";
+pub(crate) const TEST_ALT_RELEASE_ID: &str = "00000000-aaaa-bbbb-cccc-000000000031";
+pub(crate) const TEST_ALT_CHAT_SESSION_ID: &str = "00000000-aaaa-bbbb-cccc-000000000041";
 
 pub(crate) struct UnitSpec {
     pub context_slug: String,
@@ -47,30 +53,32 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     let mut all_units: Vec<UnitSpec> = Vec::new();
     all_units.extend(api_units::collect(settings));
     all_units.extend(workflow_units::collect(settings));
+    all_units.extend(queue_worker_units::collect(settings));
 
     tracing::info!("test_seed: seeding {} test unit(s)", all_units.len());
 
-    // Clean slate — delete in FK-safe order.
-    sql_query("DELETE FROM project_units WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM project_runtimes WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM project_releases WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM chat_sessions WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM projects WHERE id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
+    for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
+        sql_query("DELETE FROM project_units WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM project_runtimes WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM project_releases WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM chat_sessions WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM projects WHERE id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+    }
     sql_query("DELETE FROM users WHERE id = $1::uuid")
         .bind::<Text, _>(TEST_USER_ID)
         .execute(&mut conn)
@@ -96,6 +104,16 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .expect("test_seed: insert project");
 
     sql_query(
+        "INSERT INTO projects (id, owner_user_id, name, slug) \
+         VALUES ($1::uuid, $2::uuid, 'Test Alt Project', 'test-alt-project') \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind::<Text, _>(TEST_ALT_PROJECT_ID)
+    .bind::<Text, _>(TEST_USER_ID)
+    .execute(&mut conn)
+    .expect("test_seed: insert alt project");
+
+    sql_query(
         "INSERT INTO chat_sessions (id, project_id, user_id, title, created_at) \
          VALUES ($1::uuid, $2::uuid, $3::uuid, 'test-session', NOW()) \
          ON CONFLICT (id) DO NOTHING",
@@ -106,12 +124,28 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .execute(&mut conn)
     .expect("test_seed: insert chat_session");
 
+    sql_query(
+        "INSERT INTO chat_sessions (id, project_id, user_id, title, created_at) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'test-alt-session', NOW()) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind::<Text, _>(TEST_ALT_CHAT_SESSION_ID)
+    .bind::<Text, _>(TEST_ALT_PROJECT_ID)
+    .bind::<Text, _>(TEST_USER_ID)
+    .execute(&mut conn)
+    .expect("test_seed: insert alt chat_session");
+
     let mut combined_unit_ids: Vec<serde_json::Value> = Vec::new();
+    let mut alt_combined_unit_ids: Vec<serde_json::Value> = Vec::new();
 
     for spec in &all_units {
         combined_unit_ids.push(serde_json::json!({
             "unitId": spec.full_id,
             "chatSessionId": TEST_CHAT_SESSION_ID,
+        }));
+        alt_combined_unit_ids.push(serde_json::json!({
+            "unitId": spec.full_id,
+            "chatSessionId": TEST_ALT_CHAT_SESSION_ID,
         }));
 
         sql_query(
@@ -135,11 +169,38 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
         .bind::<Text, _>(&spec.compiled_code)
         .execute(&mut conn)
         .unwrap_or_else(|e| panic!("test_seed: insert unit '{}': {e}", spec.full_id));
+
+        sql_query(
+            "INSERT INTO project_units \
+             (project_id, chat_session_id, id, revision, unit_type, \
+              context_slug, module_slug, unit_name_slug, \
+              compiled_code, code, is_deleted) \
+             VALUES ($1::uuid, $2::uuid, $3, 1, $4::project_unit_type, \
+                     $5, $6, $7, $8, $9, false) \
+             ON CONFLICT (project_id, chat_session_id, id, revision) DO UPDATE \
+             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code",
+        )
+        .bind::<Text, _>(TEST_ALT_PROJECT_ID)
+        .bind::<Text, _>(TEST_ALT_CHAT_SESSION_ID)
+        .bind::<Text, _>(&spec.full_id)
+        .bind::<Text, _>(&spec.unit_type)
+        .bind::<Text, _>(&spec.context_slug)
+        .bind::<Text, _>(&spec.module_slug)
+        .bind::<Text, _>(&spec.unit_name_slug)
+        .bind::<Text, _>(&spec.compiled_code)
+        .bind::<Text, _>(&spec.compiled_code)
+        .execute(&mut conn)
+        .unwrap_or_else(|e| panic!("test_seed: insert alt unit '{}': {e}", spec.full_id));
     }
 
     let units_metadata = serde_json::json!({
         "combinedUnitIDs": combined_unit_ids,
         "newUnitIDs": combined_unit_ids,
+        "previousUnitIDs": [],
+    });
+    let alt_units_metadata = serde_json::json!({
+        "combinedUnitIDs": alt_combined_unit_ids,
+        "newUnitIDs": alt_combined_unit_ids,
         "previousUnitIDs": [],
     });
 
@@ -155,6 +216,17 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .expect("test_seed: insert release");
 
     sql_query(
+        "INSERT INTO project_releases (id, project_id, units_metadata, created_at, is_stage, revision) \
+         VALUES ($1::uuid, $2::uuid, $3::jsonb, NOW(), false, 1.0) \
+         ON CONFLICT (id) DO UPDATE SET units_metadata = EXCLUDED.units_metadata",
+    )
+    .bind::<Text, _>(TEST_ALT_RELEASE_ID)
+    .bind::<Text, _>(TEST_ALT_PROJECT_ID)
+    .bind::<Text, _>(alt_units_metadata.to_string())
+    .execute(&mut conn)
+    .expect("test_seed: insert alt release");
+
+    sql_query(
         "INSERT INTO project_runtimes (id, project_id, environment, name, slug, live_release_id) \
          VALUES ($1::uuid, $2::uuid, 'prod'::platform_environment_type, 'production', 'production', $3::uuid) \
          ON CONFLICT (id) DO UPDATE SET live_release_id = EXCLUDED.live_release_id",
@@ -164,6 +236,17 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .bind::<Text, _>(TEST_RELEASE_ID)
     .execute(&mut conn)
     .expect("test_seed: insert runtime");
+
+    sql_query(
+        "INSERT INTO project_runtimes (id, project_id, environment, name, slug, live_release_id) \
+         VALUES ($1::uuid, $2::uuid, 'prod'::platform_environment_type, 'production', 'production', $3::uuid) \
+         ON CONFLICT (id) DO UPDATE SET live_release_id = EXCLUDED.live_release_id",
+    )
+    .bind::<Text, _>(TEST_ALT_RUNTIME_ID)
+    .bind::<Text, _>(TEST_ALT_PROJECT_ID)
+    .bind::<Text, _>(TEST_ALT_RELEASE_ID)
+    .execute(&mut conn)
+    .expect("test_seed: insert alt runtime");
 
     for spec in &all_units {
         let path = unit_path_from_full_id(&spec.full_id);
@@ -191,26 +274,28 @@ pub fn teardown_test_entities(pool: &DbPool) {
 
     tracing::info!("test_seed: tearing down test entities");
 
-    sql_query("DELETE FROM project_units WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM project_runtimes WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM project_releases WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM chat_sessions WHERE project_id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
-    sql_query("DELETE FROM projects WHERE id = $1::uuid")
-        .bind::<Text, _>(TEST_PROJECT_ID)
-        .execute(&mut conn)
-        .ok();
+    for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
+        sql_query("DELETE FROM project_units WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM project_runtimes WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM project_releases WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM chat_sessions WHERE project_id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+        sql_query("DELETE FROM projects WHERE id = $1::uuid")
+            .bind::<Text, _>(pid)
+            .execute(&mut conn)
+            .ok();
+    }
     sql_query("DELETE FROM users WHERE id = $1::uuid")
         .bind::<Text, _>(TEST_USER_ID)
         .execute(&mut conn)

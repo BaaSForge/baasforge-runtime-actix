@@ -4,6 +4,7 @@
 //! Request/response data is passed via `rquickjs-serde` — no JSON roundtrips.
 
 pub mod modules;
+pub mod queue_worker_runner;
 pub mod types;
 pub mod workflow_runner;
 

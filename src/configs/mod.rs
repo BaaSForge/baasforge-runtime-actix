@@ -46,15 +46,20 @@ pub struct Settings {
     // -- Workflow runtime infrastructure --
 
     /// Dedicated Redis URL for workflow state persistence (step results, promises, timers).
-    /// Separate from the cache Redis so workflow durability is independent of cache config.
     pub wf_redis_url: Option<String>,
     /// NATS URL used by the workflow runtime for wake signals (sleep timers, promise resolution).
-    /// Separate from the release NATS so workflow infra can be configured independently.
     pub wf_nats_url: Option<String>,
     /// JetStream stream name for durable workflow wake timers. Default: `"WF_WAKE"`.
     pub wf_nats_jetstream_stream: Option<String>,
     /// Durable pull consumer name shared by all `workflow_worker` replicas. Default: `"wf_wake_consumer"`.
     pub wf_nats_jetstream_consumer: Option<String>,
+
+    // -- Queue worker runtime infrastructure --
+
+    /// Dedicated Redis URL for queue worker state (run metadata, results, execution locks).
+    pub wq_redis_url: Option<String>,
+    /// NATS URL for queue worker work queue (JetStream) and lifecycle events (Core).
+    pub wq_nats_url: Option<String>,
 
     // -- Test mode --
 
@@ -67,6 +72,9 @@ pub struct Settings {
     /// Directory containing compiled workflow JS files to register as workflow units.
     /// Files are discovered recursively; the path relative to this dir determines the unit slug.
     pub test_workflow_dir: Option<String>,
+    /// Directory containing compiled queue worker JS files to register as queue_worker units.
+    /// Files are discovered recursively; the relative path (without .js) becomes the unit_name_slug.
+    pub test_queue_worker_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +154,15 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let wq_redis_url = env::var("WQ_REDIS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let wq_nats_url = env::var("WQ_NATS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let test_mode = match env::var("TEST_MODE") {
             Ok(s) => parse_env_bool(&s).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
             Err(_) => false,
@@ -172,6 +189,11 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let test_queue_worker_dir = env::var("TEST_QUEUE_WORKER_DIR")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Settings {
             port,
             app_environment,
@@ -188,9 +210,12 @@ impl Settings {
             wf_nats_url,
             wf_nats_jetstream_stream,
             wf_nats_jetstream_consumer,
+            wq_redis_url,
+            wq_nats_url,
             test_mode,
             test_unit_files,
             test_workflow_dir,
+            test_queue_worker_dir,
         })
     }
 }

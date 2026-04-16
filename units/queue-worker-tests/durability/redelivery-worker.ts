@@ -8,7 +8,7 @@ export default queueWorker<Input, Output>({
   async process(ctx, _data) {
     void sdk;
     if (ctx.attempt < 2) {
-      throw new ctx.TerminalError("simulating crash via TerminalError on first attempt");
+      throw new Error("simulating crash on first attempt");
     }
     return { attempt: ctx.attempt, ok: true };
   },

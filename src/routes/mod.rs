@@ -1,3 +1,4 @@
+pub mod queue_worker;
 pub mod unit;
 pub mod workflow;
 pub mod ws;
@@ -16,30 +17,43 @@ pub struct AppContext {
     pub pool: DbPool,
     pub settings: Settings,
     pub redis_conn: SharedRedisConn,
-    /// Dedicated Redis connection for workflow state (separate from cache Redis).
+    /// Dedicated Redis connection for workflow state (step results, promises, timers).
     pub wf_redis: Option<SharedRedis>,
-    /// NATS client for workflow wake signals (used for immediate publishes).
-    pub nats_client: Option<async_nats::Client>,
+    /// NATS client for workflow wake signals and lifecycle events.
+    pub wf_nats_client: Option<async_nats::Client>,
     /// JetStream context for durable workflow wake timer publishes.
     pub wf_jetstream: Option<async_nats::jetstream::Context>,
+    /// Dedicated Redis connection for queue worker state (run metadata, results, locks).
+    pub wq_redis: Option<SharedRedis>,
+    /// NATS client for queue worker work queue (JetStream) and lifecycle events (Core).
+    pub wq_nats_client: Option<async_nats::Client>,
+    /// JetStream context for publishing queue worker work messages.
+    pub wq_jetstream: Option<async_nats::jetstream::Context>,
 }
 
 impl AppContext {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         pool: DbPool,
         settings: Settings,
         redis_conn: SharedRedisConn,
         wf_redis: Option<SharedRedis>,
-        nats_client: Option<async_nats::Client>,
+        wf_nats_client: Option<async_nats::Client>,
         wf_jetstream: Option<async_nats::jetstream::Context>,
+        wq_redis: Option<SharedRedis>,
+        wq_nats_client: Option<async_nats::Client>,
+        wq_jetstream: Option<async_nats::jetstream::Context>,
     ) -> Self {
         Self {
             pool,
             settings,
             redis_conn,
             wf_redis,
-            nats_client,
+            wf_nats_client,
             wf_jetstream,
+            wq_redis,
+            wq_nats_client,
+            wq_jetstream,
         }
     }
 }
@@ -103,7 +117,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         None
     };
 
-    let nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
+    let wf_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
         match crate::configs::connect_nats(url).await {
             Ok(client) => {
                 tracing::info!("[nats_wf] connected for workflow signals");
@@ -120,12 +134,53 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     };
 
     let wf_jetstream: Option<async_nats::jetstream::Context> =
-        nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
+        wf_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
 
-    // In test mode, run the JetStream wake consumer in-process (normally handled
-    // by the separate workflow_worker binary).
+    let wq_redis: Option<SharedRedis> = if let Some(url) = &settings.wq_redis_url {
+        match redis::Client::open(url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    tracing::info!("[wq_redis] queue worker Redis connected");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[wq_redis] connection failed, queue workers disabled");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "[wq_redis] client open failed, queue workers disabled");
+                None
+            }
+        }
+    } else {
+        tracing::info!("[wq_redis] WQ_REDIS_URL not set, queue workers disabled");
+        None
+    };
+
+    let wq_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wq_nats_url {
+        match crate::configs::connect_nats(url).await {
+            Ok(client) => {
+                tracing::info!("[nats_wq] connected for queue worker signals");
+                Some(client)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "[nats_wq] connection failed, queue workers disabled");
+                None
+            }
+        }
+    } else {
+        tracing::info!("[nats_wq] WQ_NATS_URL not set, queue workers disabled");
+        None
+    };
+
+    let wq_jetstream: Option<async_nats::jetstream::Context> =
+        wq_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
+
+    // In test mode, run the JetStream consumers in-process (normally handled
+    // by the separate worker binaries).
     if settings.test_mode {
-        if let (Some(wr), Some(nc)) = (&wf_redis, &nats_client) {
+        if let (Some(wr), Some(nc)) = (&wf_redis, &wf_nats_client) {
             let wr = wr.clone();
             let nc = nc.clone();
             let p = pool.clone();
@@ -157,6 +212,33 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             });
         }
 
+        if let (Some(wr), Some(nc)) = (&wq_redis, &wq_nats_client) {
+            let wr = wr.clone();
+            let nc = nc.clone();
+            let p = pool.clone();
+            let rc = redis_conn.clone();
+            let stream_name = crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM.to_string();
+            let consumer_name = crate::services::queue_worker_engine::WQ_NATS_WORK_CONSUMER.to_string();
+            let base_url = format!("http://127.0.0.1:{port}");
+            tracing::info!("[test_mode] starting inline JetStream queue_worker work consumer");
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::services::queue_worker_worker::runner::run_work_consumer(
+                        wr,
+                        nc,
+                        p,
+                        rc,
+                        &stream_name,
+                        &consumer_name,
+                        &base_url,
+                    )
+                    .await
+                {
+                    tracing::error!(error = %e, "[test_mode] queue_worker work consumer exited with error");
+                }
+            });
+        }
+
         tracing::info!("[test_mode] seeding test entities into database");
         crate::services::test_seed::seed_test_entities(&pool, &settings);
         crate::services::test_seed::print_trigger_urls(&settings);
@@ -167,8 +249,11 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         settings.clone(),
         redis_conn,
         wf_redis,
-        nats_client,
+        wf_nats_client,
         wf_jetstream,
+        wq_redis,
+        wq_nats_client,
+        wq_jetstream,
     );
 
     let test_pool = if settings.test_mode { Some(pool) } else { None };
@@ -225,6 +310,21 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     .route(
                         "/{project_id}/{context_slug}/{module_slug}/{workflow_name_slug}",
                         web::post().to(workflow::start_workflow_production),
+                    ),
+            )
+            .service(
+                web::scope("/api/v1/trigger/workerQueue")
+                    .route(
+                        "/{project_id}/sdk/emit",
+                        web::post().to(queue_worker::handle_sdk_emit),
+                    )
+                    .route(
+                        "/{project_id}/{tail:.*}",
+                        web::post().to(queue_worker::handle_queue_worker_post),
+                    )
+                    .route(
+                        "/{project_id}/{tail:.*}",
+                        web::get().to(queue_worker::handle_queue_worker_get),
                     ),
             )
             .service(

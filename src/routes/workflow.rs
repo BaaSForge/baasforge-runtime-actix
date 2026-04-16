@@ -120,7 +120,7 @@ async fn do_start_workflow(
 
     match workflow_engine::start_workflow(
         &wf_redis,
-        &ctx.nats_client,
+        &ctx.wf_nats_client,
         &ctx.wf_jetstream,
         &project_id_str,
         unit_path,
@@ -159,7 +159,7 @@ async fn do_call_handler(
 
     match workflow_engine::call_handler(
         &wf_redis,
-        &ctx.nats_client,
+        &ctx.wf_nats_client,
         &ctx.wf_jetstream,
         &project_id_str,
         instance_id,

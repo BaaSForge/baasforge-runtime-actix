@@ -76,6 +76,7 @@ APP_ENV=production \
 PORT="$PORT" \
 TEST_UNIT_FILES="queue-worker-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_QUEUE_WORKER_DIR="$SCRIPT_DIR/dist" \
+TEST_WORKFLOW_DIR="$SCRIPT_DIR/dist/cross-unit" \
   "$PROJECT_ROOT/target/release/baal-runtime-actix" &
 SERVER_PID=$!
 

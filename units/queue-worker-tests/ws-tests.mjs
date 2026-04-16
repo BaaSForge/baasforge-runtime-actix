@@ -223,7 +223,7 @@ const WS_LIFECYCLE = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { v: 1 });
+        const enqueued = await enqueueWorker("echo-worker", { v: 1 });
         runId = enqueued.runId;
       });
       const events = wsEvents(msgs);
@@ -246,7 +246,7 @@ const WS_LIFECYCLE = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 5_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("lifecycle/slow-worker", { sleepMs: 3000 });
+        const enqueued = await enqueueWorker("slow-worker", { sleepMs: 3000 });
         runId = enqueued.runId;
       });
       const forRun = msgs.filter((m) => m.parsed?.runId === runId);
@@ -265,7 +265,7 @@ const WS_LIFECYCLE = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 5_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { v: 2 });
+        const enqueued = await enqueueWorker("echo-worker", { v: 2 });
         runId = enqueued.runId;
       });
       const forRun = msgs.filter((m) => m.parsed?.runId === runId);
@@ -284,7 +284,7 @@ const WS_LIFECYCLE = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 8_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("lifecycle/fail-twice-worker", {});
+        const enqueued = await enqueueWorker("fail-twice-worker", {});
         runId = enqueued.runId;
       });
       const forRun = msgs.filter((m) => m.parsed?.runId === runId);
@@ -305,7 +305,7 @@ const WS_LIFECYCLE = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 15_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("lifecycle/fail-twice-worker", {});
+        const enqueued = await enqueueWorker("fail-twice-worker", {});
         runId = enqueued.runId;
       });
       const forRun = msgs.filter((m) => m.parsed?.runId === runId);
@@ -324,7 +324,7 @@ const WS_LIFECYCLE = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 30_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("lifecycle/always-fail-worker", {});
+        const enqueued = await enqueueWorker("always-fail-worker", {});
         runId = enqueued.runId;
       });
       const forRun = msgs.filter((m) => m.parsed?.runId === runId);
@@ -339,7 +339,7 @@ const WS_LIFECYCLE = [
   {
     name: "ws-cancelled-event",
     run: async () => {
-      const { runId } = await enqueueWorker("lifecycle/slow-worker", { sleepMs: 10_000 });
+      const { runId } = await enqueueWorker("slow-worker", { sleepMs: 10_000 });
       let receivedCancelled = false;
 
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 5_000, async (ws) => {
@@ -347,7 +347,7 @@ const WS_LIFECYCLE = [
           JSON.stringify({ action: "subscribe", unitType: "queue-worker", instanceId: runId }),
         );
         await sleep(300);
-        await cancelRun("lifecycle/slow-worker", runId);
+        await cancelRun("slow-worker", runId);
       });
 
       const forRun = msgs.filter((m) => m.parsed?.runId === runId);
@@ -375,7 +375,7 @@ const WS_FILTERING = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { filter: 1 });
+        const enqueued = await enqueueWorker("echo-worker", { filter: 1 });
         runId = enqueued.runId;
       });
       const events = wsEvents(msgs);
@@ -392,7 +392,7 @@ const WS_FILTERING = [
   {
     name: "ws-filter-specific-run",
     run: async () => {
-      const { runId: slowRunId } = await enqueueWorker("lifecycle/slow-worker", {
+      const { runId: slowRunId } = await enqueueWorker("slow-worker", {
         sleepMs: 6_000,
       });
 
@@ -406,7 +406,7 @@ const WS_FILTERING = [
           }),
         );
         await sleep(300);
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { filter: 2 });
+        const enqueued = await enqueueWorker("echo-worker", { filter: 2 });
         fastRunId = enqueued.runId;
       });
 
@@ -431,8 +431,8 @@ const WS_FILTERING = [
       let runIdB;
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 5_000, async () => {
         const [a, b] = await Promise.all([
-          enqueueWorker("endpoint/echo-worker", { unfiltered: "a" }),
-          enqueueWorker("basic/process-and-return", { value: 1, label: "unfiltered-b" }),
+          enqueueWorker("echo-worker", { unfiltered: "a" }),
+          enqueueWorker("process-and-return", { value: 1, label: "unfiltered-b" }),
         ]);
         runIdA = a.runId;
         runIdB = b.runId;
@@ -451,7 +451,7 @@ const WS_FILTERING = [
     name: "ws-resubscribe-narrows-filter",
     run: async () => {
       // Pre-position a slow run to get its runId before subscribing.
-      const { runId: targetRunId } = await enqueueWorker("lifecycle/slow-worker", {
+      const { runId: targetRunId } = await enqueueWorker("slow-worker", {
         sleepMs: 8_000,
       });
 
@@ -471,7 +471,7 @@ const WS_FILTERING = [
         // Wait for server to re-subscribe on NATS.
         await sleep(500);
         // Start another fast run after narrowing — its events must not leak through.
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { resubscribe: 1 });
+        const enqueued = await enqueueWorker("echo-worker", { resubscribe: 1 });
         otherRunId = enqueued.runId;
       });
 
@@ -500,9 +500,10 @@ const WS_EDGE_CASES = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 5_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { order: 1 });
+        const enqueued = await enqueueWorker("echo-worker", { order: 1 });
         runId = enqueued.runId;
-        // Narrow immediately after enqueue so we see only this run's events.
+        // Wait briefly so the queued event arrives before narrowing the subscription.
+        await sleep(300);
         ws.send(
           JSON.stringify({ action: "subscribe", unitType: "queue-worker", instanceId: runId }),
         );
@@ -533,8 +534,10 @@ const WS_EDGE_CASES = [
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 30_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("lifecycle/fail-twice-worker", {});
+        const enqueued = await enqueueWorker("fail-twice-worker", {});
         runId = enqueued.runId;
+        // Wait briefly so the queued event arrives before narrowing the subscription.
+        await sleep(300);
         ws.send(
           JSON.stringify({ action: "subscribe", unitType: "queue-worker", instanceId: runId }),
         );
@@ -589,7 +592,7 @@ const WS_EDGE_CASES = [
         ws2.send(sub);
 
         await sleep(200);
-        const { runId } = await enqueueWorker("endpoint/echo-worker", { multi: 1 });
+        const { runId } = await enqueueWorker("echo-worker", { multi: 1 });
         await sleep(4_000);
 
         const events1 = wsEvents(msgs1.filter((m) => m.parsed?.runId === runId));
@@ -608,8 +611,8 @@ const WS_EDGE_CASES = [
   {
     name: "ws-late-connect",
     run: async () => {
-      const { runId } = await enqueueWorker("endpoint/echo-worker", { late: 1 });
-      await pollUntilTerminal("endpoint/echo-worker", runId);
+      const { runId } = await enqueueWorker("echo-worker", { late: 1 });
+      await pollUntilTerminal("echo-worker", runId);
 
       // Connect AFTER completion — no events should arrive for this run.
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 2_000, async (ws) => {
@@ -631,22 +634,22 @@ const WS_EDGE_CASES = [
       const phase1 = await wsCollect(toWsUrl(PROJECT_ID), 5_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { phase: 1 });
+        const enqueued = await enqueueWorker("echo-worker", { phase: 1 });
         runIdA = enqueued.runId;
       });
       if (!wsEvents(phase1.filter((m) => m.parsed?.runId === runIdA)).includes("queueWorker.completed"))
         throw new Error(`phase 1: did not observe completion for run A`);
 
       // Phase 2: enqueue B while disconnected, wait for it to finish.
-      const { runId: runIdB } = await enqueueWorker("endpoint/echo-worker", { phase: 2 });
-      await pollUntilTerminal("endpoint/echo-worker", runIdB);
+      const { runId: runIdB } = await enqueueWorker("echo-worker", { phase: 2 });
+      await pollUntilTerminal("echo-worker", runIdB);
 
       // Phase 3: reconnect, enqueue C, collect events.
       let runIdC;
       const phase3 = await wsCollect(toWsUrl(PROJECT_ID), 5_000, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(100);
-        const enqueued = await enqueueWorker("endpoint/echo-worker", { phase: 3 });
+        const enqueued = await enqueueWorker("echo-worker", { phase: 3 });
         runIdC = enqueued.runId;
       });
 
