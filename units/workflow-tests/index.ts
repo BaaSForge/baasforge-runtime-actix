@@ -1162,6 +1162,223 @@ function allTests(): TestDef[] {
         { type: "eq", path: "result", expected: "done" },
       ],
     },
+
+    // ---- durability (5) ----
+    {
+      name: "slow-step-completes", category: "durability",
+      workflowSlug: "slow-step-completes",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "done" },
+        { type: "notNull", path: "computed" },
+      ],
+    },
+    {
+      name: "idempotent-after-redelivery", category: "durability",
+      workflowSlug: "idempotent-after-redelivery",
+      input: { salt: "first-call" },
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: true,
+      checks: [
+        { type: "notNull", path: "once.nonce" },
+        { type: "eq", path: "once.salt", expected: "first-call" },
+      ],
+    },
+    {
+      name: "sleep-fire-at-accuracy", category: "durability",
+      workflowSlug: "sleep-fire-at-accuracy",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "withinTolerance" },
+        { type: "notNull", path: "elapsed" },
+      ],
+    },
+    {
+      name: "sleep-then-steps-then-sleep", category: "durability",
+      workflowSlug: "sleep-then-steps-then-sleep",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "eq", path: "a", expected: "step-a" },
+        { type: "eq", path: "b", expected: "step-b" },
+        { type: "eq", path: "c", expected: "step-c" },
+        { type: "eq", path: "sequence", expected: ["step-a", "step-b", "step-c"] },
+      ],
+    },
+    {
+      name: "sleep-with-state-persistence", category: "durability",
+      workflowSlug: "sleep-with-state-persistence",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "eq", path: "beforeSleep", expected: "before-sleep" },
+        { type: "eq", path: "afterSleep", expected: "before-sleep" },
+        { type: "true", path: "persisted" },
+      ],
+    },
+
+    // ---- crash-recovery new (2) ----
+    {
+      name: "resume-preserves-step-order", category: "crash_recovery",
+      workflowSlug: "resume-preserves-step-order",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "eq", path: "steps.0.index", expected: 1 },
+        { type: "eq", path: "steps.1.index", expected: 2 },
+        { type: "eq", path: "steps.2.index", expected: 3 },
+        { type: "eq", path: "steps.3.index", expected: 4 },
+        { type: "eq", path: "steps.4.index", expected: 5 },
+        { type: "true", path: "allInOrder" },
+        { type: "eq", path: "preSleepCached", expected: [1, 2, 3] },
+      ],
+    },
+
+    // ---- lifecycle new (2) ----
+    {
+      name: "cancel-during-sleep", category: "lifecycle",
+      workflowSlug: "cancel-during-sleep",
+      input: {},
+      handlers: [], timeoutPromise: false,
+      cancelOnSuspend: true,
+      replay: false, dedup: false,
+      checks: [],
+    },
+    {
+      name: "cancel-during-promise-wait", category: "lifecycle",
+      workflowSlug: "cancel-during-promise-wait",
+      input: {},
+      handlers: [], timeoutPromise: false,
+      cancelOnSuspend: true,
+      replay: false, dedup: false,
+      checks: [],
+    },
+
+    // ---- integration new (3) ----
+    {
+      name: "sdk-call-callee-sleeps", category: "integration",
+      workflowSlug: "sdk-call-callee-sleeps",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false, internalResolution: true,
+      checks: [
+        { type: "true", path: "callResult.slept" },
+        { type: "eq", path: "callResult.n_doubled", expected: 10 },
+        { type: "true", path: "callerDone" },
+      ],
+    },
+    {
+      name: "sdk-call-callee-with-promise", category: "integration",
+      workflowSlug: "sdk-call-callee-with-promise",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip: "Requires callee instance discovery for handler dispatch",
+      checks: [
+        { type: "notNull", path: "result" },
+      ],
+    },
+    {
+      name: "sdk-call-timeout", category: "integration",
+      workflowSlug: "sdk-call-timeout",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip: "sdk.call caller-side timeout not yet implemented",
+      checks: [
+        { type: "notNull", path: "result" },
+      ],
+    },
+
+    // ---- promises new (2) ----
+    {
+      name: "promise-and-sleep-parallel", category: "promises",
+      workflowSlug: "promise-and-sleep-parallel",
+      input: {},
+      handlers: [{ name: "resolve", input: { value: "parallel-done" } }],
+      timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "slept" },
+        { type: "eq", path: "value", expected: "parallel-done" },
+      ],
+    },
+
+    // ---- memoization new (2) ----
+    {
+      name: "many-steps-replay", category: "memoization",
+      workflowSlug: "many-steps-replay",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "allIndicesCorrect" },
+        { type: "eq", path: "postSleep.count", expected: 20 },
+        { type: "eq", path: "postSleep.firstIndex", expected: 1 },
+        { type: "eq", path: "postSleep.lastIndex", expected: 20 },
+      ],
+    },
+    {
+      name: "step-result-types-after-resume", category: "memoization",
+      workflowSlug: "step-result-types-after-resume",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "allOk" },
+        { type: "true", path: "verified.strOk" },
+        { type: "true", path: "verified.numOk" },
+        { type: "true", path: "verified.nilOk" },
+        { type: "true", path: "verified.nestedOk" },
+      ],
+    },
+
+    // ---- retry new (2) ----
+    {
+      name: "retry-across-resume", category: "retry",
+      workflowSlug: "retry-across-resume",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "eq", path: "attempts", expected: 3 },
+        { type: "true", path: "succeeded" },
+      ],
+    },
+    {
+      name: "retry-then-sleep", category: "retry",
+      workflowSlug: "retry-then-sleep",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "eq", path: "attempts", expected: 2 },
+        { type: "true", path: "slept" },
+        { type: "true", path: "done" },
+      ],
+    },
+
+    // ---- state new (1) ----
+    {
+      name: "state-survives-multiple-resumes", category: "state",
+      workflowSlug: "state-survives-multiple-resumes",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "counterProgressed" },
+        { type: "true", path: "tagProgressed" },
+        { type: "eq", path: "mid.counter", expected: 1 },
+        { type: "eq", path: "final.counter", expected: 2 },
+      ],
+    },
   ];
 }
 
@@ -1527,6 +1744,268 @@ function allEndpointTests(): EndpointTestDef[] {
           throw new Error(`signal.payload mismatch: ${JSON.stringify(result?.signal)}`);
         if (result?.signal?.code !== 99)
           throw new Error(`signal.code mismatch: ${JSON.stringify(result?.signal)}`);
+      },
+    },
+
+    // ── Durability: concurrent-wake-same-instance ───────────────────────
+    {
+      name: "concurrent-wake-same-instance",
+      category: "endpoint_durability",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "basic-promise", {});
+        await epPollStatus(base, "suspended");
+
+        const [r1, r2] = await Promise.all([
+          httpPostFull(`${base}/handlers/approve`, { value: "first-resolve" }),
+          httpPostFull(`${base}/handlers/approve`, { value: "second-resolve" }),
+        ]);
+
+        if (r1.status !== 200 && r2.status !== 200) {
+          throw new Error(`both handler calls failed: ${r1.status}, ${r2.status}`);
+        }
+
+        await epPollStatus(base, "completed");
+        const res = await httpGetFull(`${base}/result`);
+        if (res.body?.result?.received !== "first-resolve" && res.body?.result?.received !== "second-resolve") {
+          throw new Error(`unexpected result: ${JSON.stringify(res.body?.result)}`);
+        }
+      },
+    },
+
+    // ── Crash Recovery: resume-completed-noop ───────────────────────────
+    {
+      name: "resume-completed-noop",
+      category: "endpoint_crash_recovery",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "echo-input", { v: 42 });
+        await epPollStatus(base, "completed");
+
+        const status1 = await httpGetFull(`${base}/status`);
+        if (status1.body?.meta?.status !== "completed") {
+          throw new Error(`expected completed, got ${status1.body?.meta?.status}`);
+        }
+
+        await sleep(200);
+
+        const status2 = await httpGetFull(`${base}/status`);
+        if (status2.body?.meta?.status !== "completed") {
+          throw new Error(`status changed after re-poll: ${status2.body?.meta?.status}`);
+        }
+
+        const res1 = await httpGetFull(`${base}/result`);
+        const res2 = await httpGetFull(`${base}/result`);
+        if (JSON.stringify(res1.body?.result) !== JSON.stringify(res2.body?.result)) {
+          throw new Error("result changed between polls on completed workflow");
+        }
+      },
+    },
+
+    // ── Crash Recovery: resume-failed-noop ──────────────────────────────
+    {
+      name: "resume-failed-noop",
+      category: "endpoint_crash_recovery",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "resume-failed-noop", {});
+        await epPollStatus(base, "failed");
+
+        const status1 = await httpGetFull(`${base}/status`);
+        if (status1.body?.meta?.status !== "failed") {
+          throw new Error(`expected failed, got ${status1.body?.meta?.status}`);
+        }
+
+        await sleep(300);
+
+        const status2 = await httpGetFull(`${base}/status`);
+        if (status2.body?.meta?.status !== "failed") {
+          throw new Error(`status changed after re-poll: ${status2.body?.meta?.status}`);
+        }
+      },
+    },
+
+    // ── Crash Recovery: resume-cancelled-noop ───────────────────────────
+    {
+      name: "resume-cancelled-noop",
+      category: "endpoint_crash_recovery",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "workflow-cancellation", {});
+        await epPollStatus(base, "suspended");
+
+        const cancelResp = await httpPostFull(`${base}/cancel`);
+        if (cancelResp.status !== 200) {
+          throw new Error(`cancel returned ${cancelResp.status}`);
+        }
+
+        await sleep(300);
+
+        const status = await httpGetFull(`${base}/status`);
+        if (status.body?.meta?.status !== "cancelled") {
+          throw new Error(`expected cancelled after re-poll, got ${status.body?.meta?.status}`);
+        }
+      },
+    },
+
+    // ── Lifecycle: cancel-then-restart-fresh ────────────────────────────
+    {
+      name: "cancel-then-restart-fresh",
+      category: "endpoint_lifecycle",
+      run: async (baseUrl) => {
+        const { base: base1 } = await epStart(baseUrl, "workflow-cancellation", {});
+        await epPollStatus(base1, "suspended");
+        await httpPostFull(`${base1}/cancel`);
+
+        const { base: base2 } = await epStart(baseUrl, "echo-input", { fresh: true });
+        await epPollStatus(base2, "completed");
+
+        const res = await httpGetFull(`${base2}/result`);
+        if (res.body?.result?.fresh !== true) {
+          throw new Error(`new instance result mismatch: ${JSON.stringify(res.body?.result)}`);
+        }
+
+        const old = await httpGetFull(`${base1}/status`);
+        if (old.body?.meta?.status !== "cancelled") {
+          throw new Error(`old instance should still be cancelled, got ${old.body?.meta?.status}`);
+        }
+      },
+    },
+
+    // ── Promises: promise-resolved-after-cancel ──────────────────────────
+    {
+      name: "promise-resolved-after-cancel",
+      category: "endpoint_promises",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "promise-resolved-after-cancel", {});
+        await epPollStatus(base, "suspended");
+
+        await httpPostFull(`${base}/cancel`);
+        const afterCancel = await httpGetFull(`${base}/status`);
+        if (afterCancel.body?.meta?.status !== "cancelled") {
+          throw new Error(`expected cancelled, got ${afterCancel.body?.meta?.status}`);
+        }
+
+        await httpPostFull(`${base}/handlers/resolve`, { value: "late-resolve" });
+
+        await sleep(300);
+
+        const final = await httpGetFull(`${base}/status`);
+        if (final.body?.meta?.status !== "cancelled") {
+          throw new Error(`workflow resumed after resolve on cancelled instance: ${final.body?.meta?.status}`);
+        }
+      },
+    },
+
+    // ── Promises: promise-handler-idempotent ─────────────────────────────
+    {
+      name: "promise-handler-idempotent",
+      category: "endpoint_promises",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "promise-handler-idempotent", {});
+        await epPollStatus(base, "suspended");
+
+        const r1 = await httpPostFull(`${base}/handlers/resolve`, { value: "first" });
+        if (r1.status !== 200) {
+          throw new Error(`first resolve returned ${r1.status}`);
+        }
+
+        await epPollStatus(base, "completed");
+
+        const r2 = await httpPostFull(`${base}/handlers/resolve`, { value: "second" });
+
+        const res = await httpGetFull(`${base}/result`);
+        const value = res.body?.result?.value;
+        if (value !== "first") {
+          throw new Error(`expected "first", got "${value}" (second resolve may have overwritten)`);
+        }
+
+        void r2;
+      },
+    },
+
+    // ── Endpoints: status-during-sleep ────────────────────────────────────
+    {
+      name: "status-during-sleep",
+      category: "endpoint_status",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "cancel-during-sleep", {});
+        const body = await epPollStatus(base, "suspended");
+
+        if (body?.meta?.status !== "suspended") {
+          throw new Error(`expected suspended, got ${body?.meta?.status}`);
+        }
+
+        await httpPostFull(`${base}/cancel`);
+      },
+    },
+
+    // ── Endpoints: result-before-completion ──────────────────────────────
+    {
+      name: "result-before-completion",
+      category: "endpoint_result",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "cancel-during-sleep", {});
+        await epPollStatus(base, "suspended");
+
+        const res = await httpGetFull(`${base}/result`);
+        if (res.status === 200 && res.body?.result !== undefined && res.body?.result !== null) {
+          throw new Error(`got non-null result while workflow is still suspended`);
+        }
+
+        await httpPostFull(`${base}/cancel`);
+      },
+    },
+
+    // ── Endpoints: start-already-running ─────────────────────────────────
+    {
+      name: "start-already-running",
+      category: "endpoint_start",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "cancel-during-sleep", {});
+        await epPollStatus(base, "suspended");
+
+        const r2 = await httpPostFull(epWfUrl(baseUrl, "cancel-during-sleep"), {});
+        if (!r2.body?.instanceId) {
+          throw new Error(`second start failed: ${JSON.stringify(r2.body)}`);
+        }
+
+        const base2 = `${epWfUrl(baseUrl, "cancel-during-sleep")}/${r2.body.instanceId}`;
+        await epPollStatus(base2, "suspended");
+
+        await httpPostFull(`${base}/cancel`);
+        await httpPostFull(`${base2}/cancel`);
+      },
+    },
+
+    // ── State: state-isolation-between-instances ──────────────────────────
+    {
+      name: "state-isolation-between-instances",
+      category: "endpoint_state",
+      run: async (baseUrl) => {
+        const [a, b] = await Promise.all([
+          epStart(baseUrl, "state-isolation-between-instances", { tag: "instance-A" }),
+          epStart(baseUrl, "state-isolation-between-instances", { tag: "instance-B" }),
+        ]);
+
+        await Promise.all([
+          epPollStatus(a.base, "completed"),
+          epPollStatus(b.base, "completed"),
+        ]);
+
+        const [resA, resB] = await Promise.all([
+          httpGetFull(`${a.base}/result`),
+          httpGetFull(`${b.base}/result`),
+        ]);
+
+        if (resA.body?.result?.readBack !== "instance-A") {
+          throw new Error(`instance A got readBack="${resA.body?.result?.readBack}"`);
+        }
+        if (resB.body?.result?.readBack !== "instance-B") {
+          throw new Error(`instance B got readBack="${resB.body?.result?.readBack}"`);
+        }
+        if (!resA.body?.result?.isolatedCorrectly) {
+          throw new Error("instance A isolation failed");
+        }
+        if (!resB.body?.result?.isolatedCorrectly) {
+          throw new Error("instance B isolation failed");
+        }
       },
     },
 

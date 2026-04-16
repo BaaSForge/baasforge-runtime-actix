@@ -131,7 +131,7 @@ pub async fn run_wake_consumer(
             async_nats::jetstream::consumer::pull::Config {
                 durable_name: Some(consumer_name.to_string()),
                 filter_subjects: vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()],
-                ack_wait: std::time::Duration::from_secs(30),
+                ack_wait: std::time::Duration::from_secs(300),
                 ..Default::default()
             },
         )
@@ -168,6 +168,23 @@ pub async fn run_wake_consumer(
                     let nats_client = Some(nats.clone());
                     let pool = pool.clone();
                     let redis_conn = redis_conn.clone();
+
+                    let heartbeat_msg = msg.clone();
+                    let heartbeat = tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+                        interval.tick().await;
+                        loop {
+                            interval.tick().await;
+                            if heartbeat_msg
+                                .ack_with(async_nats::jetstream::AckKind::Progress)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    });
+
                     if let Err(e) = handle_start(
                         &wf_redis,
                         &nats_client,
@@ -186,6 +203,7 @@ pub async fn run_wake_consumer(
                             "[workflow_wake] callee start failed"
                         );
                     }
+                    heartbeat.abort();
                     if let Err(e) = msg.ack().await {
                         error!(error = %e, "[workflow_wake] ack failed");
                     }
@@ -218,6 +236,22 @@ pub async fn run_wake_consumer(
                 let pool = pool.clone();
                 let redis_conn = redis_conn.clone();
 
+                let heartbeat_msg = msg.clone();
+                let heartbeat = tokio::spawn(async move {
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+                    interval.tick().await;
+                    loop {
+                        interval.tick().await;
+                        if heartbeat_msg
+                            .ack_with(async_nats::jetstream::AckKind::Progress)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+
                 if let Err(e) = handle_wake(
                     &wf_redis,
                     &nats_client,
@@ -237,6 +271,7 @@ pub async fn run_wake_consumer(
                     );
                 }
 
+                heartbeat.abort();
                 if let Err(e) = msg.ack().await {
                     error!(error = %e, "[workflow_wake] ack failed");
                 }
@@ -296,7 +331,24 @@ async fn handle_start(
         .as_ref()
         .map(|c| async_nats::jetstream::new(c.clone()));
 
-    workflow_engine::launch_callee_workflow(
+    let lock_key = format!("wf:{project_id}:{instance_id}:exec_lock");
+    let acquired: bool = {
+        let mut conn = wf_redis.lock().await;
+        redis::cmd("SET")
+            .arg(&lock_key)
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(300u64)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| format!("exec_lock acquire: {e}"))?
+    };
+    if !acquired {
+        return Ok(());
+    }
+
+    let result = workflow_engine::launch_callee_workflow(
         wf_redis,
         nats_client,
         &js,
@@ -306,7 +358,18 @@ async fn handle_start(
         &source,
         &unit_path,
     )
-    .await
+    .await;
+
+    {
+        let mut conn = wf_redis.lock().await;
+        let _: () = redis::cmd("DEL")
+            .arg(&lock_key)
+            .query_async(&mut *conn)
+            .await
+            .unwrap_or(());
+    }
+
+    result
 }
 
 async fn handle_wake(
@@ -415,8 +478,36 @@ async fn handle_wake(
     let js = nats_client
         .as_ref()
         .map(|c| async_nats::jetstream::new(c.clone()));
-    workflow_engine::resume_workflow(wf_redis, nats_client, &js, project_id, instance_id, &source)
-        .await?;
 
-    Ok(())
+    let lock_key = format!("wf:{project_id}:{instance_id}:exec_lock");
+    let acquired: bool = {
+        let mut conn = wf_redis.lock().await;
+        redis::cmd("SET")
+            .arg(&lock_key)
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(300u64)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| format!("exec_lock acquire: {e}"))?
+    };
+    if !acquired {
+        return Ok(());
+    }
+
+    let result =
+        workflow_engine::resume_workflow(wf_redis, nats_client, &js, project_id, instance_id, &source)
+            .await;
+
+    {
+        let mut conn = wf_redis.lock().await;
+        let _: () = redis::cmd("DEL")
+            .arg(&lock_key)
+            .query_async(&mut *conn)
+            .await
+            .unwrap_or(());
+    }
+
+    result
 }

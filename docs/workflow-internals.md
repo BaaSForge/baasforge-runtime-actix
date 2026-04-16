@@ -34,7 +34,7 @@ graph LR
 
     API -->|start_workflow / resume| JS_WF
     API -->|resolve_promise| Redis
-    API -->|resolve_promise wake| CORE
+    API -->|resolve_promise wake| JS_WF
 
     WC -->|pull messages| JS_WF
     WC -->|read meta/steps| Redis
@@ -124,15 +124,15 @@ sequenceDiagram
     alt Callee completes
         WF_B-->>Engine: Completed(result)
         Engine->>Redis: SET wf:pid:callee_iid:result
-        Engine->>Redis: SET wf:pid:caller_iid:promise:sdk_call_0  {status:resolved, value:result}
-        Engine->>NATS_CORE: publish wf.pid.caller_iid.wake  {reason:promise_resolved}
+        Engine->>Redis: SET NX wf:pid:caller_iid:promise:sdk_call_0  {status:resolved, value:result}
+        Engine->>NATS_JS: publish wf.pid.caller_iid.wake  {reason:promise_resolved}
         Worker->>Engine: resume_workflow(caller_iid)
         Engine->>Redis: KEYS wf:pid:caller_iid:*  — loads promise:sdk_call_0 as resolved
         Engine->>WF_A: re-run from top; sdk.call sees cached promise → returns result
     else Callee fails
         WF_B-->>Engine: Failed(error)
-        Engine->>Redis: SET wf:pid:caller_iid:promise:sdk_call_0  {status:rejected, error}
-        Engine->>NATS_CORE: publish wf.pid.caller_iid.wake  {reason:promise_rejected}
+        Engine->>Redis: SET NX wf:pid:caller_iid:promise:sdk_call_0  {status:rejected, error}
+        Engine->>NATS_JS: publish wf.pid.caller_iid.wake  {reason:promise_rejected}
         Worker->>Engine: resume_workflow(caller_iid)
         Engine->>WF_A: re-run; sdk.call sees rejected promise → throws error
     end
@@ -167,7 +167,7 @@ Each `sdk.call` in a workflow gets a stable promise name (`sdk_call_0`, `sdk_cal
 Name:     WF_WAKE  (env: WF_NATS_JETSTREAM_STREAM)
 Subjects: wf.*.*.wake, wf.*.*.start
 Consumer: wf_wake_consumer  (env: WF_NATS_JETSTREAM_CONSUMER)
-          durable, pull, ack_wait=30s, filter_subjects=[wf.*.*.wake, wf.*.*.start]
+          durable, pull, ack_wait=300s, filter_subjects=[wf.*.*.wake, wf.*.*.start]
 ```
 
 Wake message payload:
@@ -178,6 +178,22 @@ Wake message payload:
 ```
 
 The consumer NAKs with remaining delay if `fire_at` is still in the future, so NATS acts as a durable timer.
+
+### ack_wait Semantics
+
+`ack_wait=300s` is the NATS redelivery ceiling -- not a max workflow duration.
+
+**The ack is sent after `execute_workflow` returns** (`runner.rs`). `ack_wait` bounds one **execution segment** (all code between two suspension points), not the total workflow lifetime.
+
+**For sleep/timer workflows this is safe:**
+- When a workflow calls `ctx.sleep(hours)`, `execute_workflow` suspends and returns immediately
+- A new wake message with `fire_at` is published to JetStream
+- The consumer NAKs with the remaining delay -- so the message is not redelivered until `fire_at`
+- No ack is held open during the sleep
+
+**In-progress heartbeat:** Before calling `handle_start` or `handle_wake`, the consumer spawns a background task that sends `AckKind::Progress` every 15 seconds. This resets the `ack_wait` timer for the duration of execution. The task is aborted before the final `ack()`. This means execution segments can exceed 300s without redelivery.
+
+**Execution lock:** `handle_start` and `handle_wake` acquire a Redis `SET NX EX 300` lock at key `wf:{pid}:{iid}:exec_lock` before calling into the engine. A second concurrent wake for the same instance returns immediately if the lock is held. The lock is always released after execution (success or error); the 300s TTL is a crash-recovery safety net.
 
 ---
 
@@ -257,3 +273,25 @@ stateDiagram-v2
     failed --> [*]
     cancelled --> [*]
 ```
+
+All transitions are atomic via a Redis Lua CAS script (`transition_status`). The script reads the current status, verifies it is in the allowed `from` set, writes the new status, and returns the old meta -- all in a single round-trip. If the status has already moved (e.g., a concurrent cancel beat a completion), the script returns `{rejected: current_status}` and the caller skips the transition silently.
+
+| Transition | Allowed from | To | Caller |
+|---|---|---|---|
+| `cancel_workflow` | running, suspended | cancelled | HTTP route |
+| `execute_workflow` Completed | running | completed | worker |
+| `execute_workflow` Failed | running | failed | worker |
+| `execute_workflow` Suspended | running | suspended | worker |
+
+---
+
+## Atomicity Guarantees
+
+| Concern | Mechanism |
+|---|---|
+| Redelivery within a segment | `ack_wait=300s` + `AckKind::Progress` heartbeat every 15s |
+| Concurrent execution of same instance | Redis `SET NX EX 300` exec lock per `(project_id, instance_id)` |
+| Concurrent status writes | Lua CAS in `transition_status` -- second writer sees rejected transition |
+| Duplicate workflow start (same name_key) | `SET NX` atomically claims name_key; second starter sees existing active instance |
+| Double promise resolution | `SET NX` on promise key -- second resolution is a no-op, no duplicate wake |
+| Wake signal durability | Promise resolution publishes to JetStream (`WF_WAKE` stream), not core NATS |

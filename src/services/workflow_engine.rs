@@ -71,23 +71,53 @@ pub async fn start_workflow(
     // Workflow-name dedup: only return an existing instance if it is still
     // actively running or suspended. Completed/failed/cancelled instances are
     // NOT reused so that subsequent triggers always start a fresh execution.
+    // SET NX atomically claims the name_key so concurrent starts can't both pass.
     let name_key = format!("wf:{project_id}:name:{unit_path}");
     {
         let mut conn = redis.lock().await;
-        let existing_iid: Option<String> = conn.get(&name_key).await.map_err(|e| e.to_string())?;
-        if let Some(eid) = existing_iid {
-            let eid_meta_key = redis_key(project_id, &eid, "meta");
-            let eid_meta: Option<String> = conn.get(&eid_meta_key).await.map_err(|e| e.to_string())?;
-            if let Some(raw) = eid_meta {
-                if let Ok(meta) = serde_json::from_str::<WorkflowMeta>(&raw) {
-                    if meta.status == "running" || meta.status == "suspended" {
-                        drop(conn);
+        let claimed: bool = redis::cmd("SET")
+            .arg(&name_key)
+            .arg(instance_id)
+            .arg("NX")
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        if !claimed {
+            let existing_iid: Option<String> = conn.get(&name_key).await.map_err(|e| e.to_string())?;
+            if let Some(eid) = existing_iid {
+                let eid_meta_key = redis_key(project_id, &eid, "meta");
+                let eid_meta: Option<String> =
+                    conn.get(&eid_meta_key).await.map_err(|e| e.to_string())?;
+                if let Some(raw) = eid_meta {
+                    if let Ok(meta) = serde_json::from_str::<WorkflowMeta>(&raw) {
                         if meta.status == "suspended" {
+                            drop(conn);
                             let _ = resume_workflow(redis, nats, js, project_id, &eid, source).await;
+                            return Ok(eid);
                         }
-                        return Ok(eid);
+                        if meta.status == "running" {
+                            // Only treat as active if the exec_lock is still held.
+                            // No exec_lock means the previous execution crashed or the
+                            // status was never advanced — treat it as stale and create
+                            // a fresh instance.
+                            let lock_key = format!("wf:{project_id}:{eid}:exec_lock");
+                            let lock_exists: bool = redis::cmd("EXISTS")
+                                .arg(&lock_key)
+                                .query_async(&mut *conn)
+                                .await
+                                .unwrap_or(false);
+                            if lock_exists {
+                                drop(conn);
+                                return Ok(eid);
+                            }
+                            // Stale — fall through to overwrite name_key with new instance
+                        }
                     }
                 }
+                // Existing instance is terminal -- overwrite name_key with new instance
+                let _: () =
+                    conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
             }
         }
     }
@@ -107,7 +137,6 @@ pub async fn start_workflow(
     {
         let mut conn = redis.lock().await;
         let _: () = conn.set(&meta_key, &meta_json).await.map_err(|e| e.to_string())?;
-        let _: () = conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
     }
 
     publish_wf_event(
@@ -120,7 +149,10 @@ pub async fn start_workflow(
     )
     .await;
 
-    execute_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await?;
+    // Swallow workflow-level failures: a workflow that immediately fails is a valid
+    // terminal state. The instanceId was created and meta was written; the caller
+    // can query /status to see the failed result.
+    let _ = execute_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await;
 
     Ok(instance_id.to_string())
 }
@@ -135,20 +167,19 @@ pub async fn resume_workflow(
     source: &str,
 ) -> Result<(), String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
-    let meta_json: String = {
+    // Allow "running" as well as "suspended": a stale "running" with no active exec_lock
+    // (from a crash mid-execution) must be recoverable. Step memoization prevents
+    // re-execution of already-completed steps; the Completed/Failed CAS guards ensure
+    // only one transition wins if two paths race.
+    let old_meta = {
         let mut conn = redis.lock().await;
-        conn.get(&meta_key)
-            .await
-            .map_err(|e| e.to_string())?
+        match transition_status(&mut conn, &meta_key, &["suspended", "running"], "running").await? {
+            StatusTransition::Done(meta) => meta,
+            _ => return Ok(()),
+        }
     };
-    let meta: WorkflowMeta = serde_json::from_str(&meta_json)
-        .map_err(|e| format!("invalid workflow meta: {e}"))?;
-
-    if meta.status == "completed" || meta.status == "failed" || meta.status == "cancelled" {
-        return Ok(());
-    }
-
-    execute_workflow(redis, nats, js, project_id, instance_id, &meta.input, source, None, None).await?;
+    execute_workflow(redis, nats, js, project_id, instance_id, &old_meta.input, source, None, None)
+        .await?;
     Ok(())
 }
 
@@ -192,21 +223,11 @@ pub async fn cancel_workflow(
 ) -> Result<(), String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
     let mut conn = redis.lock().await;
-    let meta_json: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
-    let Some(raw) = meta_json else {
-        return Err("workflow instance not found".to_string());
-    };
-    let mut meta: WorkflowMeta = serde_json::from_str(&raw)
-        .map_err(|e| format!("invalid workflow meta: {e}"))?;
-
-    if meta.status == "completed" || meta.status == "failed" {
-        return Err(format!("workflow already {}", meta.status));
+    match transition_status(&mut conn, &meta_key, &["running", "suspended"], "cancelled").await? {
+        StatusTransition::NotFound => Err("workflow instance not found".to_string()),
+        StatusTransition::Rejected { current } => Err(format!("workflow already {current}")),
+        StatusTransition::Done(_) => Ok(()),
     }
-
-    meta.status = "cancelled".to_string();
-    let updated = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
-    let _: () = conn.set(&meta_key, &updated).await.map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 /// Get the status of a workflow instance including step states and stored state.
@@ -264,6 +285,7 @@ pub async fn get_workflow_result(
 pub async fn resolve_promise(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
     project_id: &str,
     instance_id: &str,
     promise_name: &str,
@@ -276,17 +298,32 @@ pub async fn resolve_promise(
     })
     .to_string();
 
-    let mut conn = redis.lock().await;
-    let _: () = conn.set(&rkey, &value).await.map_err(|e| e.to_string())?;
-    drop(conn);
+    let set_ok: bool = {
+        let mut conn = redis.lock().await;
+        redis::cmd("SET")
+            .arg(&rkey)
+            .arg(&value)
+            .arg("NX")
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    if !set_ok {
+        return Ok(());
+    }
 
-    if let Some(nats_client) = nats {
-        let subject = format!("wf.{project_id}.{instance_id}.wake");
-        let payload = serde_json::json!({
-            "reason": "promise_resolved",
-            "promise": promise_name,
-        })
-        .to_string();
+    let subject = format!("wf.{project_id}.{instance_id}.wake");
+    let payload = serde_json::json!({
+        "reason": "promise_resolved",
+        "promise": promise_name,
+    })
+    .to_string();
+    if let Some(js_ctx) = js {
+        js_ctx
+            .publish(subject, bytes::Bytes::from(payload))
+            .await
+            .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
+    } else if let Some(nats_client) = nats {
         nats_client
             .publish(subject, bytes::Bytes::from(payload))
             .await
@@ -354,12 +391,15 @@ async fn publish_wf_event(
 async fn resolve_caller_promise(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
     project_id: &str,
     caller_instance_id: &str,
     promise_name: &str,
     value_json: &str,
 ) {
-    if let Err(e) = resolve_promise(redis, nats, project_id, caller_instance_id, promise_name, value_json).await {
+    if let Err(e) =
+        resolve_promise(redis, nats, js, project_id, caller_instance_id, promise_name, value_json).await
+    {
         tracing::warn!(
             caller_iid = %caller_instance_id,
             promise = %promise_name,
@@ -373,6 +413,7 @@ async fn resolve_caller_promise(
 async fn reject_caller_promise(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
     project_id: &str,
     caller_instance_id: &str,
     promise_name: &str,
@@ -381,31 +422,93 @@ async fn reject_caller_promise(
     let rkey = redis_key(project_id, caller_instance_id, &format!("promise:{promise_name}"));
     let value = serde_json::json!({ "status": "rejected", "error": error }).to_string();
 
-    let set_result: Result<(), _> = {
+    let set_ok: bool = {
         let mut conn = redis.lock().await;
-        redis::cmd("SET")
+        match redis::cmd("SET")
             .arg(&rkey)
             .arg(&value)
-            .query_async::<()>(&mut *conn)
+            .arg("NX")
+            .query_async(&mut *conn)
             .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "reject_caller_promise: redis SET NX failed");
+                return;
+            }
+        }
     };
-
-    if let Err(e) = set_result {
-        tracing::warn!(error = %e, "reject_caller_promise: redis SET failed");
+    if !set_ok {
         return;
     }
 
-    if let Some(nats_client) = nats {
-        let subject = format!("wf.{project_id}.{caller_instance_id}.wake");
-        let payload = serde_json::json!({
-            "reason": "promise_rejected",
-            "promise": promise_name,
-        })
-        .to_string();
+    let subject = format!("wf.{project_id}.{caller_instance_id}.wake");
+    let payload = serde_json::json!({
+        "reason": "promise_rejected",
+        "promise": promise_name,
+    })
+    .to_string();
+    if let Some(js_ctx) = js {
+        if let Err(e) = js_ctx.publish(subject, bytes::Bytes::from(payload)).await {
+            tracing::warn!(error = %e, "reject_caller_promise: jetstream publish failed");
+        }
+    } else if let Some(nats_client) = nats {
         if let Err(e) = nats_client.publish(subject, bytes::Bytes::from(payload)).await {
             tracing::warn!(error = %e, "reject_caller_promise: nats publish failed");
         }
     }
+}
+
+const TRANSITION_STATUS_LUA: &str = r#"
+local meta_raw = redis.call('GET', KEYS[1])
+if not meta_raw then return nil end
+local meta = cjson.decode(meta_raw)
+local current = meta.status
+local allowed = cjson.decode(ARGV[1])
+for _, s in ipairs(allowed) do
+    if current == s then
+        meta.status = ARGV[2]
+        redis.call('SET', KEYS[1], cjson.encode(meta))
+        return meta_raw
+    end
+end
+return cjson.encode({rejected = current})
+"#;
+
+enum StatusTransition {
+    Done(WorkflowMeta),
+    NotFound,
+    Rejected { current: String },
+}
+
+async fn transition_status(
+    conn: &mut redis::aio::MultiplexedConnection,
+    meta_key: &str,
+    allowed_from: &[&str],
+    new_status: &str,
+) -> Result<StatusTransition, String> {
+    let allowed_json = serde_json::to_string(allowed_from).map_err(|e| e.to_string())?;
+    let result: Option<String> = redis::Script::new(TRANSITION_STATUS_LUA)
+        .key(meta_key)
+        .arg(&allowed_json)
+        .arg(new_status)
+        .invoke_async(conn)
+        .await
+        .map_err(|e| format!("lua transition_status: {e}"))?;
+
+    let Some(raw) = result else {
+        return Ok(StatusTransition::NotFound);
+    };
+
+    let val: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse transition result: {e}"))?;
+    if let Some(current) = val.get("rejected").and_then(|v| v.as_str()) {
+        return Ok(StatusTransition::Rejected { current: current.to_string() });
+    }
+
+    let meta: WorkflowMeta =
+        serde_json::from_str(&raw).map_err(|e| format!("parse old meta: {e}"))?;
+    Ok(StatusTransition::Done(meta))
 }
 
 /// Load all step/sleep/promise state from Redis for replay.
@@ -531,29 +634,29 @@ async fn execute_workflow(
             let result_key = redis_key(&pid, &iid, "result");
             let meta_key = redis_key(&pid, &iid, "meta");
             let mut conn = redis.lock().await;
-            let _: () = conn
-                .set(&result_key, value.as_str())
-                .await
-                .map_err(|e| e.to_string())?;
 
-            let mut unit_path = String::new();
-            let mut caller_iid: Option<String> = None;
-            let mut caller_promise: Option<String> = None;
-            if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
-                && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
-            {
-                unit_path = meta.name.clone();
-                if meta.caller_triggered {
-                    caller_iid = meta.caller_instance_id.clone();
-                    caller_promise = meta.caller_promise_name.clone();
-                }
-                meta.status = "completed".to_string();
-                let updated = serde_json::to_string(&meta).unwrap_or_default();
-                let _: () = conn
-                    .set(&meta_key, &updated)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
+            let (unit_path, caller_iid, caller_promise) =
+                match transition_status(&mut conn, &meta_key, &["running"], "completed").await? {
+                    StatusTransition::Done(old_meta) => {
+                        let _: () = conn
+                            .set(&result_key, value.as_str())
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let ciid = old_meta
+                            .caller_triggered
+                            .then(|| old_meta.caller_instance_id.clone())
+                            .flatten();
+                        let cpromise = old_meta
+                            .caller_triggered
+                            .then(|| old_meta.caller_promise_name.clone())
+                            .flatten();
+                        (old_meta.name.clone(), ciid, cpromise)
+                    }
+                    _ => {
+                        drop(conn);
+                        return Ok(value.clone());
+                    }
+                };
             drop(conn);
 
             publish_wf_event(
@@ -566,10 +669,8 @@ async fn execute_workflow(
             )
             .await;
 
-            // If this workflow was started via sdk.call, resolve the caller's
-            // durable promise so the caller can resume without holding a thread.
             if let (Some(ref ciid), Some(ref cpromise)) = (caller_iid, caller_promise) {
-                resolve_caller_promise(redis, nats, &pid, ciid, cpromise, value).await;
+                resolve_caller_promise(redis, nats, js, &pid, ciid, cpromise, value).await;
             }
 
             Ok(value.clone())
@@ -603,13 +704,8 @@ async fn execute_workflow(
                     let _: () = conn.set(&retry_key, &retry_val).await.map_err(|e| e.to_string())?;
 
                     let meta_key = redis_key(&pid, &iid, "meta");
-                    if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
-                        && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
-                    {
-                        meta.status = "suspended".to_string();
-                        let updated = serde_json::to_string(&meta).unwrap_or_default();
-                        let _: () = conn.set(&meta_key, &updated).await.map_err(|e| e.to_string())?;
-                    }
+                    let _ =
+                        transition_status(&mut conn, &meta_key, &["running"], "suspended").await;
 
                     let suspended_key = redis_key(&pid, &iid, "suspended");
                     let suspended_val = serde_json::json!({
@@ -654,18 +750,26 @@ async fn execute_workflow(
                     }).to_string();
                     let _: () = conn.set(&step_key, &step_val).await.map_err(|e| e.to_string())?;
                     let _: () = conn.del(&retry_key).await.map_err(|e| e.to_string())?;
+
+                    let meta_key = redis_key(&pid, &iid, "meta");
+                    let _ = transition_status(&mut conn, &meta_key, &["running"], "suspended").await;
                     drop(conn);
 
-                    // Immediately wake so the workflow replays and sees the cached failure
-                    if let Some(nats_client) = nats {
+                    // Wake via JetStream so replay is durable even if the worker restarts
+                    if let Some(js_ctx) = js {
                         let subject = format!("wf.{pid}.{iid}.wake");
                         let payload = serde_json::json!({
                             "reason": "step_retry_exhausted",
                             "step": name,
                         }).to_string();
-                        let _ = nats_client
-                            .publish(subject, bytes::Bytes::from(payload))
-                            .await;
+                        let _ = js_ctx.publish(subject, bytes::Bytes::from(payload)).await;
+                    } else if let Some(nats_client) = nats {
+                        let subject = format!("wf.{pid}.{iid}.wake");
+                        let payload = serde_json::json!({
+                            "reason": "step_retry_exhausted",
+                            "step": name,
+                        }).to_string();
+                        let _ = nats_client.publish(subject, bytes::Bytes::from(payload)).await;
                     }
 
                     return Ok(serde_json::json!({
@@ -691,18 +795,12 @@ async fn execute_workflow(
                 .await
                 .map_err(|e| e.to_string())?;
 
-            let mut unit_path = String::new();
-            if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
-                && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
+            let unit_path = match transition_status(&mut conn, &meta_key, &["running"], "suspended")
+                .await?
             {
-                unit_path = meta.name.clone();
-                meta.status = "suspended".to_string();
-                let updated = serde_json::to_string(&meta).unwrap_or_default();
-                let _: () = conn
-                    .set(&meta_key, &updated)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
+                StatusTransition::Done(old_meta) => old_meta.name.clone(),
+                _ => String::new(),
+            };
             drop(conn);
 
             publish_wf_event(
@@ -773,30 +871,29 @@ async fn execute_workflow(
             let result_key = redis_key(&pid, &iid, "result");
             let mut conn = redis.lock().await;
 
-            let error_result = serde_json::json!({ "error": error }).to_string();
-            let _: () = conn
-                .set(&result_key, &error_result)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            let mut unit_path = String::new();
-            let mut caller_iid: Option<String> = None;
-            let mut caller_promise: Option<String> = None;
-            if let Some(raw) = conn.get::<_, Option<String>>(&meta_key).await.map_err(|e| e.to_string())?
-                && let Ok(mut meta) = serde_json::from_str::<WorkflowMeta>(&raw)
-            {
-                unit_path = meta.name.clone();
-                if meta.caller_triggered {
-                    caller_iid = meta.caller_instance_id.clone();
-                    caller_promise = meta.caller_promise_name.clone();
-                }
-                meta.status = "failed".to_string();
-                let updated = serde_json::to_string(&meta).unwrap_or_default();
-                let _: () = conn
-                    .set(&meta_key, &updated)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
+            let (unit_path, caller_iid, caller_promise) =
+                match transition_status(&mut conn, &meta_key, &["running"], "failed").await? {
+                    StatusTransition::Done(old_meta) => {
+                        let error_result = serde_json::json!({ "error": error }).to_string();
+                        let _: () = conn
+                            .set(&result_key, &error_result)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let ciid = old_meta
+                            .caller_triggered
+                            .then(|| old_meta.caller_instance_id.clone())
+                            .flatten();
+                        let cpromise = old_meta
+                            .caller_triggered
+                            .then(|| old_meta.caller_promise_name.clone())
+                            .flatten();
+                        (old_meta.name.clone(), ciid, cpromise)
+                    }
+                    _ => {
+                        drop(conn);
+                        return Err(error.clone());
+                    }
+                };
             drop(conn);
 
             publish_wf_event(
@@ -809,10 +906,8 @@ async fn execute_workflow(
             )
             .await;
 
-            // If this workflow was started via sdk.call, reject the caller's
-            // durable promise so the caller can resume and surface the error.
             if let (Some(ref ciid), Some(ref cpromise)) = (caller_iid, caller_promise) {
-                reject_caller_promise(redis, nats, &pid, ciid, cpromise, error).await;
+                reject_caller_promise(redis, nats, js, &pid, ciid, cpromise, error).await;
             }
 
             Err(error.clone())
