@@ -1,5 +1,10 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { payload: { by: string; n: number } | null; finished: boolean };
+export type PeekOutput = { payload: { by: string; n: number } | null };
+export type FinishOutput = { ok: boolean };
+
 /**
  * Run handler sets workflow state; shared handler reads it via ctx.get while run waits on a promise.
  */

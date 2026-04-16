@@ -1,8 +1,9 @@
 import { workflow, sdk } from "@sdk";
 
 export type Input = { tag: string };
+export type Output = { tag: string; readBack: string | null; isolatedCorrectly: boolean };
 
-export default workflow<Input>(async (ctx, input) => {
+export default workflow<Input, Output>(async (ctx, input) => {
   void sdk;
 
   const tag = input?.tag ?? "unknown";

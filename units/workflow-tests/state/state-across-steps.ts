@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = unknown;
+export type Output = { marker: string | null; ok: boolean };
+
 /**
  * Writes workflow state in the first durable step and reads it back in a later step.
  */

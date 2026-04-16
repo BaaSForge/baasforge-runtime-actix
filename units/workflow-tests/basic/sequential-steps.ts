@@ -1,7 +1,7 @@
 import { workflow, sdk } from "@sdk";
 
-type Input = { seed: number };
-type Output = {
+export type Input = { seed: number };
+export type Output = {
   first: number;
   second: number;
   third: number;

@@ -1,6 +1,7 @@
 import { workflow, sdk } from "@sdk";
 
-type Output = {
+export type Input = unknown;
+export type Output = {
   first: { id: number; note: string };
   second: { id: number; note: string };
   /** True when the runtime served the cached first result for the duplicate name */

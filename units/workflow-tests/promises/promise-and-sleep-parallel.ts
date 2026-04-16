@@ -1,5 +1,10 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { slept: boolean; value: string | null };
+export type ResolveInput = { value?: string };
+export type ResolveOutput = { resolved: boolean };
+
 export default workflow({
   run: async (ctx) => {
     void sdk;

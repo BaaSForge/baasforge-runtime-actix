@@ -1,6 +1,9 @@
 import { workflow, sdk } from "@sdk";
 
-export default workflow(async (ctx) => {
+export type Input = void;
+export type Output = { result: unknown };
+
+export default workflow<Input, Output>(async (ctx) => {
   void ctx;
   const result = await sdk.callWorkflow("test.wf.workflow.sdk-call-promise-callee", {});
   return { result };

@@ -1,5 +1,10 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { status: { phase: string; counter: number } | null; done: boolean };
+export type StatusOutput = { phase: string; counter: number } | null;
+export type ReleaseOutput = { ok: boolean };
+
 /**
  * Shared handler `status` returns the latest workflow state snapshot for external queries.
  */

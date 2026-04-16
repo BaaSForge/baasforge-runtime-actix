@@ -1,6 +1,7 @@
 import { workflow, sdk } from "@sdk";
 
-type Output = {
+export type Input = unknown;
+export type Output = {
   str: string;
   num: number;
   obj: { id: number; label: string };

@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { beforeSleep: string; afterSleep: string | null; persisted: boolean };
+
 export default workflow(async (ctx) => {
   void sdk;
 

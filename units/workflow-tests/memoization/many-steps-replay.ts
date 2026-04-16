@@ -1,6 +1,13 @@
 import { workflow, sdk } from "@sdk";
 
-export default workflow(async (ctx) => {
+export type Input = void;
+export type Output = {
+  steps: Array<{ index: number; v: string }>;
+  postSleep: { firstIndex: number; lastIndex: number; count: number };
+  allIndicesCorrect: boolean;
+};
+
+export default workflow<Input, Output>(async (ctx) => {
   void sdk;
 
   const steps: { index: number; v: string }[] = [];

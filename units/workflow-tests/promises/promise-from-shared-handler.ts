@@ -1,5 +1,11 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { id: string; score: number };
+export type SubmitResultInput = { id: string; score: number };
+export type SubmitResultOutput = { accepted: boolean };
+export type StatusOutput = { phase: string | null };
+
 /**
  * Full workflow form: only shared handlers call `ctx.promise(...).resolve`,
  * mimicking HTTP callbacks or internal tools completing work out-of-band.

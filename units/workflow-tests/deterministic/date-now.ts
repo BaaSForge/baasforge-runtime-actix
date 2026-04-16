@@ -1,5 +1,8 @@
 import { workflow } from "@sdk";
 
+export type Input = unknown;
+export type Output = { t1: number; t2: number; nonDecreasing: boolean };
+
 /**
  * Timestamps are taken inside named steps so each boundary is stable on replay.
  */

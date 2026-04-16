@@ -1,5 +1,13 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = {
+  mid: { counter: number | null; tag: string | null };
+  final: { counter: number | null; tag: string | null };
+  counterProgressed: boolean;
+  tagProgressed: boolean;
+};
+
 export default workflow(async (ctx) => {
   void sdk;
 

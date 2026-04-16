@@ -1,5 +1,9 @@
 import { workflow } from "@sdk";
 
+export type Input = void;
+export type Output = { received: string | null };
+export type ResolveInput = { value?: string };
+
 /**
  * Minimal suspend workflow for testing cancel endpoint.
  * Follows basic-promise.ts pattern: ctx.run step, then promise suspension.

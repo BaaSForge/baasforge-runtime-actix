@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { edgeCase: string; before: number; after: number; deltaMs: number };
+
 /** Edge case: zero duration should schedule and complete without meaningful delay. */
 export default workflow(async (ctx) => {
   const before = await ctx.run("t0", async () => ctx.date.now());

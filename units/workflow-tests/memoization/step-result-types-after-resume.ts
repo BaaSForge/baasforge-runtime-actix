@@ -1,5 +1,18 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = unknown;
+export type Output = {
+  complex: {
+    str: string; num: number; bool: boolean; nil: null;
+    arr: (number | string | null | boolean)[]; nested: { deep: { value: number; tags: string[] } }; large: string;
+  };
+  verified: {
+    strOk: boolean; numOk: boolean; boolOk: boolean; nilOk: boolean;
+    arrOk: boolean; nestedOk: boolean; largeOk: boolean;
+  };
+  allOk: boolean;
+};
+
 export default workflow(async (ctx) => {
   void sdk;
 

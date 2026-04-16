@@ -1,6 +1,7 @@
 import { workflow, sdk } from "@sdk";
 
-type Output = {
+export type Input = unknown;
+export type Output = {
   alpha: { tag: string; n: number };
   beta: { tag: string; sum: number };
   gamma: { tag: string; label: string };

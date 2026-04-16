@@ -84,12 +84,12 @@ The path uses dot notation matching the unit ID format: `@units/{context}.{modul
 Workflow units may export the following named types (plus the required `export default workflow(...)`):
 
 
-| Export Name           | Required    | Description                                                   |
-| --------------------- | ----------- | ------------------------------------------------------------- |
-| `Input`               | Yes         | The input type passed to the workflow's `run` handler         |
-| `Output`              | Yes         | The return type of the workflow's `run` handler               |
-| `{HandlerName}Input`  | Per handler | Input type for a shared handler (PascalCase name + `Input`)   |
-| `{HandlerName}Output` | Per handler | Return type for a shared handler (PascalCase name + `Output`) |
+| Export Name           | Required                              | Description                                                             |
+| --------------------- | ------------------------------------- | ----------------------------------------------------------------------- |
+| `Input`               | Always                                | The input type passed to the `run` handler. Use `void` if no input.     |
+| `Output`              | Always                                | The return type of the `run` handler. Use `never` if never returns.     |
+| `{HandlerName}Input`  | When handler has non-void input       | PascalCase handler name + `Input`. Omit for handlers with no input.     |
+| `{HandlerName}Output` | When handler has non-void return value | PascalCase handler name + `Output`. Omit for handlers returning `void`. |
 
 
 Only `export type` and `export interface` are allowed — no value exports besides `export default`.
@@ -99,7 +99,7 @@ Only `export type` and `export interface` are allowed — no value exports besid
 Lint/type-checking of unit code is performed by the **dashboard platform** (a completely separate project). That project validates unit code before deployment. The rules it enforces:
 
 1. **Exports**: Only `export type` and `export interface` are allowed (plus `export default`).
-2. **Export names**: Must match `Input`, `Output`, or `{PascalCase}Input` / `{PascalCase}Output` for workflow units, and we will have others for other unit types later
+2. **Export names**: Must match `Input`, `Output`, or `{PascalCase}Input` / `{PascalCase}Output` (regex: `^(Input|Output|[A-Z][a-zA-Z]*(Input|Output))$`). `Input`/`Output` are always required. Handler types (`{HandlerName}Input` / `{HandlerName}Output`) are required only when the handler has non-void input or a non-void return value.
 3. **Imports from `@units/*`**: Only `import type` is allowed (no value imports).
 4. **Import path**: Must be a valid dot-notation unit path.
 

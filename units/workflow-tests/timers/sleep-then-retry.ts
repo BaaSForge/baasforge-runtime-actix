@@ -1,5 +1,8 @@
 import { workflow } from "@sdk";
 
+export type Input = void;
+export type Output = { token: string; sleptOk: boolean; attempts: number; result: string };
+
 /**
  * Exercises both JetStream timer delivery paths in a single workflow:
  *

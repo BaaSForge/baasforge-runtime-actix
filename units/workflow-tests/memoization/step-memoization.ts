@@ -2,7 +2,8 @@ import { workflow, sdk } from "@sdk";
 
 type StepRecord = { name: string; ordinal: number; marker: string };
 
-type Output = {
+export type Input = unknown;
+export type Output = {
   steps: StepRecord[];
   instanceKey: string;
 };

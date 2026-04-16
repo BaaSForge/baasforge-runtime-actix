@@ -1,5 +1,9 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { phase: string };
+export type AllowOutput = { unblocked: boolean };
+
 /**
  * Run blocks on `go` at the very first await. Tests should call shared handler `allow` to unblock
  * before any durable `ctx.run` step executes — proving a shared handler can run before main body work.

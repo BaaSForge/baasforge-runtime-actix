@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = unknown;
+export type Output = { ok: boolean; value: string | null };
+
 /**
  * Verifies ctx.set() followed by ctx.get() returns the stored value for this instance.
  */

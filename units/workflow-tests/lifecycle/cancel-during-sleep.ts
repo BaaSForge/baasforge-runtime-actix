@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { reached: boolean };
+
 export default workflow(async (ctx) => {
   void sdk;
 

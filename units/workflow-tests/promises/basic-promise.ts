@@ -1,5 +1,9 @@
 import { workflow } from "@sdk";
 
+export type Input = void;
+export type Output = { received: string | null; complete: boolean };
+export type ApproveInput = { value?: string };
+
 /**
  * Main `run` waits on a durable promise; a shared handler resolves it from
  * outside (simulates an approval webhook). Harness calls the handler, then

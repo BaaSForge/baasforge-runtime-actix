@@ -1,5 +1,12 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = {
+  steps: Array<{ index: number; v: string; fromCache?: number[] }>;
+  allInOrder: boolean;
+  preSleepCached: number[];
+};
+
 export default workflow(async (ctx) => {
   void sdk;
 

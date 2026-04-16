@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { a: number | null; b: number | null; c: string | null; sum: number };
+
 /**
  * Independent durable promises in one workflow; each is named and resolved
  * before its corresponding `.get()` (deterministic ordering).

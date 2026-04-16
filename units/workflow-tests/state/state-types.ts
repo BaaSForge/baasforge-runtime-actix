@@ -1,5 +1,14 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = unknown;
+export type Output = {
+  str: string | null;
+  num: number | null;
+  obj: { a: number; nested: { b: number } } | null;
+  arr: number[] | null;
+  nil: null;
+};
+
 /**
  * Persists strings, numbers, objects, arrays, and null; returns round-tripped values from ctx.get.
  */

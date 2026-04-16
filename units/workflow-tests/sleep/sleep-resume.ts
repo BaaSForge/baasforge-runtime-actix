@@ -1,5 +1,12 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = {
+  prePhase: "pre";
+  post: { phase: "post"; sawPreToken: string; resumed: boolean };
+  message: string;
+};
+
 /**
  * After sleep, durable steps must not re-run; the workflow returns the
  * post-sleep result exactly once.

@@ -1,5 +1,8 @@
 import { workflow } from "@sdk";
 
+export type Input = unknown;
+export type Output = { a: number; b: number; inUnitInterval: boolean };
+
 /**
  * Random floats are sampled inside durable steps; each step's outputs should replay identically.
  */

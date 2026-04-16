@@ -1,5 +1,8 @@
 import { workflow } from "@sdk";
 
+export type Input = unknown;
+export type Output = { step1: string; step2: string; stepsAreDistinct: boolean };
+
 /**
  * UUID is captured inside a named step so replay returns the memoized value (same id across replays).
  */

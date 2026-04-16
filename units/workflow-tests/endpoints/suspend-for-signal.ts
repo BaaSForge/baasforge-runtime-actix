@@ -1,5 +1,11 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { phase: "done"; signal: unknown };
+export type GetStateOutput = { phase: string | null; counter: number | null };
+export type SignalInput = unknown;
+export type SignalOutput = { accepted: boolean };
+
 /**
  * Suspend workflow with state and shared handlers for testing handler endpoints.
  * Follows query-status.ts pattern: ctx.set for state, promise for suspension,

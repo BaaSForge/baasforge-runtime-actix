@@ -1,5 +1,12 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = {
+  survived: boolean;
+  boundary: { step: string; marker: string };
+  after: { step: string; continuedFrom: string };
+};
+
 /**
  * Intended for harness tests: stop the runtime after `entered-sleep` is durable,
  * restart, and ensure the timer wakes the workflow without re-executing

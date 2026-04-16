@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { ok: boolean; startedAt: number; endedAt: number; slept: string[] };
+
 /**
  * Exercises ctx.sleep with millisecond numbers and Duration objects.
  * Harness asserts the workflow completes and returns the expected summary.

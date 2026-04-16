@@ -1,6 +1,10 @@
 import { workflow, sdk } from "@sdk";
 
-type Label = "first" | "second";
+export type Label = "first" | "second";
+export type Input = void;
+export type Output = { order: [Label, Label] };
+export type ResolveAOutput = { which: "a" };
+export type ResolveBOutput = { which: "b" };
 
 /**
  * Two named shared handlers each resolve a different durable promise observed sequentially in run.

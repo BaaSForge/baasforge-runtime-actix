@@ -1,5 +1,8 @@
 import { workflow, sdk } from "@sdk";
 
+export type Input = void;
+export type Output = { ok: boolean; rejected?: boolean; message?: string; reason?: string };
+
 /**
  * Rejection must surface to the waiter (error propagates from `.get()`).
  */
