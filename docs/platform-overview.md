@@ -107,6 +107,37 @@ This runtime project does not implement or test these lint rules — it only nee
 
 > **Convention note for future unit types:** Every unit type that supports being invoked must define its own export convention and its own explicit SDK function following this same pattern. This ensures a consistent, lintable pattern across all unit types.
 
+## Unit Dependency Graph (`depends_on`)
+
+Projects can contain thousands of units. To help users (and the LLM chat in the dashboard) manage these at scale, **dependencies between units are tracked explicitly** in the database rather than inferred at runtime.
+
+### How It Works
+
+Each unit row in `project_units` has a `depends_on` (nullable text) field. When a unit is created or updated, the dashboard scans all `import type` statements from `@units/*` in the TS source and stores the referenced unit paths as a **comma-separated string**.
+
+```
+depends_on = "billing.payments.workflow.charge,billing.invoices.workflow.generate"
+```
+
+### Why Compile-Time Only
+
+Units only support `import type` from other units — **no value imports**. This means:
+
+- There are **no runtime dependencies** between units. The compiled JS has no trace of these imports.
+- The TS source retains the `import type` statements solely to extract the dependency graph and provide compile-time type safety.
+
+### Why Explicit Dependencies Matter
+
+1. **LLM context** — The dashboard LLM chat uses the dependency graph to find related units when generating or editing code, without scanning every unit's source.
+2. **Pre-lint / pre-compile checks** — The dashboard can detect broken references, circular dependencies, and missing exports before deployment.
+3. **Impact analysis** — When a unit's exported types change, the graph immediately shows which downstream units are affected.
+
+### Convention
+
+- Every unit that **can be called** by other units **must** export its keys (handler names, trigger names, input/output types, etc.) as TypeScript types.
+- Callers `import type` those types from `@units/{unit.path}` in their TS source.
+- The compiled (JS) source used at runtime contains no import statements — all cross-unit calls go through explicit SDK functions like `sdk.callWorkflow(unitPath, data)`.
+
 ## The `units/` Folder — Source of Truth
 
 The `units/` folder in this repository is the **source of truth** for what code is allowed inside units:
