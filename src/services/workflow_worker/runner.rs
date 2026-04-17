@@ -2,10 +2,12 @@ use async_nats::jetstream;
 use crate::configs::Settings;
 use crate::database::establish_pool;
 use crate::init_tracing;
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::load_unit_for_path_production;
 use crate::services::workflow_engine;
 use futures::StreamExt;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -348,6 +350,24 @@ async fn handle_start(
         return Ok(());
     }
 
+    let comm = Arc::new(SdkCommCtx {
+        pool: pool.clone(),
+        redis_conn: redis_conn.clone(),
+        wf_redis: Some(wf_redis.clone()),
+        wf_nats: nats_client.clone(),
+        wf_js: js.clone(),
+        wq_redis: None,
+        wq_nats: None,
+        wq_js: None,
+        actor_redis: None,
+        actor_nats: None,
+        actor_js: None,
+        actor_locks: Arc::new(Mutex::new(HashMap::new())),
+        project_id: project_id.to_string(),
+        source_unit_path: unit_path.clone(),
+        source_instance_id: Some(instance_id.to_string()),
+    });
+
     let result = workflow_engine::launch_callee_workflow(
         wf_redis,
         nats_client,
@@ -357,6 +377,7 @@ async fn handle_start(
         &input_json,
         &source,
         &unit_path,
+        comm,
     )
     .await;
 
@@ -496,8 +517,26 @@ async fn handle_wake(
         return Ok(());
     }
 
+    let comm = Arc::new(SdkCommCtx {
+        pool: pool.clone(),
+        redis_conn: redis_conn.clone(),
+        wf_redis: Some(wf_redis.clone()),
+        wf_nats: nats_client.clone(),
+        wf_js: js.clone(),
+        wq_redis: None,
+        wq_nats: None,
+        wq_js: None,
+        actor_redis: None,
+        actor_nats: None,
+        actor_js: None,
+        actor_locks: Arc::new(Mutex::new(HashMap::new())),
+        project_id: project_id.to_string(),
+        source_unit_path: unit_path.to_string(),
+        source_instance_id: Some(instance_id.to_string()),
+    });
+
     let result =
-        workflow_engine::resume_workflow(wf_redis, nats_client, &js, project_id, instance_id, &source)
+        workflow_engine::resume_workflow(wf_redis, nats_client, &js, project_id, instance_id, &source, comm)
             .await;
 
     {

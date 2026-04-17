@@ -1,6 +1,7 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::establish_pool;
 use baal_runtime_actix::init_tracing;
+use baal_runtime_actix::libs::unit_js::modules::sdk::SdkCommCtx;
 use baal_runtime_actix::routes::ActorLocks;
 use baal_runtime_actix::services::actor_engine::{ACTOR_NATS_CONSUMER, ACTOR_NATS_STREAM};
 use baal_runtime_actix::services::actor_worker::alarms::run_alarm_sweeper;
@@ -80,25 +81,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .as_deref()
         .unwrap_or(ACTOR_NATS_CONSUMER)
         .to_string();
-    let base_url = format!("http://127.0.0.1:{}", settings.port);
     let locks: ActorLocks = Arc::new(Mutex::new(HashMap::new()));
 
-    let alarm_redis = actor_redis.clone();
-    let alarm_pool = pool.clone();
-    let alarm_redis_conn = redis_conn.clone();
-    let alarm_nats = Some(actor_nats.clone());
-    let alarm_locks = locks.clone();
-    let alarm_base_url = base_url.clone();
+    let alarm_comm = Arc::new(SdkCommCtx {
+        pool: pool.clone(),
+        redis_conn: redis_conn.clone(),
+        wf_redis: None,
+        wf_nats: None,
+        wf_js: None,
+        wq_redis: None,
+        wq_nats: None,
+        wq_js: None,
+        actor_redis: Some(actor_redis.clone()),
+        actor_nats: Some(actor_nats.clone()),
+        actor_js: actor_js.clone(),
+        actor_locks: locks.clone(),
+        project_id: String::new(),
+        source_unit_path: String::new(),
+        source_instance_id: None,
+    });
     tokio::spawn(async move {
-        run_alarm_sweeper(
-            alarm_redis,
-            alarm_pool,
-            alarm_redis_conn,
-            alarm_nats,
-            alarm_locks,
-            alarm_base_url,
-        )
-        .await;
+        run_alarm_sweeper(alarm_comm).await;
     });
 
     tokio::spawn(async move {
@@ -110,7 +113,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             redis_conn,
             &stream_name,
             &consumer_name,
-            &base_url,
             locks,
         )
         .await

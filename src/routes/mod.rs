@@ -281,9 +281,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let nc = nc.clone();
             let p = pool.clone();
             let rc = redis_conn.clone();
+            let wf_redis_for_wq = wf_redis.clone();
+            let wf_nats_for_wq = wf_nats_client.clone();
             let stream_name = crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM.to_string();
             let consumer_name = crate::services::queue_worker_engine::WQ_NATS_WORK_CONSUMER.to_string();
-            let base_url = format!("http://127.0.0.1:{port}");
             tracing::info!("[test_mode] starting inline JetStream queue_worker work consumer");
             tokio::spawn(async move {
                 if let Err(e) =
@@ -294,7 +295,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         rc,
                         &stream_name,
                         &consumer_name,
-                        &base_url,
+                        wf_redis_for_wq,
+                        wf_nats_for_wq,
                     )
                     .await
                 {
@@ -317,13 +319,12 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 .actor_nats_jetstream_consumer
                 .clone()
                 .unwrap_or_else(|| crate::services::actor_engine::ACTOR_NATS_CONSUMER.to_string());
-            let base_url = format!("http://127.0.0.1:{port}");
             let locks = actor_locks.clone();
             tracing::info!("[test_mode] starting inline actor mailbox consumer");
             tokio::spawn(async move {
                 if let Err(e) =
                     crate::services::actor_worker::runner::run_actor_consumer(
-                        ar, actor_js, actor_nc, p, rc, &stream_name, &consumer_name, &base_url, locks,
+                        ar, actor_js, actor_nc, p, rc, &stream_name, &consumer_name, locks,
                     )
                     .await
                 {
@@ -333,16 +334,32 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
 
             let ar2 = actor_redis.as_ref().unwrap().clone();
             let actor_nc2 = actor_nats_client.clone();
+            let actor_js2 = actor_jetstream.clone();
             let p2 = pool.clone();
             let rc2 = redis_conn.clone();
-            let base_url2 = format!("http://127.0.0.1:{port}");
             let locks2 = actor_locks.clone();
             tracing::info!("[test_mode] starting inline actor alarm sweeper");
             tokio::spawn(async move {
-                crate::services::actor_worker::alarms::run_alarm_sweeper(
-                    ar2, p2, rc2, actor_nc2, locks2, base_url2,
-                )
-                .await;
+                use std::collections::HashMap;
+                use std::sync::Arc;
+                let comm = Arc::new(crate::libs::unit_js::modules::sdk::SdkCommCtx {
+                    pool: p2,
+                    redis_conn: rc2,
+                    wf_redis: None,
+                    wf_nats: None,
+                    wf_js: None,
+                    wq_redis: None,
+                    wq_nats: None,
+                    wq_js: None,
+                    actor_redis: Some(ar2),
+                    actor_nats: actor_nc2,
+                    actor_js: actor_js2,
+                    actor_locks: locks2,
+                    project_id: String::new(),
+                    source_unit_path: String::new(),
+                    source_instance_id: None,
+                });
+                crate::services::actor_worker::alarms::run_alarm_sweeper(comm).await;
             });
         }
 

@@ -6,7 +6,7 @@ export default actor<State>({
   state: { enqueuedRunId: null },
   handlers: {
     async triggerWorker(ctx, { value }: { value: number }) {
-      const { runId } = await sdk.enqueueWorker("test.actor-tests.queue-worker.echo-target", { value });
+      const { runId } = await sdk.enqueueWorker("test.actor-tests.queue_worker.echo-target", { value });
       ctx.state.enqueuedRunId = runId;
       return { runId };
     },

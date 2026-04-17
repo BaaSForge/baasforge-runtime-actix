@@ -21,9 +21,16 @@ pub fn register_all(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
     Ok(())
 }
 
-/// Registers SDK host functions for workflow units. Called separately from
-/// `register_all` since these are only needed for workflow execution.
+/// Registers cross-unit communication host functions (`__baal_call_actor_sync`, etc.)
+/// for all unit types that need them. Reads from `SdkCommCtx` thread-local set by the runner.
+pub fn register_sdk_comm(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
+    sdk::register_sdk_comm(ctx)?;
+    Ok(())
+}
+
+/// Registers workflow-specific persistence host functions (`__baal_persist_step`, etc.).
+/// Only called for workflow units, in addition to `register_sdk_comm`.
 pub fn register_workflow_sdk(ctx: &rquickjs::Ctx<'_>) -> rquickjs::Result<()> {
-    sdk::register(ctx)?;
+    sdk::register_workflow_persistence(ctx)?;
     Ok(())
 }

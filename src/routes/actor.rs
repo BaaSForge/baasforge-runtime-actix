@@ -1,4 +1,5 @@
 use crate::libs::api_response::api_error;
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::routes::AppContext;
 use crate::services::actor_engine::{
@@ -11,6 +12,7 @@ use crate::libs::unit_js::actor_runner::ActorKind;
 use actix_web::{web, HttpResponse};
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
 use uuid::Uuid;
 
 fn require_actor_redis(ctx: &AppContext) -> Result<ActorRedis, HttpResponse> {
@@ -158,10 +160,6 @@ pub async fn handle_actor_post(
         &parsed.unit_name_slug,
     );
     let payload_json = String::from_utf8_lossy(&body).into_owned();
-    let base_url = format!(
-        "http://127.0.0.1:{}",
-        ctx.settings.port
-    );
 
     match parsed.operation {
         ActorOperation::Passivate => {
@@ -178,14 +176,6 @@ pub async fn handle_actor_post(
 
         ActorOperation::CallHandler(handler_name) => {
             if query.await_result {
-                let crate::routes::AppContext {
-                    pool,
-                    redis_conn,
-                    actor_nats_client,
-                    actor_locks,
-                    ..
-                } = ctx.get_ref().clone();
-
                 let input = ActorRunInput {
                     project_id: project_id_str.clone(),
                     unit_path: unit_path.clone(),
@@ -199,15 +189,25 @@ pub async fn handle_actor_post(
 
                 let timeout_ms = 30_000u64;
 
-                let run_future = run_actor_with_lock(
-                    input,
-                    &actor_redis,
-                    &pool,
-                    &redis_conn,
-                    &actor_nats_client,
-                    &actor_locks,
-                    &base_url,
-                );
+                let comm = Arc::new(SdkCommCtx {
+                    pool: ctx.pool.clone(),
+                    redis_conn: ctx.redis_conn.clone(),
+                    wf_redis: ctx.wf_redis.clone(),
+                    wf_nats: ctx.wf_nats_client.clone(),
+                    wf_js: ctx.wf_jetstream.clone(),
+                    wq_redis: ctx.wq_redis.clone(),
+                    wq_nats: ctx.wq_nats_client.clone(),
+                    wq_js: ctx.wq_jetstream.clone(),
+                    actor_redis: Some(actor_redis.clone()),
+                    actor_nats: ctx.actor_nats_client.clone(),
+                    actor_js: ctx.actor_jetstream.clone(),
+                    actor_locks: ctx.actor_locks.clone(),
+                    project_id: project_id_str.clone(),
+                    source_unit_path: unit_path.clone(),
+                    source_instance_id: None,
+                });
+
+                let run_future = run_actor_with_lock(input, comm);
 
                 match tokio::time::timeout(
                     std::time::Duration::from_millis(timeout_ms),

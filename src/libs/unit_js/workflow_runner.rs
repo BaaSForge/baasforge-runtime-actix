@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use super::error::{format_js_error, log_js_failure};
 use super::modules;
-use super::modules::sdk::{self, WorkflowHostCtx};
+use super::modules::sdk::{self, SdkCommCtx, WorkflowHostCtx};
 
 const WORKFLOW_RUNTIME_JS: &str = concat!(include_str!("scripts/runtime-shared.js"), "\n", include_str!("scripts/workflow-runtime.js"));
 
@@ -47,6 +47,7 @@ pub fn run_workflow_handler(
     wf_ctx: &WorkflowExecutionContext,
     redis: &Arc<Mutex<redis::aio::MultiplexedConnection>>,
     nats: &Option<async_nats::Client>,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<WorkflowExecutionResult, String> {
     let host_ctx = Arc::new(WorkflowHostCtx {
         redis: redis.clone(),
@@ -55,9 +56,11 @@ pub fn run_workflow_handler(
         instance_id: wf_ctx.instance_id.clone(),
     });
     sdk::set_host_ctx(host_ctx);
+    sdk::set_comm_ctx(comm);
 
     let result = run_workflow_in_quickjs(source, wf_ctx);
 
+    sdk::clear_comm_ctx();
     sdk::clear_host_ctx();
     result
 }
@@ -87,6 +90,12 @@ fn run_workflow_in_ctx(
     modules::register_all(ctx).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("workflow register_globals", &msg);
+        msg
+    })?;
+
+    modules::register_sdk_comm(ctx).map_err(|e| {
+        let msg = format_js_error(ctx, e);
+        log_js_failure("workflow register_sdk_comm", &msg);
         msg
     })?;
 

@@ -68,41 +68,35 @@ function __stripImports(source) {
 }
 
 // --- sdk (inter-unit communication) ---
+// Thin proxies to Rust __baal_* host functions. No fetch(), no business logic.
 
-// Default sdk.callWorkflow — overridden by workflow-runtime.js with durable suspension.
-// For non-workflow contexts this throws immediately (sdk.callWorkflow is workflow-only).
 var sdk = {
-  callWorkflow: function (_unitPath, _data) {
-    throw new Error('sdk.callWorkflow is only available inside workflow units');
+  callActor: function (unitPath, actorId, handler, payload, opts) {
+    var awaitResult = !(opts && opts.awaitResult === false);
+    var timeoutMs = (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : 30000;
+    var payloadJson = payload !== undefined ? JSON.stringify(payload) : '{}';
+    if (!awaitResult) {
+      __baal_call_actor_async(unitPath, actorId, handler, payloadJson);
+      return Promise.resolve({ delivered: true });
+    }
+    var resultJson = __baal_call_actor_sync(unitPath, actorId, handler, payloadJson, timeoutMs);
+    var parsed = JSON.parse(resultJson);
+    if (!parsed.ok) throw new Error(parsed.error || 'sdk.callActor failed');
+    return Promise.resolve(parsed.result);
   },
 
-  callActor: async function (unitPath, actorId, handler, payload, opts) {
-    var projectId = globalThis.__baal_actor_project_id
-      || globalThis.__baal_qw_project_id
-      || globalThis.__baal_wf_project_id
-      || "";
-    var baseUrl = globalThis.__baal_actor_base_url
-      || globalThis.__baal_qw_base_url
-      || globalThis.__baal_wf_base_url
-      || "";
-    var parts = unitPath.split(".");
-    if (parts.length < 4) throw new Error("sdk.callActor: invalid unitPath '" + unitPath + "'");
-    var context = parts[0];
-    var module = parts[1];
-    var unitName = parts[3];
-    var awaitResult = (opts && opts.awaitResult === false) ? "false" : "true";
-    var url = baseUrl + "/api/v1/trigger/actor/" + projectId + "/" + context + "/" + module + "/" + unitName + "/" + actorId + "/" + handler + "?await=" + awaitResult;
-    var resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload !== undefined ? payload : {}),
-    });
-    if (!resp.ok) {
-      var errText = await resp.text();
-      throw new Error("sdk.callActor: HTTP " + resp.status + ": " + errText);
-    }
-    var body = await resp.json();
-    return body.result !== undefined ? body.result : body;
+  enqueueWorker: function (unitPath, data) {
+    var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
+    var resultJson = __baal_enqueue_worker(unitPath, dataJson);
+    return Promise.resolve(JSON.parse(resultJson));
+  },
+
+  callWorkflow: function (unitPath, data) {
+    var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
+    var resultJson = __baal_call_workflow_sync(unitPath, dataJson, 300000);
+    var parsed = JSON.parse(resultJson);
+    if (!parsed.ok) throw new Error(parsed.error || 'sdk.callWorkflow failed');
+    return Promise.resolve(parsed.value);
   },
 };
 

@@ -1,11 +1,13 @@
 use rquickjs::{Context, Promise, Runtime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Instant;
 
 use super::error::{format_js_error, log_js_failure};
 use super::modules;
 use super::modules::polyfills::EXECUTION_DEADLINE;
+use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
 
 const ACTOR_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
@@ -70,8 +72,19 @@ pub enum ActorOutcome {
 
 pub fn run_actor_handler(
     source: &str,
-    project_id: &str,
-    base_url: &str,
+    ctx_json: &ActorCtxJson,
+    comm: Arc<SdkCommCtx>,
+    state_limit_bytes: Option<u64>,
+    timeout_ms: Option<u64>,
+) -> Result<ActorOutcome, String> {
+    set_comm_ctx(comm);
+    let result = run_actor_handler_inner(source, ctx_json, state_limit_bytes, timeout_ms);
+    clear_comm_ctx();
+    result
+}
+
+fn run_actor_handler_inner(
+    source: &str,
     ctx_json: &ActorCtxJson,
     state_limit_bytes: Option<u64>,
     timeout_ms: Option<u64>,
@@ -95,7 +108,7 @@ pub fn run_actor_handler(
         EXECUTION_DEADLINE.with(|d: &std::cell::Cell<Option<Instant>>| d.set(None));
     }
 
-    let result = ctx.with(|ctx| run_actor_in_ctx(&ctx, source, project_id, base_url, ctx_json, state_limit_bytes));
+    let result = ctx.with(|ctx| run_actor_in_ctx(&ctx, source, ctx_json, state_limit_bytes));
 
     EXECUTION_DEADLINE.with(|d: &std::cell::Cell<Option<Instant>>| d.set(None));
     result
@@ -104,14 +117,18 @@ pub fn run_actor_handler(
 fn run_actor_in_ctx(
     ctx: &rquickjs::Ctx<'_>,
     source: &str,
-    project_id: &str,
-    base_url: &str,
     actor_ctx: &ActorCtxJson,
     state_limit_bytes: Option<u64>,
 ) -> Result<ActorOutcome, String> {
     modules::register_all(ctx).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("actor register_globals", &msg);
+        msg
+    })?;
+
+    modules::register_sdk_comm(ctx).map_err(|e| {
+        let msg = format_js_error(ctx, e);
+        log_js_failure("actor register_sdk_comm", &msg);
         msg
     })?;
 
@@ -125,12 +142,6 @@ fn run_actor_in_ctx(
 
     ctx.globals().set("__baal_actor_ctx", ctx_val).map_err(|e| e.to_string())?;
     ctx.globals().set("__userSource", source).map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__baal_actor_project_id", project_id)
-        .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__baal_actor_base_url", base_url)
-        .map_err(|e| e.to_string())?;
     ctx.globals()
         .set("__baal_actor_kind", actor_ctx.kind.as_str())
         .map_err(|e| e.to_string())?;

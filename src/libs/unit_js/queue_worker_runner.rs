@@ -1,7 +1,9 @@
 use rquickjs::{Context, Promise, Runtime};
+use std::sync::Arc;
 
 use super::error::{format_js_error, log_js_failure};
 use super::modules;
+use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
 
 const QUEUE_WORKER_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
@@ -21,8 +23,6 @@ pub struct QueueWorkerRunContext {
     pub attempt: u32,
     pub enqueued_at: i64,
     pub data_json: String,
-    pub project_id: String,
-    pub base_url: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -103,6 +103,17 @@ pub struct QueueWorkerRunResult {
 pub fn run_worker_handler(
     source: &str,
     run_ctx: &QueueWorkerRunContext,
+    comm: Arc<SdkCommCtx>,
+) -> Result<QueueWorkerRunResult, String> {
+    set_comm_ctx(comm);
+    let result = run_worker_handler_inner(source, run_ctx);
+    clear_comm_ctx();
+    result
+}
+
+fn run_worker_handler_inner(
+    source: &str,
+    run_ctx: &QueueWorkerRunContext,
 ) -> Result<QueueWorkerRunResult, String> {
     let rt = Runtime::new().map_err(|e| {
         let msg = e.to_string();
@@ -128,6 +139,12 @@ fn run_queue_worker_in_ctx(
         msg
     })?;
 
+    modules::register_sdk_comm(ctx).map_err(|e| {
+        let msg = format_js_error(ctx, e);
+        log_js_failure("queue_worker register_sdk_comm", &msg);
+        msg
+    })?;
+
     let qw_ctx_json = build_qw_ctx_json(run_ctx);
     let qw_ctx_val = ctx
         .eval::<rquickjs::Value, _>(format!("({})", qw_ctx_json))
@@ -142,12 +159,6 @@ fn run_queue_worker_in_ctx(
         .map_err(|e| e.to_string())?;
     ctx.globals()
         .set("__userSource", source)
-        .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__baal_qw_project_id", run_ctx.project_id.as_str())
-        .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__baal_qw_base_url", run_ctx.base_url.as_str())
         .map_err(|e| e.to_string())?;
 
     ctx.eval::<(), _>(QUEUE_WORKER_RUNTIME_JS).map_err(|e| {
@@ -193,7 +204,6 @@ fn build_qw_ctx_json(run_ctx: &QueueWorkerRunContext) -> String {
         run_id_escaped = run_id_escaped,
         attempt = run_ctx.attempt,
         enqueued_at = run_ctx.enqueued_at,
-        data_escaped = data_escaped,
     )
 }
 

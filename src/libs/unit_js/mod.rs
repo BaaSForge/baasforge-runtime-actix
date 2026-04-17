@@ -13,4 +13,5 @@ mod api_runner;
 mod error;
 
 pub use api_runner::run_unit_handler;
+pub use modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
 pub use types::{TriggerHttpResponse, TriggerHttpSnapshot};

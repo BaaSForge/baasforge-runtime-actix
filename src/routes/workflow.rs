@@ -1,5 +1,6 @@
 use crate::libs::api_response::api_error;
 use crate::libs::ids::new_uuid;
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
@@ -8,6 +9,7 @@ use crate::services::workflow_engine::{self, SharedRedis};
 use actix_web::{web, HttpResponse};
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -118,6 +120,24 @@ async fn do_start_workflow(
     let instance_id = new_uuid().to_string();
     let project_id_str = project_id.to_string();
 
+    let comm = Arc::new(SdkCommCtx {
+        pool: ctx.pool.clone(),
+        redis_conn: ctx.redis_conn.clone(),
+        wf_redis: Some(wf_redis.clone()),
+        wf_nats: ctx.wf_nats_client.clone(),
+        wf_js: ctx.wf_jetstream.clone(),
+        wq_redis: ctx.wq_redis.clone(),
+        wq_nats: ctx.wq_nats_client.clone(),
+        wq_js: ctx.wq_jetstream.clone(),
+        actor_redis: ctx.actor_redis.clone(),
+        actor_nats: ctx.actor_nats_client.clone(),
+        actor_js: ctx.actor_jetstream.clone(),
+        actor_locks: ctx.actor_locks.clone(),
+        project_id: project_id_str.clone(),
+        source_unit_path: unit_path.to_string(),
+        source_instance_id: Some(instance_id.clone()),
+    });
+
     match workflow_engine::start_workflow(
         &wf_redis,
         &ctx.wf_nats_client,
@@ -127,6 +147,7 @@ async fn do_start_workflow(
         &instance_id,
         &input_json,
         source,
+        comm,
     )
     .await
     {
@@ -157,6 +178,24 @@ async fn do_call_handler(
     let handler_input = String::from_utf8_lossy(body).into_owned();
     let project_id_str = project_id.to_string();
 
+    let comm = Arc::new(SdkCommCtx {
+        pool: ctx.pool.clone(),
+        redis_conn: ctx.redis_conn.clone(),
+        wf_redis: Some(wf_redis.clone()),
+        wf_nats: ctx.wf_nats_client.clone(),
+        wf_js: ctx.wf_jetstream.clone(),
+        wq_redis: ctx.wq_redis.clone(),
+        wq_nats: ctx.wq_nats_client.clone(),
+        wq_js: ctx.wq_jetstream.clone(),
+        actor_redis: ctx.actor_redis.clone(),
+        actor_nats: ctx.actor_nats_client.clone(),
+        actor_js: ctx.actor_jetstream.clone(),
+        actor_locks: ctx.actor_locks.clone(),
+        project_id: project_id_str.clone(),
+        source_unit_path: String::new(),
+        source_instance_id: Some(instance_id.to_string()),
+    });
+
     match workflow_engine::call_handler(
         &wf_redis,
         &ctx.wf_nats_client,
@@ -166,6 +205,7 @@ async fn do_call_handler(
         handler_name,
         &handler_input,
         source,
+        comm,
     )
     .await
     {

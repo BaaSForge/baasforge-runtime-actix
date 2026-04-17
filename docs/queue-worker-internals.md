@@ -97,6 +97,23 @@ sequenceDiagram
 
 ---
 
+## Unit Path Convention
+
+Every unit path follows the four-segment format: `context.module.unitType.name`.
+
+The `unitType` for queue workers is **`queue_worker`** (snake_case, underscore).
+
+| Segment | Example | Notes |
+|---|---|---|
+| context | `notifications` | project/context namespace |
+| module | `comms` | module name, may use hyphens |
+| unitType | `queue_worker` | **always underscore** — never `queue-worker` |
+| name | `send-emails` | unit name, may use hyphens |
+
+`queue-worker` (hyphen) appears in NATS subjects (`wq.events.{pid}.queue-worker.{id}`) and URL slugs — these are infrastructure identifiers, not unit type values. They are unrelated to the unit path.
+
+---
+
 ## SDK Interface
 
 ### `queueWorker<T>()` — simple form
@@ -135,14 +152,14 @@ export default queueWorker<EmailPayload>({
 
 ```typescript
 const { runId } = await sdk.enqueueWorker(
-  "notifications.comms.queue-worker.send-emails",
+  "notifications.comms.queue_worker.send-emails",
   { to: "user@example.com", subject: "Welcome" },
   { delay: { minutes: 5 }, deduplicationKey: `welcome-${userId}` },
 );
 
 // From inside a workflow — wrap in ctx.run for durability
 await ctx.run("enqueue-email", () =>
-  sdk.enqueueWorker("notifications.comms.queue-worker.send-emails", emailData),
+  sdk.enqueueWorker("notifications.comms.queue_worker.send-emails", emailData),
 );
 ```
 
@@ -183,10 +200,10 @@ export default queueWorker<Input[], BatchOutput>({ ... });
 **Consuming the types from another unit:**
 
 ```typescript
-import type { Input, Output } from "@units/notifications.comms.queue-worker.send-emails";
+import type { Input, Output } from "@units/notifications.comms.queue_worker.send-emails";
 
 const data: Input = { to: "user@example.com", subject: "Welcome" };
-await sdk.enqueueWorker("notifications.comms.queue-worker.send-emails", data);
+await sdk.enqueueWorker("notifications.comms.queue_worker.send-emails", data);
 ```
 
 Cross-unit type imports are compile-time only — only `import type` is allowed.
@@ -281,7 +298,7 @@ queued → processing → dead_letter                   (TerminalError)
 // Queue worker calling a workflow
 export default queueWorker<OrderData>(async (ctx, data) => {
   const result = await sdk.callWorkflow("orders.fulfillment.workflow.process", data);
-  await sdk.enqueueWorker("notifications.comms.queue-worker.send-receipt", {
+  await sdk.enqueueWorker("notifications.comms.queue_worker.send-receipt", {
     email: data.customerEmail,
     receipt: result,
   });

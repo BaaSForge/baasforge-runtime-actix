@@ -58,9 +58,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let nats = baal_runtime_actix::configs::connect_nats(wq_nats_url).await?;
     info!("[nats_wq] connected for queue worker work consumer");
 
+    let wf_redis = if let Some(url) = &settings.wf_redis_url {
+        match redis::Client::open(url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    info!("[wf_redis] workflow Redis connected (for sdk.callWorkflow)");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => { warn!(error = %e, "[wf_redis] connection failed"); None }
+            },
+            Err(e) => { warn!(error = %e, "[wf_redis] client open failed"); None }
+        }
+    } else { None };
+
+    let wf_nats = if let Some(url) = &settings.wf_nats_url {
+        match baal_runtime_actix::configs::connect_nats(url).await {
+            Ok(nc) => { info!("[nats_wf] connected (for sdk.callWorkflow)"); Some(nc) }
+            Err(e) => { warn!(error = %e, "[nats_wf] connect failed"); None }
+        }
+    } else { None };
+
     let stream_name = WQ_NATS_WORK_STREAM.to_string();
     let consumer_name = WQ_NATS_WORK_CONSUMER.to_string();
-    let base_url = format!("http://127.0.0.1:{}", settings.port);
 
     tokio::spawn(async move {
         if let Err(e) = baal_runtime_actix::services::queue_worker_worker::runner::run_work_consumer(
@@ -70,7 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             redis_conn,
             &stream_name,
             &consumer_name,
-            &base_url,
+            wf_redis,
+            wf_nats,
         )
         .await
         {

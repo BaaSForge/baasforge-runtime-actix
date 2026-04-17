@@ -1,9 +1,11 @@
 use async_nats::jetstream;
 use futures::StreamExt;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::database::DbPool;
 use crate::libs::unit_js::actor_runner::ActorKind;
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::routes::ActorLocks;
 use crate::services::actor_engine::{ActorRedis, ACTOR_NATS_STREAM_SUBJECTS};
 use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock};
@@ -16,7 +18,6 @@ pub async fn run_actor_consumer(
     redis_conn: crate::database::SharedRedisConn,
     stream_name: &str,
     consumer_name: &str,
-    base_url: &str,
     locks: ActorLocks,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(js) = actor_js else {
@@ -59,19 +60,21 @@ pub async fn run_actor_consumer(
 
     let mut messages = consumer.messages().await?;
 
+    let actor_js_for_comm = Some(js);
+
     while let Some(result) = messages.next().await {
         match result {
             Ok(msg) => {
                 let actor_redis = actor_redis.clone();
                 let actor_nats = actor_nats.clone();
+                let actor_js = actor_js_for_comm.clone();
                 let pool = pool.clone();
                 let redis_conn = redis_conn.clone();
-                let base_url = base_url.to_string();
                 let locks = locks.clone();
 
                 tokio::spawn(async move {
                     handle_actor_message(
-                        msg, actor_redis, actor_nats, pool, redis_conn, base_url, locks,
+                        msg, actor_redis, actor_js, actor_nats, pool, redis_conn, locks,
                     )
                     .await;
                 });
@@ -88,10 +91,10 @@ pub async fn run_actor_consumer(
 async fn handle_actor_message(
     msg: async_nats::jetstream::Message,
     actor_redis: ActorRedis,
+    actor_js: Option<async_nats::jetstream::Context>,
     actor_nats: Option<async_nats::Client>,
     pool: DbPool,
     redis_conn: crate::database::SharedRedisConn,
-    base_url: String,
     locks: ActorLocks,
 ) {
     let payload: Option<serde_json::Value> = serde_json::from_slice(&msg.payload).ok();
@@ -146,22 +149,29 @@ async fn handle_actor_message(
         error_msg: None,
     };
 
-    let result = run_actor_with_lock(
-        input,
-        &actor_redis,
-        &pool,
-        &redis_conn,
-        &actor_nats,
-        &locks,
-        &base_url,
-    )
-    .await;
+    let comm = Arc::new(SdkCommCtx {
+        pool,
+        redis_conn,
+        wf_redis: None,
+        wf_nats: None,
+        wf_js: None,
+        wq_redis: None,
+        wq_nats: None,
+        wq_js: None,
+        actor_redis: Some(actor_redis.clone()),
+        actor_nats: actor_nats.clone(),
+        actor_js,
+        actor_locks: locks,
+        project_id: project_id.clone(),
+        source_unit_path: unit_path.clone(),
+        source_instance_id: None,
+    });
+
+    let result = run_actor_with_lock(input, comm).await;
 
     if let Some(reply_subject) = reply_to {
         let reply_payload = match &result {
-            Ok(out) => serde_json::json!({
-                "result": out.result,
-            }),
+            Ok(out) => serde_json::json!({ "result": out.result }),
             Err(e) => serde_json::json!({ "error": e }),
         };
         if let Some(nc) = &actor_nats {

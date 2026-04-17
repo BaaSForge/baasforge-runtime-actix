@@ -1,9 +1,12 @@
 use async_nats::jetstream;
 use futures::StreamExt;
 use redis::AsyncCommands;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use crate::database::DbPool;
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_js::queue_worker_runner::{
     BatchConfig, QueueWorkerRunContext, QueueWorkerRunOutcome,
     extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler,
@@ -22,7 +25,8 @@ pub async fn run_work_consumer(
     redis_conn: crate::database::SharedRedisConn,
     stream_name: &str,
     consumer_name: &str,
-    base_url: &str,
+    wf_redis: Option<crate::libs::unit_js::modules::sdk::SharedRedis>,
+    wf_nats: Option<async_nats::Client>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
 
@@ -60,17 +64,24 @@ pub async fn run_work_consumer(
 
     let mut messages = consumer.messages().await?;
 
+    let wq_js = jetstream::new(nats.clone());
+
+    let wf_js = wf_nats.as_ref().map(|n| jetstream::new(n.clone()));
+
     while let Some(result) = messages.next().await {
         match result {
             Ok(msg) => {
                 let wq_redis = wq_redis.clone();
                 let nats = nats.clone();
+                let wq_js = wq_js.clone();
                 let pool = pool.clone();
                 let redis_conn = redis_conn.clone();
-                let base_url = base_url.to_string();
+                let wf_redis = wf_redis.clone();
+                let wf_nats = wf_nats.clone();
+                let wf_js = wf_js.clone();
 
                 tokio::spawn(async move {
-                    handle_work_message(msg, wq_redis, nats, pool, redis_conn, base_url).await;
+                    handle_work_message(msg, wq_redis, nats, wq_js, pool, redis_conn, wf_redis, wf_nats, wf_js).await;
                 });
             }
             Err(e) => {
@@ -86,9 +97,12 @@ async fn handle_work_message(
     msg: async_nats::jetstream::Message,
     wq_redis: QueueWorkerRedis,
     nats: async_nats::Client,
+    wq_js: async_nats::jetstream::Context,
     pool: DbPool,
     redis_conn: crate::database::SharedRedisConn,
-    base_url: String,
+    wf_redis: Option<crate::libs::unit_js::modules::sdk::SharedRedis>,
+    wf_nats: Option<async_nats::Client>,
+    wf_js: Option<async_nats::jetstream::Context>,
 ) {
     let subject = msg.subject.to_string();
     let parts: Vec<&str> = subject.split('.').collect();
@@ -211,9 +225,26 @@ async fn handle_work_message(
     if let Some(ref batch_cfg) = worker_meta.batch {
         let batch_cfg = batch_cfg.clone();
         let _ = msg.ack().await;
+        let batch_comm = Arc::new(SdkCommCtx {
+            pool: pool.clone(),
+            redis_conn: redis_conn.clone(),
+            wf_redis: wf_redis.clone(),
+            wf_nats: wf_nats.clone(),
+            wf_js: wf_js.clone(),
+            wq_redis: Some(wq_redis.clone()),
+            wq_nats: Some(nats.clone()),
+            wq_js: Some(wq_js.clone()),
+            actor_redis: None,
+            actor_nats: None,
+            actor_js: None,
+            actor_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            project_id: project_id.clone(),
+            source_unit_path: unit_path.clone(),
+            source_instance_id: None,
+        });
         handle_batch_item(
-            wq_redis, nats_opt, pool, redis_conn, project_id, unit_path,
-            run_id, data_json, enqueued_at, attempt, source, batch_cfg, base_url,
+            wq_redis, nats_opt, project_id, unit_path,
+            run_id, data_json, enqueued_at, attempt, source, batch_cfg, batch_comm,
         )
         .await;
         return;
@@ -267,12 +298,28 @@ async fn handle_work_message(
         run_id: run_id.clone(),
         attempt,
         enqueued_at,
-        data_json,
-        project_id: project_id.clone(),
-        base_url: base_url.clone(),
+        data_json: data_json.clone(),
     };
 
-    let run_future = tokio::task::spawn_blocking(move || run_worker_handler(&source, &run_ctx));
+    let comm = Arc::new(SdkCommCtx {
+        pool: pool.clone(),
+        redis_conn: redis_conn.clone(),
+        wf_redis: wf_redis.clone(),
+        wf_nats: wf_nats.clone(),
+        wf_js: wf_js.clone(),
+        wq_redis: Some(wq_redis.clone()),
+        wq_nats: Some(nats.clone()),
+        wq_js: Some(wq_js.clone()),
+        actor_redis: None,
+        actor_nats: None,
+        actor_js: None,
+        actor_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        project_id: project_id.clone(),
+        source_unit_path: unit_path.clone(),
+        source_instance_id: None,
+    });
+
+    let run_future = tokio::task::spawn_blocking(move || run_worker_handler(&source, &run_ctx, comm));
 
     let run_result = if let Some(timeout_ms) = timeout_ms {
         match tokio::time::timeout(
@@ -531,8 +578,6 @@ struct BatchItem {
 async fn handle_batch_item(
     wq_redis: QueueWorkerRedis,
     nats: Option<async_nats::Client>,
-    _pool: DbPool,
-    _redis_conn: crate::database::SharedRedisConn,
     project_id: String,
     unit_path: String,
     run_id: String,
@@ -541,7 +586,7 @@ async fn handle_batch_item(
     _attempt: u32,
     source: String,
     batch_cfg: BatchConfig,
-    base_url: String,
+    comm: Arc<SdkCommCtx>,
 ) {
     let batch_key = format!("wq:{project_id}:{unit_path}:batch_items");
     let item = BatchItem {
@@ -572,11 +617,7 @@ async fn handle_batch_item(
     if should_dispatch_now {
         let items = batch_pop_all(&wq_redis, &batch_key).await;
         if !items.is_empty() {
-            dispatch_batch(
-                wq_redis, nats, project_id, unit_path,
-                source, items, 1, base_url,
-            )
-            .await;
+            dispatch_batch(wq_redis, nats, project_id, unit_path, source, items, 1, comm).await;
         }
         return;
     }
@@ -587,18 +628,14 @@ async fn handle_batch_item(
         let project_id_t = project_id.clone();
         let unit_path_t = unit_path.clone();
         let source_t = source.clone();
-        let base_url_t = base_url.clone();
+        let comm_t = comm.clone();
         let timeout_ms = batch_cfg.timeout_ms;
 
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
             let items = batch_pop_all(&wq_redis_t, &format!("wq:{project_id_t}:{unit_path_t}:batch_items")).await;
             if !items.is_empty() {
-                dispatch_batch(
-                    wq_redis_t, nats_t, project_id_t, unit_path_t,
-                    source_t, items, 1, base_url_t,
-                )
-                .await;
+                dispatch_batch(wq_redis_t, nats_t, project_id_t, unit_path_t, source_t, items, 1, comm_t).await;
             }
         });
     }
@@ -634,7 +671,7 @@ async fn dispatch_batch(
     source: String,
     items: Vec<BatchItem>,
     initial_attempt: u32,
-    base_url: String,
+    comm: Arc<SdkCommCtx>,
 ) {
     if items.is_empty() {
         return;
@@ -659,11 +696,10 @@ async fn dispatch_batch(
             attempt: initial_attempt,
             enqueued_at,
             data_json: batch_data_json.clone(),
-            project_id: project_id.clone(),
-            base_url: base_url.clone(),
         };
         let src = source.clone();
-        let first_result = tokio::task::spawn_blocking(move || run_worker_handler(&src, &run_ctx)).await;
+        let comm_first = comm.clone();
+        let first_result = tokio::task::spawn_blocking(move || run_worker_handler(&src, &run_ctx, comm_first)).await;
         match first_result {
             Ok(Ok(r)) => {
                 let max = r.retry_policy.max_attempts;
@@ -708,14 +744,13 @@ async fn dispatch_batch(
             attempt,
             enqueued_at,
             data_json: batch_data_json.clone(),
-            project_id: project_id.clone(),
-            base_url: base_url.clone(),
         };
         let src = source.clone();
+        let comm_retry = comm.clone();
 
         batch_mark_processing(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at).await;
 
-        let run_result = tokio::task::spawn_blocking(move || run_worker_handler(&src, &run_ctx)).await;
+        let run_result = tokio::task::spawn_blocking(move || run_worker_handler(&src, &run_ctx, comm_retry)).await;
 
         match run_result {
             Ok(Ok(r)) => match r.outcome {

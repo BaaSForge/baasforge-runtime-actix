@@ -429,7 +429,7 @@ handlers: {
   checkout(ctx) {
     const order = { items: ctx.state.items, total: ctx.state.total };
     ctx.state = { items: [], total: 0 };
-    sdk.enqueueWorker("notifications.comms.queue-worker.send-receipt", order);
+    sdk.enqueueWorker("notifications.comms.queue_worker.send-receipt", order);
     return order;
   }
 }

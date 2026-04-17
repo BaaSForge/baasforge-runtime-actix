@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_js::workflow_runner::{
     run_workflow_handler, WorkflowExecutionContext, WorkflowExecutionResult,
 };
@@ -67,6 +68,7 @@ pub async fn start_workflow(
     instance_id: &str,
     input_json: &str,
     source: &str,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
     // Workflow-name dedup: only return an existing instance if it is still
     // actively running or suspended. Completed/failed/cancelled instances are
@@ -93,7 +95,7 @@ pub async fn start_workflow(
                     if let Ok(meta) = serde_json::from_str::<WorkflowMeta>(&raw) {
                         if meta.status == "suspended" {
                             drop(conn);
-                            let _ = resume_workflow(redis, nats, js, project_id, &eid, source).await;
+                            let _ = resume_workflow(redis, nats, js, project_id, &eid, source, comm.clone()).await;
                             return Ok(eid);
                         }
                         if meta.status == "running" {
@@ -149,10 +151,7 @@ pub async fn start_workflow(
     )
     .await;
 
-    // Swallow workflow-level failures: a workflow that immediately fails is a valid
-    // terminal state. The instanceId was created and meta was written; the caller
-    // can query /status to see the failed result.
-    let _ = drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await;
+    let _ = drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, comm).await;
 
     Ok(instance_id.to_string())
 }
@@ -165,12 +164,9 @@ pub async fn resume_workflow(
     project_id: &str,
     instance_id: &str,
     source: &str,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<(), String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
-    // Allow "running" as well as "suspended": a stale "running" with no active exec_lock
-    // (from a crash mid-execution) must be recoverable. Step memoization prevents
-    // re-execution of already-completed steps; the Completed/Failed CAS guards ensure
-    // only one transition wins if two paths race.
     let old_meta = {
         let mut conn = redis.lock().await;
         match transition_status(&mut conn, &meta_key, &["suspended", "running"], "running").await? {
@@ -178,7 +174,7 @@ pub async fn resume_workflow(
             _ => return Ok(()),
         }
     };
-    drive_workflow(redis, nats, js, project_id, instance_id, &old_meta.input, source, None, None)
+    drive_workflow(redis, nats, js, project_id, instance_id, &old_meta.input, source, None, None, comm)
         .await?;
     Ok(())
 }
@@ -193,6 +189,7 @@ pub async fn call_handler(
     handler_name: &str,
     handler_input_json: &str,
     source: &str,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
     let handler_result = drive_workflow(
         redis,
@@ -204,13 +201,11 @@ pub async fn call_handler(
         source,
         Some(handler_name),
         Some(handler_input_json),
+        comm.clone(),
     )
     .await?;
 
-    // After the handler (which may have resolved a durable promise), eagerly
-    // resume the main workflow so the caller sees updated state immediately
-    // without waiting for the async NATS wake roundtrip.
-    let _ = resume_workflow(redis, nats, js, project_id, instance_id, source).await;
+    let _ = resume_workflow(redis, nats, js, project_id, instance_id, source, comm).await;
 
     Ok(handler_result)
 }
@@ -564,6 +559,7 @@ pub async fn launch_callee_workflow(
     input_json: &str,
     source: &str,
     unit_path: &str,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<(), String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
     let meta_json: String = {
@@ -587,7 +583,7 @@ pub async fn launch_callee_workflow(
     }
 
     publish_wf_event(nats, project_id, instance_id, "workflow.started", unit_path, serde_json::json!({ "input": input_json })).await;
-    drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None).await?;
+    drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, comm).await?;
     Ok(())
 }
 
@@ -601,6 +597,7 @@ async fn drive_workflow(
     source: &str,
     handler_name: Option<&str>,
     handler_input_json: Option<&str>,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
     let pid = project_id.to_string();
     let iid = instance_id.to_string();
@@ -622,9 +619,10 @@ async fn drive_workflow(
     let redis_clone = redis.clone();
     let nats_clone = nats.clone();
     let source_owned = source.to_string();
+    let comm_for_spawn = comm.for_unit(pid.clone(), String::new(), Some(iid.clone()));
 
     let result = tokio::task::spawn_blocking(move || {
-        run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone)
+        run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn)
     })
     .await
     .map_err(|e| format!("spawn_blocking join error: {e}"))??;

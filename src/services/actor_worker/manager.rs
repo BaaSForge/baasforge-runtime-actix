@@ -1,10 +1,9 @@
-use crate::database::DbPool;
 use crate::libs::unit_js::actor_runner::{
     ActorCtxJson, ActorKind, ActorMetadata, ActorOutcome, actor_backoff_delay,
     extract_actor_metadata, run_actor_handler,
 };
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::models::projects::ProjectUnitType;
-use crate::routes::ActorLocks;
 use crate::services::actor_engine::{
     ActorRedis, cancel_alarm, commit_state, delete_actor_state, load_hot_state,
     publish_actor_event, set_alarm,
@@ -12,7 +11,6 @@ use crate::services::actor_engine::{
 use crate::services::project_release::load_unit_for_path_production;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{error, warn};
 use uuid::Uuid;
 
@@ -35,13 +33,13 @@ pub struct ActorRunOutput {
 
 pub async fn run_actor_with_lock(
     input: ActorRunInput,
-    actor_redis: &ActorRedis,
-    pool: &DbPool,
-    redis_conn: &crate::database::SharedRedisConn,
-    nats: &Option<async_nats::Client>,
-    locks: &ActorLocks,
-    base_url: &str,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<ActorRunOutput, String> {
+    let actor_redis = comm
+        .actor_redis
+        .clone()
+        .ok_or_else(|| "actor_redis not configured".to_string())?;
+
     let lock_key = (
         input.project_id.clone(),
         input.unit_path.clone(),
@@ -49,31 +47,29 @@ pub async fn run_actor_with_lock(
     );
 
     let actor_mutex = {
-        let mut map = locks.lock().await;
+        let mut map = comm.actor_locks.lock().await;
         map.entry(lock_key)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     };
 
     let _guard = actor_mutex.lock().await;
 
-    run_actor_inner(input, actor_redis, pool, redis_conn, nats, base_url).await
+    run_actor_inner(input, actor_redis, comm).await
 }
 
 async fn run_actor_inner(
     input: ActorRunInput,
-    actor_redis: &ActorRedis,
-    pool: &DbPool,
-    redis_conn: &crate::database::SharedRedisConn,
-    nats: &Option<async_nats::Client>,
-    base_url: &str,
+    actor_redis: ActorRedis,
+    comm: Arc<SdkCommCtx>,
 ) -> Result<ActorRunOutput, String> {
+    let nats = comm.actor_nats.clone();
     let project_uuid = Uuid::parse_str(&input.project_id)
         .map_err(|e| format!("invalid project_id: {e}"))?;
 
     let unit_result = load_unit_for_path_production(
-        pool,
-        redis_conn,
+        &comm.pool,
+        &comm.redis_conn,
         project_uuid,
         ProjectUnitType::Actor,
         &input.unit_path,
@@ -103,15 +99,11 @@ async fn run_actor_inner(
         }
     }
 
-    let retry_policy = metadata
-        .retry
-        .clone()
-        .unwrap_or_default();
-
+    let retry_policy = metadata.retry.clone().unwrap_or_default();
     let state_limit = metadata.state_limit_bytes;
 
     let (loaded_state, loaded_version) =
-        match load_hot_state(actor_redis, &input.project_id, &input.unit_path, &input.actor_id)
+        match load_hot_state(&actor_redis, &input.project_id, &input.unit_path, &input.actor_id)
             .await
         {
             Some((s, v)) => (Some(s), v),
@@ -134,13 +126,16 @@ async fn run_actor_inner(
         };
 
         let src = source.clone();
-        let project_id = input.project_id.clone();
-        let base = base_url.to_string();
         let limit = state_limit;
         let timeout = metadata.timeout;
+        let comm_for_spawn = comm.for_unit(
+            input.project_id.clone(),
+            input.unit_path.clone(),
+            None,
+        );
 
         let outcome =
-            tokio::task::spawn_blocking(move || run_actor_handler(&src, &project_id, &base, &ctx_json, limit, timeout))
+            tokio::task::spawn_blocking(move || run_actor_handler(&src, &ctx_json, comm_for_spawn, limit, timeout))
                 .await
                 .map_err(|e| format!("spawn_blocking panicked: {e}"))?
                 .map_err(|e| format!("actor JS error: {e}"))?;
@@ -156,7 +151,7 @@ async fn run_actor_inner(
                 if state_touched {
                     let new_version = loaded_version + attempt as i64;
                     commit_state(
-                        actor_redis,
+                        &actor_redis,
                         &input.project_id,
                         &input.unit_path,
                         &input.actor_id,
@@ -168,7 +163,7 @@ async fn run_actor_inner(
 
                 for alarm in &pending_alarms {
                     set_alarm(
-                        actor_redis,
+                        &actor_redis,
                         &input.project_id,
                         &input.unit_path,
                         &input.actor_id,
@@ -179,7 +174,7 @@ async fn run_actor_inner(
                 }
                 for name in &cancelled_alarms {
                     cancel_alarm(
-                        actor_redis,
+                        &actor_redis,
                         &input.project_id,
                         &input.unit_path,
                         &input.actor_id,
@@ -190,7 +185,7 @@ async fn run_actor_inner(
 
                 if attempt == 1 {
                     publish_actor_event(
-                        nats,
+                        &nats,
                         &input.project_id,
                         &input.unit_path,
                         &input.actor_id,
@@ -230,15 +225,15 @@ async fn run_actor_inner(
                     &error,
                     state,
                     loaded_version,
-                    actor_redis,
-                    nats,
-                    base_url,
+                    &actor_redis,
+                    &nats,
                     state_limit,
+                    comm.clone(),
                 )
                 .await;
 
                 publish_actor_event(
-                    nats,
+                    &nats,
                     &input.project_id,
                     &input.unit_path,
                     &input.actor_id,
@@ -263,15 +258,15 @@ async fn run_actor_inner(
                         &error,
                         None,
                         loaded_version,
-                        actor_redis,
-                        nats,
-                        base_url,
+                        &actor_redis,
+                        &nats,
                         state_limit,
+                        comm.clone(),
                     )
                     .await;
 
                     publish_actor_event(
-                        nats,
+                        &nats,
                         &input.project_id,
                         &input.unit_path,
                         &input.actor_id,
@@ -311,8 +306,8 @@ async fn run_dead_letter(
     loaded_version: i64,
     actor_redis: &ActorRedis,
     nats: &Option<async_nats::Client>,
-    base_url: &str,
     state_limit: Option<u64>,
+    comm: Arc<SdkCommCtx>,
 ) {
     let loaded_state =
         load_hot_state(actor_redis, &input.project_id, &input.unit_path, &input.actor_id)
@@ -331,12 +326,15 @@ async fn run_dead_letter(
     };
 
     let src = source.to_string();
-    let project_id = input.project_id.clone();
-    let base = base_url.to_string();
     let limit = state_limit;
+    let comm_for_spawn = comm.for_unit(
+        input.project_id.clone(),
+        input.unit_path.clone(),
+        None,
+    );
 
     let outcome = tokio::task::spawn_blocking(move || {
-        run_actor_handler(&src, &project_id, &base, &dl_ctx, limit, None)
+        run_actor_handler(&src, &dl_ctx, comm_for_spawn, limit, None)
     })
     .await;
 

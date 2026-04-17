@@ -5,6 +5,7 @@
 
 use crate::libs::api_response::api_error;
 use crate::libs::unit_js::{self, TriggerHttpSnapshot};
+use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::{ProjectUnitRow, ProjectUnitType};
 use crate::routes::AppContext;
@@ -15,6 +16,7 @@ use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Max request body size forwarded into QuickJS `req` (bytes).
@@ -87,7 +89,8 @@ pub async fn handle_trigger_api_unit_production(
     {
         Ok(Some(unit)) => {
             let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
-            respond_trigger_unit(unit, &http_req, body, port).await
+            let project_id_str = params.project_id.to_string();
+            respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path).await
         }
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
@@ -128,7 +131,8 @@ pub async fn handle_trigger_api_unit_stage(
     {
         Ok(Some(unit)) => {
             let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
-            respond_trigger_unit(unit, &http_req, body, port).await
+            let project_id_str = params.project_id.to_string();
+            respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path).await
         }
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
@@ -163,7 +167,15 @@ fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes, server_port: u16)
     })
 }
 
-async fn respond_trigger_unit(unit: ProjectUnitRow, http_req: &HttpRequest, body: web::Bytes, server_port: u16) -> HttpResponse {
+async fn respond_trigger_unit(
+    unit: ProjectUnitRow,
+    http_req: &HttpRequest,
+    body: web::Bytes,
+    server_port: u16,
+    ctx: &AppContext,
+    project_id_str: &str,
+    unit_path: &str,
+) -> HttpResponse {
     let code = match unit.compiled_code.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(c) => c.to_string(),
         None => {
@@ -175,9 +187,26 @@ async fn respond_trigger_unit(unit: ProjectUnitRow, http_req: &HttpRequest, body
         Ok(s) => s,
         Err(msg) => return HttpResponse::PayloadTooLarge().json(api_error(msg, json!({}))),
     };
+    let comm = Arc::new(SdkCommCtx {
+        pool: ctx.pool.clone(),
+        redis_conn: ctx.redis_conn.clone(),
+        wf_redis: ctx.wf_redis.clone(),
+        wf_nats: ctx.wf_nats_client.clone(),
+        wf_js: ctx.wf_jetstream.clone(),
+        wq_redis: ctx.wq_redis.clone(),
+        wq_nats: ctx.wq_nats_client.clone(),
+        wq_js: ctx.wq_jetstream.clone(),
+        actor_redis: ctx.actor_redis.clone(),
+        actor_nats: ctx.actor_nats_client.clone(),
+        actor_js: ctx.actor_jetstream.clone(),
+        actor_locks: ctx.actor_locks.clone(),
+        project_id: project_id_str.to_string(),
+        source_unit_path: unit_path.to_string(),
+        source_instance_id: None,
+    });
     let unit_id = unit.id.clone();
     let revision = unit.revision;
-    let run_result = match tokio::task::spawn_blocking(move || unit_js::run_unit_handler(&code, &snapshot)).await {
+    let run_result = match tokio::task::spawn_blocking(move || unit_js::run_unit_handler(&code, &snapshot, Some(comm))).await {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             tracing::error!(

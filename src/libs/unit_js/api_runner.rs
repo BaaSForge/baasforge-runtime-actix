@@ -1,7 +1,9 @@
 use rquickjs::{Context, Ctx, Promise, Runtime, Value};
+use std::sync::Arc;
 
 use super::error::{format_js_error, log_js_failure};
 use super::modules;
+use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
 use super::types::{JsResponseRaw, TriggerHttpResponse, TriggerHttpSnapshot};
 
 fn register_globals(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
@@ -15,7 +17,11 @@ const API_RUNTIME_JS: &str = concat!(include_str!("scripts/runtime-shared.js"), 
 pub fn run_unit_handler(
     source: &str,
     snapshot: &TriggerHttpSnapshot,
+    comm: Option<Arc<SdkCommCtx>>,
 ) -> Result<TriggerHttpResponse, String> {
+    if let Some(c) = comm {
+        set_comm_ctx(c);
+    }
     let rt = Runtime::new().map_err(|e| {
         let msg = e.to_string();
         log_js_failure("runtime init", &msg);
@@ -26,7 +32,9 @@ pub fn run_unit_handler(
         log_js_failure("context init", &msg);
         msg
     })?;
-    ctx.with(|ctx| run_in_ctx(&ctx, source, snapshot))
+    let result = ctx.with(|ctx| run_in_ctx(&ctx, source, snapshot));
+    clear_comm_ctx();
+    result
 }
 
 fn run_in_ctx(
@@ -53,6 +61,12 @@ fn run_in_ctx(
     register_globals(ctx).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("register_globals", &msg);
+        msg
+    })?;
+
+    modules::register_sdk_comm(ctx).map_err(|e| {
+        let msg = format_js_error(ctx, e);
+        log_js_failure("api register_sdk_comm", &msg);
         msg
     })?;
 
