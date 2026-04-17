@@ -238,4 +238,5 @@ declare module "@sdk" {
 declare module "@units/*" {
   export type Input = any;
   export type Output = any;
+  export type BatchOutput = any;
 }

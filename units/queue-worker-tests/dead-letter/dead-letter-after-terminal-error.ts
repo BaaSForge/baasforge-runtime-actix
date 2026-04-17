@@ -1,6 +1,7 @@
 import { queueWorker, sdk } from "@sdk";
 
 export type Input = Record<string, never>;
+export type Output = never;
 
 export default queueWorker<Input>({
   metadata: {

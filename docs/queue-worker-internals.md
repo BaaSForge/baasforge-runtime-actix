@@ -148,6 +148,51 @@ await ctx.run("enqueue-email", () =>
 
 ---
 
+## Type Export Convention
+
+Every queue worker file must export its contract types so other units can import them via `@units/<path>`.
+
+**Regular worker** — exports `Input` and `Output`:
+
+```typescript
+export type Input = { userId: string };
+export type Output = { sent: true };
+
+export default queueWorker<Input, Output>(async (_ctx, data) => {
+  // ...
+  return { sent: true };
+});
+```
+
+Use `Output = never` when the worker always throws (e.g. dead-letter-only workers):
+
+```typescript
+export type Input = Record<string, never>;
+export type Output = never;
+```
+
+**Batch worker** — exports `Input` (per-item) and `BatchOutput` (whole-batch result):
+
+```typescript
+export type Input = { id: number; value: number };
+export type BatchOutput = { results: Array<{ id: number; doubled: number }> };
+
+export default queueWorker<Input[], BatchOutput>({ ... });
+```
+
+**Consuming the types from another unit:**
+
+```typescript
+import type { Input, Output } from "@units/notifications.comms.queue-worker.send-emails";
+
+const data: Input = { to: "user@example.com", subject: "Welcome" };
+await sdk.enqueueWorker("notifications.comms.queue-worker.send-emails", data);
+```
+
+Cross-unit type imports are compile-time only — only `import type` is allowed.
+
+---
+
 ## ctx Object
 
 | Property            | Type     | Description                                                  |
