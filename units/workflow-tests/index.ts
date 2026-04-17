@@ -16,6 +16,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // ---------------------------------------------------------------------------
 
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
+const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
@@ -1454,6 +1455,10 @@ function epWfUrl(baseUrl: string, slug: string): string {
   return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/test/wf/${slug}`;
 }
 
+function epWfStageUrl(baseUrl: string, slug: string, runtimeId = STAGE_RUNTIME_ID): string {
+  return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/wf/${slug}`;
+}
+
 async function epStart(
   baseUrl: string,
   slug: string,
@@ -1996,6 +2001,343 @@ function allEndpointTests(): EndpointTestDef[] {
         if (!resB.body?.result?.isolatedCorrectly) {
           throw new Error("instance B isolation failed");
         }
+      },
+    },
+
+    // ── Handler endpoint gap coverage ────────────────────────────────────
+    {
+      name: "handler-nonexistent-instance-404",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const fakeId = "00000000-dead-beef-0000-111111111111";
+        const url = `${epWfUrl(baseUrl, "suspend-for-signal")}/${fakeId}/handlers/signal`;
+        const resp = await httpPostFull(url, {});
+        if (resp.status !== 404)
+          throw new Error(`expected 404 for handler on nonexistent instance, got ${resp.status}`);
+      },
+    },
+    {
+      name: "handler-on-completed-instance",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "echo-input", { v: 1 });
+        await epPollStatus(base, "completed");
+        const resp = await httpPostFull(`${base}/handlers/signal`, {});
+        if (resp.status === 200 && resp.body?.accepted === true)
+          throw new Error(`handler on completed instance should be rejected, got accepted=true`);
+      },
+    },
+    {
+      name: "handler-on-cancelled-instance",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "suspend-for-cancel", {});
+        await epPollStatus(base, "suspended");
+        await httpPostFull(`${base}/cancel`);
+        await epPollStatus(base, "cancelled").catch(() => {});
+        const resp = await httpPostFull(`${base}/handlers/signal`, {});
+        if (resp.status === 200 && resp.body?.accepted === true)
+          throw new Error(`handler on cancelled instance should be rejected, got accepted=true`);
+      },
+    },
+    {
+      name: "handler-on-failed-instance",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "resume-failed-noop", {});
+        for (let i = 0; i < 60; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${base}/status`);
+          if (r.body?.meta?.status === "failed") break;
+        }
+        const resp = await httpPostFull(`${base}/handlers/signal`, {});
+        if (resp.status === 200 && resp.body?.accepted === true)
+          throw new Error(`handler on failed instance should be rejected, got accepted=true`);
+      },
+    },
+    {
+      name: "handler-invalid-name-400",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "suspend-for-signal", {});
+        await epPollStatus(base, "suspended");
+        const resp = await httpPostFull(`${base}/handlers/my-handler!`, {});
+        if (resp.status !== 400)
+          throw new Error(`expected 400 for handler with invalid chars, got ${resp.status}`);
+        await httpPostFull(`${base}/handlers/signal`, {});
+      },
+    },
+    {
+      name: "handler-unknown-name-on-valid-instance",
+      category: "endpoint_handler",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "suspend-for-signal", {});
+        await epPollStatus(base, "suspended");
+        const resp = await httpPostFull(`${base}/handlers/nonExistentHandler`, {});
+        if (resp.status !== 400 && resp.status !== 404)
+          throw new Error(`expected 400 or 404 for unknown handler name, got ${resp.status}`);
+        await httpPostFull(`${base}/handlers/signal`, {});
+      },
+    },
+
+    // ── Cancel endpoint gap coverage ──────────────────────────────────────
+    {
+      name: "cancel-nonexistent-instance-404",
+      category: "endpoint_cancel",
+      run: async (baseUrl) => {
+        const fakeId = "00000000-dead-beef-0000-222222222222";
+        const url = `${epWfUrl(baseUrl, "echo-input")}/${fakeId}/cancel`;
+        const resp = await httpPostFull(url);
+        if (resp.status !== 404)
+          throw new Error(`expected 404 for cancel on nonexistent instance, got ${resp.status}`);
+      },
+    },
+    {
+      name: "cancel-failed-instance",
+      category: "endpoint_cancel",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "resume-failed-noop", {});
+        for (let i = 0; i < 60; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${base}/status`);
+          if (r.body?.meta?.status === "failed") break;
+        }
+        const resp = await httpPostFull(`${base}/cancel`);
+        if (resp.status === 200 && resp.body?.status === "cancelled")
+          throw new Error(`cancel on failed instance should be rejected, got status=cancelled`);
+      },
+    },
+
+    // ── Start endpoint gap coverage ───────────────────────────────────────
+    {
+      name: "start-invalid-project-id-400",
+      category: "endpoint_start",
+      run: async (baseUrl) => {
+        const url = `${baseUrl}/api/v1/trigger/wf/not-a-uuid/test/wf/echo-input`;
+        const resp = await httpPostFull(url, {});
+        if (resp.status !== 400 && resp.status !== 404)
+          throw new Error(`expected 400 or 404 for invalid project_id, got ${resp.status}`);
+      },
+    },
+
+    // ── Result endpoint gap coverage ──────────────────────────────────────
+    {
+      name: "result-failed-instance-response-shape",
+      category: "endpoint_result",
+      run: async (baseUrl) => {
+        const { base } = await epStart(baseUrl, "resume-failed-noop", {});
+        for (let i = 0; i < 60; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${base}/status`);
+          if (r.body?.meta?.status === "failed") break;
+        }
+        const resp = await httpGetFull(`${base}/result`);
+        if (resp.status !== 200 && resp.status !== 400)
+          throw new Error(`result on failed instance: expected 200 or 400, got ${resp.status}`);
+        if (resp.status === 200) {
+          const body = resp.body as Record<string, unknown>;
+          if (!("status" in body))
+            throw new Error(`result on failed instance missing 'status' field: ${JSON.stringify(body)}`);
+        }
+      },
+    },
+    {
+      name: "result-nonexistent-instance-404",
+      category: "endpoint_result",
+      run: async (baseUrl) => {
+        const fakeId = "00000000-dead-beef-0000-333333333333";
+        const url = `${epWfUrl(baseUrl, "echo-input")}/${fakeId}/result`;
+        const resp = await httpGetFull(url);
+        if (resp.status !== 404)
+          throw new Error(`expected 404 for result of nonexistent instance, got ${resp.status}`);
+      },
+    },
+
+    // ── Stage route coverage ──────────────────────────────────────────────
+    {
+      name: "start-returns-instance-id",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "echo-input"), { v: "stage-test" });
+        if (resp.status !== 200)
+          throw new Error(`stage start expected 200, got ${resp.status}`);
+        if (!resp.body?.instanceId)
+          throw new Error("stage start: missing instanceId in response");
+      },
+    },
+    {
+      name: "start-passes-input",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const stageBase = `${epWfStageUrl(baseUrl, "echo-input")}`;
+        const resp = await httpPostFull(stageBase, { value: "stage-input" });
+        if (resp.status !== 200) throw new Error(`stage start returned ${resp.status}`);
+        const instanceId = resp.body?.instanceId as string | undefined;
+        if (!instanceId) throw new Error("no instanceId");
+        const instanceBase = `${stageBase}/${instanceId}`;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${instanceBase}/status`);
+          if (r.body?.meta?.status === "completed") {
+            const res = await httpGetFull(`${instanceBase}/result`);
+            if (res.body?.result?.input?.value !== "stage-input")
+              throw new Error(`stage input not passed: ${JSON.stringify(res.body?.result)}`);
+            return;
+          }
+        }
+        throw new Error("stage workflow did not complete");
+      },
+    },
+    {
+      name: "status-completed",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "echo-input"), {});
+        if (resp.status !== 200) throw new Error(`stage start failed: ${resp.status}`);
+        const instanceId = resp.body?.instanceId as string | undefined;
+        if (!instanceId) throw new Error("no instanceId");
+        const stageBase = `${epWfStageUrl(baseUrl, "echo-input")}/${instanceId}`;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${stageBase}/status`);
+          if (r.body?.meta?.status === "completed") return;
+        }
+        throw new Error("stage status never reached completed");
+      },
+    },
+    {
+      name: "status-suspended",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "suspend-for-signal"), {});
+        if (resp.status !== 200) throw new Error(`stage start failed: ${resp.status}`);
+        const instanceId = resp.body?.instanceId as string | undefined;
+        if (!instanceId) throw new Error("no instanceId");
+        const stageBase = `${epWfStageUrl(baseUrl, "suspend-for-signal")}/${instanceId}`;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${stageBase}/status`);
+          if (r.body?.meta?.status === "suspended") {
+            await httpPostFull(`${stageBase}/handlers/signal`, {});
+            return;
+          }
+        }
+        throw new Error("stage workflow never reached suspended");
+      },
+    },
+    {
+      name: "result-completed-shape",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "echo-input"), { msg: "hello" });
+        if (resp.status !== 200) throw new Error(`stage start failed: ${resp.status}`);
+        const instanceId = resp.body?.instanceId as string | undefined;
+        if (!instanceId) throw new Error("no instanceId");
+        const stageBase = `${epWfStageUrl(baseUrl, "echo-input")}/${instanceId}`;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${stageBase}/status`);
+          if (r.body?.meta?.status === "completed") {
+            const res = await httpGetFull(`${stageBase}/result`);
+            if (res.status !== 200) throw new Error(`stage result expected 200, got ${res.status}`);
+            if (res.body?.status !== "completed")
+              throw new Error(`stage result status not "completed": ${JSON.stringify(res.body)}`);
+            return;
+          }
+        }
+        throw new Error("stage workflow did not complete in time");
+      },
+    },
+    {
+      name: "cancel-suspended",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "suspend-for-cancel"), {});
+        if (resp.status !== 200) throw new Error(`stage start failed: ${resp.status}`);
+        const instanceId = resp.body?.instanceId as string | undefined;
+        if (!instanceId) throw new Error("no instanceId");
+        const stageBase = `${epWfStageUrl(baseUrl, "suspend-for-cancel")}/${instanceId}`;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${stageBase}/status`);
+          if (r.body?.meta?.status === "suspended") {
+            const cancelResp = await httpPostFull(`${stageBase}/cancel`);
+            if (cancelResp.status !== 200)
+              throw new Error(`stage cancel expected 200, got ${cancelResp.status}`);
+            return;
+          }
+        }
+        throw new Error("stage workflow never suspended for cancel");
+      },
+    },
+    {
+      name: "handler-resolves",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "suspend-for-signal"), {});
+        if (resp.status !== 200) throw new Error(`stage start failed: ${resp.status}`);
+        const instanceId = resp.body?.instanceId as string | undefined;
+        if (!instanceId) throw new Error("no instanceId");
+        const stageBase = `${epWfStageUrl(baseUrl, "suspend-for-signal")}/${instanceId}`;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${stageBase}/status`);
+          if (r.body?.meta?.status === "suspended") {
+            const hr = await httpPostFull(`${stageBase}/handlers/signal`, { data: "stage-signal" });
+            if (hr.status !== 200)
+              throw new Error(`stage handler call expected 200, got ${hr.status}`);
+            return;
+          }
+        }
+        throw new Error("stage workflow never suspended for handler");
+      },
+    },
+    {
+      name: "start-unknown-runtime-id-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const unknownRuntimeId = "00000000-dead-0000-0000-999999999999";
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "echo-input", unknownRuntimeId), {});
+        if (resp.status !== 404)
+          throw new Error(`expected 404 for unknown runtime_id, got ${resp.status}`);
+      },
+    },
+    {
+      name: "production-and-stage-isolated",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const [prodResp, stageResp] = await Promise.all([
+          httpPostFull(epWfUrl(baseUrl, "echo-input"), { source: "prod" }),
+          httpPostFull(epWfStageUrl(baseUrl, "echo-input"), { source: "stage" }),
+        ]);
+        if (prodResp.status !== 200) throw new Error(`prod start failed: ${prodResp.status}`);
+        if (stageResp.status !== 200) throw new Error(`stage start failed: ${stageResp.status}`);
+        const prodId = prodResp.body?.instanceId as string | undefined;
+        const stageId = stageResp.body?.instanceId as string | undefined;
+        if (!prodId || !stageId) throw new Error("missing instanceId in one of the responses");
+        if (prodId === stageId)
+          throw new Error(`prod and stage returned the same instanceId: ${prodId}`);
+        const prodBase = `${epWfUrl(baseUrl, "echo-input")}/${prodId}`;
+        const stageBase = `${epWfStageUrl(baseUrl, "echo-input")}/${stageId}`;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const [pr, sr] = await Promise.all([
+            httpGetFull(`${prodBase}/status`),
+            httpGetFull(`${stageBase}/status`),
+          ]);
+          if (pr.body?.meta?.status === "completed" && sr.body?.meta?.status === "completed") {
+            const [prodResult, stageResult] = await Promise.all([
+              httpGetFull(`${prodBase}/result`),
+              httpGetFull(`${stageBase}/result`),
+            ]);
+            if (prodResult.body?.result?.input?.source !== "prod")
+              throw new Error(`prod result has wrong source: ${JSON.stringify(prodResult.body?.result)}`);
+            if (stageResult.body?.result?.input?.source !== "stage")
+              throw new Error(`stage result has wrong source: ${JSON.stringify(stageResult.body?.result)}`);
+            return;
+          }
+        }
+        throw new Error("prod and stage workflows did not both complete in time");
       },
     },
 

@@ -160,6 +160,7 @@ Each `sdk.callWorkflow` in a workflow gets a stable promise name (`sdk_call_0`, 
 | `wf.*.*.wake` | **JetStream** `WF_WAKE` stream | Engine → Worker | Durable timer / wake signals (sleep, promise timeout, step retry) |
 | `wf.{pid}.{iid}.wake` | Same stream | Engine → Worker | Per-instance wake publish |
 | `wf.{pid}.{iid}.start` | **JetStream** `WF_WAKE` stream | `sdk.callWorkflow` → Worker | Start a callee workflow instance; captured durably so the worker survives restarts |
+| `wf.{pid}.{iid}.wake` (actor reply) | **JetStream** `WF_WAKE` stream | Actor Worker → Worker | `sdk.callActorDurable` reply: actor worker calls `resolve_promise` / `reject_caller_promise` which writes the outcome to WF Redis and JetStream-publishes here. The existing `run_wake_consumer` handles it identically to `callWorkflow` callee completion — no separate consumer needed. |
 | `wf.events.{pid}.workflow.{iid}` | Core NATS | Engine → Subscribers | Lifecycle broadcast: `workflow.started / completed / suspended / failed`. WebSocket clients subscribe here. `sdk.callWorkflow` no longer listens to this — it uses the durable promise mechanism instead. |
 | `wf.events.{pid}.>` | Core NATS | Engine → WS clients | Full project event fan-out (wildcard). Best-effort — missing events on crash is acceptable for real-time UI. |
 

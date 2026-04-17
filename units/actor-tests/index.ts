@@ -209,6 +209,43 @@ async function deleteActor(
 }
 
 // ---------------------------------------------------------------------------
+// Workflow trigger helpers (for callActorDurable cross-unit tests)
+// ---------------------------------------------------------------------------
+
+function wfUrl(baseUrl: string, slug: string, projectId = PROJECT_ID): string {
+  return `${baseUrl}/api/v1/trigger/wf/${projectId}/test/actor-tests/${slug}`;
+}
+
+async function startWorkflow(
+  baseUrl: string,
+  slug: string,
+  input?: any,
+): Promise<{ instanceId: string; base: string }> {
+  const resp = await httpPostFull(wfUrl(baseUrl, slug), input ?? {});
+  if (resp.status !== 200 || !resp.body?.instanceId)
+    throw new Error(`start workflow '${slug}' failed: ${resp.status} ${JSON.stringify(resp.body)}`);
+  const base = `${wfUrl(baseUrl, slug)}/${resp.body.instanceId as string}`;
+  return { instanceId: resp.body.instanceId as string, base };
+}
+
+async function pollWorkflowStatus(
+  base: string,
+  target: string,
+  maxMs = 20000,
+): Promise<any> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const r = await httpGetFull(`${base}/status`);
+    const st: string | undefined = r.body?.meta?.status;
+    if (st === target) return r.body;
+    if (st === "failed" || (st === "cancelled" && target !== "cancelled"))
+      throw new Error(`workflow reached '${st}' instead of '${target}'`);
+    await sleep(200);
+  }
+  throw new Error(`workflow did not reach '${target}' within ${maxMs}ms`);
+}
+
+// ---------------------------------------------------------------------------
 // JSON path helper
 // ---------------------------------------------------------------------------
 
@@ -1263,6 +1300,24 @@ function allInlineTests(): ActorInlineTestDef[] {
       skip: "secrets API not yet implemented",
       run: async (_baseUrl) => {},
     },
+    {
+      name: "workflow-calls-actor-durable",
+      category: "sdk-interface",
+      run: async (baseUrl) => {
+        const actorId = `durable-basic-${uid()}`;
+        await deleteActor(baseUrl, "call-actor-durable-target", actorId);
+        const { base } = await startWorkflow(baseUrl, "call-actor-durable-basic", { actorId, value: 77 });
+        await pollWorkflowStatus(base, "completed");
+        const res = await httpGetFull(`${base}/result`);
+        if (res.body?.result?.ok !== true)
+          throw new Error(`expected ok=true, got ${JSON.stringify(res.body?.result)}`);
+        if (res.body?.result?.value !== 77)
+          throw new Error(`expected value=77, got ${JSON.stringify(res.body?.result?.value)}`);
+        const state = await getState(baseUrl, "call-actor-durable-target", actorId);
+        if (state?.state?.value !== 77)
+          throw new Error(`actor state not updated: ${JSON.stringify(state?.state)}`);
+      },
+    },
 
     // ---- cross-unit (6) ----
     {
@@ -1354,6 +1409,42 @@ function allInlineTests(): ActorInlineTestDef[] {
         const state = await getState(baseUrl, "call-actor-unknown-handler-target", actorId);
         if ((state?.state?.touched ?? false) === true)
           throw new Error(`state was mutated by invalid handler call`);
+      },
+    },
+    {
+      name: "call-actor-durable-suspends-caller",
+      category: "cross-unit",
+      run: async (baseUrl) => {
+        const actorId = `durable-suspend-${uid()}`;
+        await deleteActor(baseUrl, "call-actor-durable-target", actorId);
+        const { base } = await startWorkflow(baseUrl, "call-actor-durable-basic", { actorId, value: 55 });
+        let sawSuspendedOrCompleted = false;
+        for (let i = 0; i < 40; i++) {
+          await sleep(150);
+          const r = await httpGetFull(`${base}/status`);
+          const st: string | undefined = r.body?.meta?.status;
+          if (st === "suspended" || st === "completed") { sawSuspendedOrCompleted = true; break; }
+          if (st === "failed") throw new Error(`workflow failed unexpectedly`);
+        }
+        if (!sawSuspendedOrCompleted)
+          throw new Error(`workflow never entered suspended or completed state`);
+        await pollWorkflowStatus(base, "completed");
+        const state = await getState(baseUrl, "call-actor-durable-target", actorId);
+        if (state?.state?.value !== 55)
+          throw new Error(`actor state not updated after durable call: ${JSON.stringify(state?.state)}`);
+      },
+    },
+    {
+      name: "call-actor-durable-unknown-handler",
+      category: "cross-unit",
+      run: async (baseUrl) => {
+        const actorId = `durable-unk-${uid()}`;
+        await deleteActor(baseUrl, "call-actor-durable-target", actorId);
+        const { base } = await startWorkflow(baseUrl, "call-actor-durable-unknown-handler", { actorId });
+        await pollWorkflowStatus(base, "completed");
+        const res = await httpGetFull(`${base}/result`);
+        if (res.body?.result?.caught !== true)
+          throw new Error(`expected caught=true for unknown durable handler, got ${JSON.stringify(res.body?.result)}`);
       },
     },
 
@@ -1502,6 +1593,105 @@ function allEndpointTests(): ActorInlineTestDef[] {
         const state = await getState(baseUrl, "state-mutation", id);
         if (state?.state?.count !== N)
           throw new Error(`expected count=${N} after ${N} concurrent calls, got ${JSON.stringify(state?.state?.count)}`);
+      },
+    },
+
+    // ---- extra endpoint gap coverage ----
+    {
+      name: "delete-nonexistent-actor",
+      category: "endpoints",
+      run: async (baseUrl) => {
+        const id = `ep-del-nonexist-${uid()}`;
+        const resp = await deleteActor(baseUrl, "state-init", id);
+        if (resp.status !== 200 && resp.status !== 404)
+          throw new Error(`DELETE nonexistent: expected 200 or 404, got ${resp.status}`);
+        if (resp.status === 200 && typeof resp.body?.deleted !== "boolean")
+          throw new Error(`DELETE 200 response missing 'deleted' field: ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "passivate-nonexistent-actor",
+      category: "endpoints",
+      run: async (baseUrl) => {
+        const id = `ep-pass-nonexist-${uid()}`;
+        const resp = await passivate(baseUrl, "state-init", id);
+        if (resp.status !== 200 && resp.status !== 404)
+          throw new Error(`passivate nonexistent: expected 200 or 404, got ${resp.status}`);
+        if (resp.status === 200 && typeof resp.body?.passivated !== "boolean")
+          throw new Error(`passivate 200 missing 'passivated' field: ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "await-false-then-state-persists",
+      category: "endpoints",
+      run: async (baseUrl) => {
+        const id = `ep-faf-persist-${uid()}`;
+        await deleteActor(baseUrl, "state-mutation", id);
+        const resp = await callActorFull(baseUrl, "state-mutation", id, "increment", {}, { awaitResult: false });
+        if (resp.status !== 200)
+          throw new Error(`fire-and-forget returned ${resp.status}`);
+        if (resp.body?.delivered !== true)
+          throw new Error(`expected {delivered:true} for await=false, got ${JSON.stringify(resp.body)}`);
+        for (let i = 0; i < 20; i++) {
+          await sleep(200);
+          const st = await getState(baseUrl, "state-mutation", id);
+          if ((st?.state?.count ?? 0) >= 1) return;
+        }
+        throw new Error(`async actor state mutation did not persist within 4s`);
+      },
+    },
+    {
+      name: "invalid-handler-name-chars-400",
+      category: "endpoints",
+      run: async (baseUrl) => {
+        const id = `ep-badhandler-${uid()}`;
+        const url = actorUrl(baseUrl, "state-init", id, "get-state!");
+        const resp = await httpPostFull(`${url}?await=true`, {});
+        if (resp.status !== 400)
+          throw new Error(`expected 400 for handler with invalid chars, got ${resp.status}`);
+      },
+    },
+    {
+      name: "invalid-project-id-400",
+      category: "endpoints",
+      run: async (baseUrl) => {
+        const url = `${baseUrl}/api/v1/trigger/actor/not-a-uuid/test/actor-tests/state-init/some-id/getState?await=true`;
+        const resp = await httpPostFull(url, {});
+        if (resp.status !== 400 && resp.status !== 404)
+          throw new Error(`expected 400 or 404 for invalid project_id, got ${resp.status}`);
+      },
+    },
+    {
+      name: "state-after-passivate-persists",
+      category: "endpoints",
+      run: async (baseUrl) => {
+        const id = `ep-passivate-state-${uid()}`;
+        await deleteActor(baseUrl, "state-mutation", id);
+        await callActor(baseUrl, "state-mutation", id, "increment");
+        const stateBefore = await getState(baseUrl, "state-mutation", id);
+        const passResp = await passivate(baseUrl, "state-mutation", id);
+        if (passResp.status !== 200) throw new Error(`passivate returned ${passResp.status}`);
+        const stateAfter = await getState(baseUrl, "state-mutation", id);
+        if ((stateAfter?.state?.count ?? -1) !== (stateBefore?.state?.count ?? -2))
+          throw new Error(`state changed after passivate: before=${JSON.stringify(stateBefore?.state)} after=${JSON.stringify(stateAfter?.state)}`);
+        if (stateAfter?.version !== stateBefore?.version)
+          throw new Error(`version changed after passivate: before=${stateBefore?.version} after=${stateAfter?.version}`);
+      },
+    },
+    {
+      name: "payload-too-large-413",
+      category: "endpoints",
+      run: async (baseUrl) => {
+        const id = `ep-payload-large-${uid()}`;
+        const largeBody = "x".repeat(33 * 1024 * 1024);
+        const url = `${actorUrl(baseUrl, "state-init", id, "getState")}?await=true`;
+        const resp = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ data: largeBody }),
+        });
+        if (resp.status !== 413)
+          throw new Error(`expected 413 for oversized payload, got ${resp.status}`);
       },
     },
   ];

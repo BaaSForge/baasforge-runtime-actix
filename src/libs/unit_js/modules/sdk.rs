@@ -505,7 +505,6 @@ fn host_start_actor_call(
     use crate::services::actor_engine::publish_actor_message;
 
     let res: Result<(), String> = with_host_ctx(|hctx| {
-        let wf_redis = hctx.redis.clone();
         let project_id = hctx.project_id.clone();
         let caller_instance_id = hctx.instance_id.clone();
 
@@ -517,17 +516,6 @@ fn host_start_actor_call(
         let reply_subject = format!("wf.promise.{project_id}.{caller_instance_id}.{promise_name}");
 
         block_async(async move {
-            let promise_key = format!("wf:{project_id}:{caller_instance_id}:promise:{promise_name}");
-            {
-                let mut conn = wf_redis.lock().await;
-                redis::cmd("SET")
-                    .arg(&promise_key)
-                    .arg(serde_json::json!({ "status": "pending" }).to_string())
-                    .query_async::<()>(&mut *conn)
-                    .await
-                    .map_err(|e| format!("redis SET promise failed: {e}"))?;
-            }
-
             publish_actor_message(&actor_js, &project_id, &unit_path, &actor_id, &handler, &payload_json, Some(&reply_subject))
                 .await
                 .map_err(|e| format!("__baal_start_actor_call: publish failed: {e}"))?;

@@ -1308,7 +1308,95 @@ function allInlineTests(): WorkerInlineTestDef[] {
           throw new Error(`expected cancelled after concurrent cancel, got "${String(st)}"`);
       },
     },
+    {
+      name: "concurrent-status-and-cancel-same-run",
+      category: "endpoint_concurrent",
+      run: async (baseUrl) => {
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 8_000 });
+        if (!enqueued) throw new Error("enqueue failed");
+        await sleep(100);
+        const [cancelResp, ...statusResps] = await Promise.all([
+          httpPostFull(workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel")),
+          ...Array.from({ length: 3 }, () =>
+            httpGetFull(workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "status")),
+          ),
+        ]);
+        if (cancelResp.status === 500)
+          throw new Error(`cancel returned 500 under concurrent status polls`);
+        for (const sr of statusResps) {
+          if (sr.status === 500)
+            throw new Error(`status returned 500 during concurrent cancel`);
+        }
+        const finalStatus = await httpGetFull(
+          workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "status"),
+        );
+        const finalSt = (finalStatus.body?.status ?? (finalStatus.body?.meta as Record<string, unknown>)?.["status"]) as string | undefined;
+        const terminalStates = new Set(["cancelled", "completed", "dead_letter"]);
+        if (!terminalSt(finalSt, terminalStates))
+          throw new Error(`expected terminal state, got "${String(finalSt)}"`);
+      },
+    },
+
+    // ---- endpoint gap coverage ----
+    {
+      name: "enqueue-invalid-project-id-400",
+      category: "endpoint",
+      run: async (baseUrl) => {
+        const url = `${baseUrl}/api/v1/trigger/workerQueue/not-a-uuid/test/queue-worker/echo-worker`;
+        const resp = await httpPostFull(url, {});
+        if (resp.status !== 400 && resp.status !== 404)
+          throw new Error(`expected 400 or 404 for invalid project_id, got ${resp.status}`);
+      },
+    },
+    {
+      name: "enqueue-wrong-tail-segments-404",
+      category: "endpoint",
+      run: async (baseUrl) => {
+        const url = `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/only-one-segment`;
+        const resp = await httpPostFull(url, {});
+        if (resp.status !== 400 && resp.status !== 404)
+          throw new Error(`expected 400 or 404 for wrong tail segments, got ${resp.status}`);
+      },
+    },
+    {
+      name: "status-response-shape-dead-letter",
+      category: "endpoint",
+      run: async (baseUrl) => {
+        const enqueued = await enqueue(baseUrl, "always-fail-worker", {});
+        if (!enqueued) throw new Error("enqueue failed");
+        await pollWorker(baseUrl, "always-fail-worker", enqueued.runId, 300);
+        const resp = await httpGetFull(
+          workerRunUrl(baseUrl, "always-fail-worker", enqueued.runId, "status"),
+        );
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        const body = resp.body as Record<string, unknown>;
+        const status = (body["status"] ?? (body["meta"] as Record<string, unknown>)?.["status"]) as string | undefined;
+        if (status !== "dead_letter")
+          throw new Error(`expected status "dead_letter", got "${String(status)}"`);
+        const attempt = (body["attempt"] ?? (body["meta"] as Record<string, unknown>)?.["attempt"]) as number | undefined;
+        if (typeof attempt !== "number")
+          throw new Error(`attempt field missing or not a number in dead_letter status: ${JSON.stringify(body)}`);
+      },
+    },
+    {
+      name: "cancel-wrong-worker-slug-mismatch",
+      category: "endpoint_cancel",
+      run: async (baseUrl) => {
+        const enqueued = await enqueue(baseUrl, "slow-worker", { sleepMs: 10_000 });
+        if (!enqueued) throw new Error("enqueue failed");
+        const url = `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/queue-worker/echo-worker/${enqueued.runId}/cancel`;
+        const resp = await httpPostFull(url);
+        if (resp.status === 500)
+          throw new Error(`slug mismatch cancel returned 500 (should be 404 or error)`);
+        await httpPostFull(workerRunUrl(baseUrl, "slow-worker", enqueued.runId, "cancel"));
+      },
+    },
   ];
+}
+
+function terminalSt(st: string | undefined, set: Set<string>): boolean {
+  return st !== undefined && set.has(st);
 }
 
 // ---------------------------------------------------------------------------

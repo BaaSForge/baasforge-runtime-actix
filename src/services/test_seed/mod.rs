@@ -31,6 +31,9 @@ pub(crate) const TEST_ALT_RUNTIME_ID: &str = "00000000-aaaa-bbbb-cccc-0000000000
 pub(crate) const TEST_ALT_RELEASE_ID: &str = "00000000-aaaa-bbbb-cccc-000000000031";
 pub(crate) const TEST_ALT_CHAT_SESSION_ID: &str = "00000000-aaaa-bbbb-cccc-000000000041";
 
+pub(crate) const TEST_STAGE_RUNTIME_ID: &str = "00000000-aaaa-bbbb-cccc-000000000022";
+pub(crate) const TEST_STAGE_RELEASE_ID: &str = "00000000-aaaa-bbbb-cccc-000000000032";
+
 pub(crate) struct UnitSpec {
     pub context_slug: String,
     pub module_slug: String,
@@ -279,6 +282,28 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .bind::<Text, _>(TEST_ALT_RELEASE_ID)
     .execute(&mut conn)
     .expect("test_seed: insert alt runtime");
+
+    sql_query(
+        "INSERT INTO project_releases (id, project_id, units_metadata, created_at, is_stage, revision) \
+         VALUES ($1::uuid, $2::uuid, $3::jsonb, NOW(), true, 1.0) \
+         ON CONFLICT (id) DO UPDATE SET units_metadata = EXCLUDED.units_metadata",
+    )
+    .bind::<Text, _>(TEST_STAGE_RELEASE_ID)
+    .bind::<Text, _>(TEST_PROJECT_ID)
+    .bind::<Text, _>(units_metadata.to_string())
+    .execute(&mut conn)
+    .expect("test_seed: insert stage release");
+
+    sql_query(
+        "INSERT INTO project_runtimes (id, project_id, environment, name, slug, live_release_id) \
+         VALUES ($1::uuid, $2::uuid, 'prod'::platform_environment_type, 'stage', 'stage', $3::uuid) \
+         ON CONFLICT (id) DO UPDATE SET live_release_id = EXCLUDED.live_release_id",
+    )
+    .bind::<Text, _>(TEST_STAGE_RUNTIME_ID)
+    .bind::<Text, _>(TEST_PROJECT_ID)
+    .bind::<Text, _>(TEST_STAGE_RELEASE_ID)
+    .execute(&mut conn)
+    .expect("test_seed: insert stage runtime");
 
     for spec in &all_units {
         let path = unit_path_from_full_id(&spec.full_id);

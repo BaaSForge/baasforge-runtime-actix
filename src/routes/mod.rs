@@ -311,6 +311,9 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let actor_nc = actor_nats_client.clone();
             let p = pool.clone();
             let rc = redis_conn.clone();
+            let wf_redis_for_actor = wf_redis.clone();
+            let wf_nats_for_actor = wf_nats_client.clone();
+            let wf_js_for_actor = wf_jetstream.clone();
             let stream_name = settings
                 .actor_nats_jetstream_stream
                 .clone()
@@ -324,7 +327,9 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             tokio::spawn(async move {
                 if let Err(e) =
                     crate::services::actor_worker::runner::run_actor_consumer(
-                        ar, actor_js, actor_nc, p, rc, &stream_name, &consumer_name, locks,
+                        ar, actor_js, actor_nc, p, rc,
+                        wf_redis_for_actor, wf_nats_for_actor, wf_js_for_actor,
+                        &stream_name, &consumer_name, locks,
                     )
                     .await
                 {
@@ -340,7 +345,6 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let locks2 = actor_locks.clone();
             tracing::info!("[test_mode] starting inline actor alarm sweeper");
             tokio::spawn(async move {
-                use std::collections::HashMap;
                 use std::sync::Arc;
                 let comm = Arc::new(crate::libs::unit_js::modules::sdk::SdkCommCtx {
                     pool: p2,
@@ -442,7 +446,6 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             )
             .service(
                 web::scope("/api/v1/trigger/actor")
-                    .app_data(web::PayloadConfig::default().limit(32 * 1024 * 1024))
                     .route(
                         "/{project_id}/{tail:.*}",
                         web::post().to(actor::handle_actor_post),

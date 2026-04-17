@@ -260,6 +260,28 @@ sdk.callActor(unitPath: string, actorId: string, handler: string, payload?: unkn
 }): Promise<Result>;
 ```
 
+### `sdk.callActorDurable()` — invoke a handler from a workflow with durable suspension
+
+Available **only inside a workflow `run` handler**. Unlike `sdk.callActor`, which uses a synchronous request-reply on Actor NATS, `callActorDurable` suspends the workflow via a durable promise so no thread is held during the wait. The workflow resumes automatically when the actor handler completes.
+
+```typescript
+const result = await sdk.callActorDurable(
+  "ecom.cart.actor.shopping-cart",
+  "cart-42",
+  "checkout",
+  undefined,
+);
+```
+
+Protocol:
+1. Workflow runtime calls `__baal_start_actor_call(unitPath, actorId, handler, payload, promiseName)`.
+2. Rust host writes `wf:{pid}:{iid}:promise:{promiseName} = {status:"pending"}` to WF Redis, then JetStream-publishes the actor message to `ACTOR_MAIL` with `replyTo = "wf.promise.{pid}.{iid}.{promiseName}"` embedded in the payload.
+3. Workflow suspends (returns `Promise<never>`) — no thread held.
+4. Actor worker pulls the message from `ACTOR_MAIL`, runs the handler, then calls `workflow_engine::resolve_promise` (on success) or `reject_caller_promise` (on failure). Both functions write the outcome to WF Redis (`SET NX`) and JetStream-publish `wf.{pid}.{iid}.wake`.  The mailbox message is acked only after the Redis write succeeds; on failure it is left un-acked so JetStream redelivers it.
+5. The existing `run_wake_consumer` (same consumer used by sleep, callWorkflow, and all other suspensions) picks up the wake message, drives the caller workflow, which reads the promise result from WF Redis on replay.
+
+Error semantics: `UnknownHandler` and `TerminalError` outcomes from the actor worker call `reject_caller_promise`, causing the workflow's `await sdk.callActorDurable(…)` to throw. Retriable errors are retried by the actor worker (JetStream redelivery); only terminal failures propagate to the caller workflow.
+
 ### `ctx` object (inside a handler)
 
 | Property | Type | Description |
@@ -435,9 +457,15 @@ handlers: {
 }
 ```
 
-Calling actors from workflows should be wrapped in `ctx.run` for durability:
+Calling actors from workflows: use `sdk.callActorDurable` (preferred) for fully durable suspension with no thread held, or wrap `sdk.callActor` in `ctx.run` for step-level durability:
 
 ```typescript
+// preferred — workflow suspends durably until the actor handler returns
+const order = await sdk.callActorDurable(
+  "ecom.cart.actor.shopping-cart", userId, "checkout", undefined,
+);
+
+// alternative — still correct but ties up the actor-NATS request-reply window
 await ctx.run("add-to-cart", () =>
   sdk.callActor("ecom.cart.actor.shopping-cart", userId, "addItem", item)
 );

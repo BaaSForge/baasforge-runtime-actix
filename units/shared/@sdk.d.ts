@@ -19,6 +19,18 @@ declare module "@sdk" {
       payload?: any,
       opts?: CallActorOptions,
     ): Promise<TResult>;
+
+    /**
+     * Durable actor call (workflow-only). Suspends the workflow via a durable
+     * promise until the actor handler completes, then resumes with the result.
+     * Only available inside a workflow `run` handler; patched by workflow-runtime.js.
+     */
+    callActorDurable<TResult = any>(
+      unitPath: string,
+      actorId: string,
+      handler: string,
+      payload?: any,
+    ): Promise<TResult>;
   };
 
   // ---------------------------------------------------------------------------

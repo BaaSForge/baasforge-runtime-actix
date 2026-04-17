@@ -405,7 +405,7 @@ async fn resolve_caller_promise(
 }
 
 /// Reject the caller workflow's durable promise after a callee fails.
-async fn reject_caller_promise(
+pub(crate) async fn reject_caller_promise(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
     js: &Option<jetstream::Context>,

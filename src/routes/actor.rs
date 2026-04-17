@@ -10,6 +10,8 @@ use crate::services::actor_worker::manager::{
 };
 use crate::libs::unit_js::actor_runner::ActorKind;
 use actix_web::{web, HttpResponse};
+use bytes::BytesMut;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -130,7 +132,7 @@ fn is_valid_handler_name(s: &str) -> bool {
 pub async fn handle_actor_post(
     ctx: web::Data<AppContext>,
     path: web::Path<(Uuid, String)>,
-    body: web::Bytes,
+    mut payload: web::Payload,
     query: web::Query<ActorQuery>,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
@@ -151,6 +153,36 @@ pub async fn handle_actor_post(
     let actor_redis = match require_actor_redis(&ctx) {
         Ok(r) => r,
         Err(resp) => return resp,
+    };
+
+    const MAX_BODY: usize = 32 * 1024 * 1024;
+
+    let body = {
+        let mut buf = BytesMut::new();
+        let mut overflow = false;
+        while let Some(chunk) = payload.next().await {
+            match chunk {
+                Ok(c) => {
+                    if overflow {
+                        continue;
+                    }
+                    buf.extend_from_slice(&c);
+                    if buf.len() > MAX_BODY {
+                        overflow = true;
+                        buf.clear();
+                    }
+                }
+                Err(_) => {
+                    return HttpResponse::BadRequest()
+                        .json(api_error("request read error", json!({})));
+                }
+            }
+        }
+        if overflow {
+            return HttpResponse::PayloadTooLarge()
+                .json(api_error("payload too large", json!({})));
+        }
+        buf.freeze()
     };
 
     let project_id_str = project_id.to_string();

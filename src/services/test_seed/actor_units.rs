@@ -6,7 +6,9 @@ fn unit_type_for_stem(stem: &str) -> &'static str {
     match stem {
         "call-actor-from-api" => "api",
         "call-actor-from-workflow" | "call-actor-from-queue-worker" | "echo-target" => "queue_worker",
-        "double-n" => "workflow",
+        "double-n"
+        | "call-actor-durable-basic"
+        | "call-actor-durable-unknown-handler" => "workflow",
         _ => "actor",
     }
 }

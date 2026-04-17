@@ -71,6 +71,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("[nats_actor] connected for actor mailbox consumer");
     let actor_js = Some(async_nats::jetstream::new(actor_nats.clone()));
 
+    let wf_redis_url = settings
+        .wf_redis_url
+        .as_deref()
+        .or(settings.actor_redis_url.as_deref())
+        .or(settings.wq_redis_url.as_deref());
+    let wf_nats_url = settings
+        .wf_nats_url
+        .as_deref()
+        .or(settings.actor_nats_url.as_deref())
+        .or(settings.wq_nats_url.as_deref());
+
+    let wf_redis = if let Some(url) = wf_redis_url {
+        match redis::Client::open(url) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    info!("[wf_redis] workflow Redis connected");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    warn!(error = %e, "[wf_redis] connection failed; callActorDurable replies disabled");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "[wf_redis] client open failed; callActorDurable replies disabled");
+                None
+            }
+        }
+    } else {
+        warn!("[wf_redis] WF_REDIS_URL not set; callActorDurable replies disabled");
+        None
+    };
+
+    let (wf_nats, wf_js) = if let Some(url) = wf_nats_url {
+        match baal_runtime_actix::configs::connect_nats(url).await {
+            Ok(client) => {
+                info!("[nats_wf] workflow NATS connected for actor reply wakes");
+                let js = async_nats::jetstream::new(client.clone());
+                (Some(client), Some(js))
+            }
+            Err(e) => {
+                warn!(error = %e, "[nats_wf] connection failed; callActorDurable replies disabled");
+                (None, None)
+            }
+        }
+    } else {
+        warn!("[nats_wf] WF_NATS_URL not set; callActorDurable replies disabled");
+        (None, None)
+    };
+
     let stream_name = settings
         .actor_nats_jetstream_stream
         .as_deref()
@@ -111,6 +161,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Some(actor_nats),
             pool,
             redis_conn,
+            wf_redis,
+            wf_nats,
+            wf_js,
             &stream_name,
             &consumer_name,
             locks,
