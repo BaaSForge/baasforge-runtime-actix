@@ -113,43 +113,17 @@ WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
 node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" > "$WS_OUTPUT"
 
 # ------------------------------------------------------------------
-# 5. Merge both reports into .output.log
+# 5. Merge queue-worker report + WebSocket report → .output.log
 # ------------------------------------------------------------------
 echo "==> Merging reports…"
-if command -v jq &>/dev/null; then
-  jq -s '
-    .[0] as $qw | .[1] as $ws |
-    {
-      summary: {
-        healthy:        ($qw.summary.healthy and $ws.summary.healthy),
-        total_tests:    ($qw.summary.total_tests    + $ws.summary.total_tests),
-        total_passed:   ($qw.summary.total_passed   + $ws.summary.total_passed),
-        total_failed:   ($qw.summary.total_failed   + $ws.summary.total_failed),
-        total_skipped:  (($qw.summary.total_skipped // 0) + ($ws.summary.total_skipped // 0)),
-        sections:       ($qw.summary.sections * $ws.summary.sections)
-      },
-      sections: ($qw.sections * $ws.sections),
-      tests:    ($qw.tests    + $ws.tests)
-    }
-  ' "$QW_OUTPUT" "$WS_OUTPUT" > "$OUTPUT_FILE"
-  rm -f "$QW_OUTPUT" "$WS_OUTPUT"
-else
-  echo "[" > "$OUTPUT_FILE"
-  cat "$QW_OUTPUT" >> "$OUTPUT_FILE"
-  echo "," >> "$OUTPUT_FILE"
-  cat "$WS_OUTPUT" >> "$OUTPUT_FILE"
-  echo "]" >> "$OUTPUT_FILE"
-  rm -f "$QW_OUTPUT" "$WS_OUTPUT"
-fi
+echo "    (queue worker) $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$QW_OUTPUT" | tr -d '\n')"
+echo "    (WebSocket)    $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$WS_OUTPUT" | tr -d '\n')"
+node "$PROJECT_ROOT/units/merge-test-reports.mjs" "$QW_OUTPUT" "$WS_OUTPUT" "$OUTPUT_FILE"
+rm -f "$QW_OUTPUT" "$WS_OUTPUT"
 
 echo "==> Done. Output written to:"
 echo "    $OUTPUT_FILE"
 echo ""
 
-if command -v jq &>/dev/null; then
-  PASSED=$(jq -r '.summary.total_passed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  TOTAL=$(jq -r '.summary.total_tests'    "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  FAILED=$(jq -r '.summary.total_failed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  SKIPPED=$(jq -r '.summary.total_skipped // 0' "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  echo "==> ${PASSED}/${TOTAL} passed, ${FAILED} failed, ${SKIPPED} skipped"
-fi
+SUMMARY=$(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$OUTPUT_FILE" | tr -d '\n')
+echo "==> Combined: ${SUMMARY} [queue worker + WebSocket]"

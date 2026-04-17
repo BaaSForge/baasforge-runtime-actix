@@ -700,8 +700,8 @@ async function main() {
 
   for (const [label, results] of Object.entries(sectionResults)) {
     const skipped = results.filter((r) => r.skipped).length;
-    const passed = results.filter((r) => r.pass).length;
-    const failed = results.filter((r) => !r.pass).length;
+    const passed = results.filter((r) => r.pass).length - skipped;
+    const failed = results.length - passed - skipped;
     const total = results.length;
     summaryBySection[label] = { pass: failed === 0, passed, failed, skipped, total };
     detailsBySection[label] = {
@@ -716,8 +716,8 @@ async function main() {
   }
 
   const totalSkipped = allResults.filter((r) => r.skipped).length;
-  const totalPassed = allResults.filter((r) => r.pass).length;
-  const totalFailed = allResults.filter((r) => !r.pass).length;
+  const totalPassed = allResults.filter((r) => r.pass).length - totalSkipped;
+  const totalFailed = allResults.length - totalPassed - totalSkipped;
   const totalTests = allResults.length;
   const healthy = totalFailed === 0;
 
