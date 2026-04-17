@@ -1,3 +1,7 @@
+// RULES: thin proxy to Rust host functions. Never fetch() internal routes;
+// never re-implement sdk.* helpers that belong in runtime-shared.js.
+// See src/libs/unit_js/README.md.
+
 var TerminalError = (function () {
   function TerminalError(message, options) {
     Error.call(this, message);

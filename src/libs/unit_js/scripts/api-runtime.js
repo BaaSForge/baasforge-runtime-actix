@@ -1,3 +1,7 @@
+// RULES: thin proxy to Rust host functions. Never fetch() internal routes
+// to reach platform primitives; use __baal_* host functions instead.
+// See src/libs/unit_js/README.md.
+
 function __buildReq(snap) {
   var headers = Object.create(null);
   var rawHeaders = [];

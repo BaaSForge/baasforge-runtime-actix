@@ -1,0 +1,51 @@
+---
+description: Rules for JS injected into QuickJS unit runtimes (sdk.*, runtime-shared.js, per-unit-type scripts)
+globs: src/libs/unit_js/**/*,units/shared/@sdk.d.ts
+alwaysApply: false
+---
+
+# QuickJS-injected JS: SDK must proxy to Rust, not HTTP
+
+When editing anything under `src/libs/unit_js/scripts/` or adding a new `sdk.*` method, follow these rules. Full rationale and review checklist: [src/libs/unit_js/README.md](mdc:src/libs/unit_js/README.md).
+
+## Hard rules
+
+1. **No `fetch()` from injected SDK helpers to internal routes.** Routes like `POST /api/v1/trigger/actor/...`, `POST /api/v1/trigger/workerQueue/...`, `POST /api/v1/trigger/wf/...` are for **external** callers. Units run in-process; they must call Rust host functions (`__baal_*`) defined in `src/libs/unit_js/modules/sdk.rs`. The global `fetch()` in user code (for arbitrary external HTTP) is unaffected.
+2. **Injected JS is a thin proxy.** Allowed: input validation, `JSON.stringify` / `JSON.parse`, error translation, calling one `__baal_*` host fn. Forbidden: network I/O, Redis/NATS/SQL semantics, retry/backoff/timeout loops (host owns them), background tasks, per-unit-type globals like `__baal_*_base_url` / `__baal_*_project_id`.
+3. **Shared `sdk.*` helpers live only in `scripts/runtime-shared.js`.** `sdk.callActor`, `sdk.enqueueWorker`, `sdk.callWorkflow`, etc., must not be copied into `actor-runtime.js`, `queue-worker-runtime.js`, or `api-runtime.js`. Per-unit-type scripts may **override** an `sdk.*` helper when semantics differ (e.g. `workflow-runtime.js` overrides `sdk.callWorkflow` to suspend on a durable promise via `__baal_start_call`), but overrides are still thin proxies to host functions.
+4. **Need new functionality? Add a host function first.** Any new capability that needs Redis/NATS/JetStream/DbPool/locks access must be a new `__baal_*` function in `modules/sdk.rs` that reads handles from `SdkCommCtx`. The JS side is at most ~5 lines of validation + `__baal_*` call + error translation. Add a matching type to `units/shared/@sdk.d.ts`.
+
+## Review checklist for PRs touching `src/libs/unit_js/scripts/`
+
+- [ ] No `fetch("http...")` targeting `/api/v1/...` or `localhost:PORT`.
+- [ ] No Redis/NATS/SQL concepts in JS.
+- [ ] No duplicated helpers across scripts.
+- [ ] New helper has matching `__baal_*` host fn and `@sdk.d.ts` entry.
+- [ ] New JS is ≤ ~30 lines; otherwise the work belongs in Rust.
+
+## Examples
+
+Wrong:
+
+```js
+sdk.callActor = async function (unitPath, actorId, handler, payload) {
+  var url = baseUrl + "/api/v1/trigger/actor/" + projectId + "/" + ...;
+  var resp = await fetch(url, { method: "POST", body: JSON.stringify(payload) });
+  return await resp.json();
+};
+```
+
+Right:
+
+```js
+sdk.callActor = function (unitPath, actorId, handler, payload, opts) {
+  var parts = unitPath.split(".");
+  if (parts.length < 4) throw new Error("sdk.callActor: invalid unitPath");
+  var raw = __baal_call_actor_sync(
+    unitPath, actorId, handler,
+    JSON.stringify(payload == null ? {} : payload),
+    !!(opts && opts.awaitResult)
+  );
+  return raw ? JSON.parse(raw) : undefined;
+};
+```

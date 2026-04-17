@@ -1,3 +1,8 @@
+// RULES: this file is injected into every QuickJS unit runtime.
+// It must stay a thin proxy over Rust `__baal_*` host functions.
+// No fetch() to internal trigger routes, no Redis/NATS logic, no duplication.
+// See src/libs/unit_js/README.md.
+
 // --- node:querystring ---
 
 function parseQuerystring(str, sep, eq) {

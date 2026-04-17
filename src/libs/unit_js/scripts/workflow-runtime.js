@@ -1,3 +1,8 @@
+// RULES: thin proxy to Rust host functions. Overrides of sdk.* helpers in
+// this file must still delegate to __baal_* host fns (e.g. __baal_start_call).
+// No fetch() to internal routes; no duplicated persistence logic.
+// See src/libs/unit_js/README.md.
+
 // Sentinel thrown to unwind the JS call stack when a workflow must suspend
 // (sleep timer not yet elapsed, promise not yet resolved).
 var __SuspendExecution = (function () {

@@ -34,3 +34,11 @@ All database tables MUST use UUID version 7 as the primary key (`id` field).
 All new entity IDs must be created with **`crate::libs::ids::new_uuid()`** (uuidv7). Do **not** use the `uuid` crate to create IDs (e.g. no `Uuid::new_v4()`, `Uuid::now_v7()`, etc.).
 
 **Enforcing lint:** The project config runs the compiler through Clippy (`rustc-wrapper = "clippy-driver"`), so **`cargo build`** runs both normal compile and Clippy rules. You need Clippy installed: `rustup component add clippy`. If a build script fails (e.g. version detection), use `CARGO_BUILD_RUSTC_WRAPPER= cargo build` to build without the wrapper. **CI** also runs Clippy on every push/PR.
+
+### QuickJS-injected SDK: must use Rust host bridges, not HTTP
+
+Compiled user units run in-process inside QuickJS. The JS injected into every runtime (files under `src/libs/unit_js/scripts/`) must be a **thin proxy** over `__baal_*` Rust host functions — it must **never** call platform-internal routes like `/api/v1/trigger/actor/...`, `/api/v1/trigger/workerQueue/...`, `/api/v1/trigger/wf/...` via `fetch()`. Those routes are for external callers only.
+
+Shared `sdk.*` helpers (e.g. `sdk.callActor`, `sdk.enqueueWorker`, `sdk.callWorkflow`) live in `scripts/runtime-shared.js` **once**; per-unit-type scripts may override them but must not re-implement them.
+
+Full rules, review checklist, and "where to put new work" table: [`src/libs/unit_js/README.md`](src/libs/unit_js/README.md).
