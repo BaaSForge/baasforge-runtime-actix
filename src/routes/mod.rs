@@ -315,10 +315,6 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             .service(
                 web::scope("/api/v1/trigger/workerQueue")
                     .route(
-                        "/{project_id}/sdk/emit",
-                        web::post().to(queue_worker::handle_sdk_emit),
-                    )
-                    .route(
                         "/{project_id}/{tail:.*}",
                         web::post().to(queue_worker::handle_queue_worker_post),
                     )

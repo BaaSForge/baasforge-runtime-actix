@@ -1107,31 +1107,6 @@ function allTests(): TestDef[] {
         { type: "contains", path: "errorMessage", substr: "callee-failed-after-steps" },
       ],
     },
-    {
-      name: "sdk-emit-basic", category: "integration",
-      workflowSlug: "sdk-emit-basic",
-      input: {},
-      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
-      replay: false, dedup: false,
-      skip: "sdk.emit not yet implemented",
-      checks: [
-        { type: "notNull", path: "eventId" },
-        { type: "eq", path: "emitted", expected: true },
-      ],
-    },
-    {
-      name: "sdk-emit-in-ctx-run", category: "integration",
-      workflowSlug: "sdk-emit-in-ctx-run",
-      input: {},
-      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
-      replay: false, dedup: false,
-      skip: "sdk.emit not yet implemented",
-      checks: [
-        { type: "notNull", path: "eventId" },
-        { type: "eq", path: "idempotent", expected: true },
-      ],
-    },
-
     // ---- isolation (1) ----
     {
       name: "cross-project-steps", category: "isolation",

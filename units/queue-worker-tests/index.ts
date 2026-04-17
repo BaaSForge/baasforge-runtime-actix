@@ -602,16 +602,6 @@ function allWorkerTests(): WorkerTestDef[] {
         { type: "true", path: "workerDone" },
       ],
     },
-    {
-      name: "worker-emits-event", category: "cross-unit",
-      workerSlug: "worker-emits-event",
-      data: { eventName: "test.worker.event", payload: { ok: true } },
-      checks: [
-        { type: "notNull", path: "eventId" },
-        { type: "true", path: "emitted" },
-      ],
-    },
-
     // ---- isolation (2) ----
     {
       name: "queue-isolation", category: "isolation",

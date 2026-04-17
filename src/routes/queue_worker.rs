@@ -1,5 +1,4 @@
 use crate::libs::api_response::api_error;
-use crate::libs::ids::new_uuid;
 use crate::libs::unit_slug::{is_valid_slug, normalize_filename_stem_to_slug};
 use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
@@ -184,43 +183,6 @@ pub async fn handle_queue_worker_post(
         }
         _ => HttpResponse::MethodNotAllowed().json(api_error("method not allowed", json!({}))),
     }
-}
-
-#[derive(Deserialize)]
-pub struct SdkEmitBody {
-    event: String,
-    payload: Option<serde_json::Value>,
-}
-
-pub async fn handle_sdk_emit(
-    ctx: web::Data<AppContext>,
-    path: web::Path<Uuid>,
-    body: web::Json<SdkEmitBody>,
-) -> HttpResponse {
-    let project_id = path.into_inner().to_string();
-    let event_id = new_uuid().to_string();
-
-    let payload = body.into_inner();
-    let subject = format!("events.{project_id}.{}", payload.event);
-    let event_payload = json!({
-        "eventId": event_id,
-        "event": payload.event,
-        "payload": payload.payload.unwrap_or(serde_json::Value::Null),
-        "timestamp": chrono::Utc::now().timestamp_millis(),
-        "projectId": project_id,
-    });
-
-    if let Some(nats) = &ctx.wq_nats_client {
-        let _ = nats
-            .publish(subject, bytes::Bytes::from(event_payload.to_string()))
-            .await;
-    } else if let Some(nats) = &ctx.wf_nats_client {
-        let _ = nats
-            .publish(subject, bytes::Bytes::from(event_payload.to_string()))
-            .await;
-    }
-
-    HttpResponse::Ok().json(json!({ "eventId": event_id }))
 }
 
 pub async fn handle_queue_worker_get(

@@ -25,18 +25,6 @@ declare module "@sdk" {
       data?: T,
       opts?: EnqueueWorkerOptions,
     ): Promise<{ runId: string }>;
-
-    /**
-     * Fire-and-forget event emission. Publishes the event on JetStream
-     * subject `evt.{projectId}.{eventName}`.
-     *
-     * For durability, wrap inside `ctx.run()` to avoid re-emission on replay.
-     *
-     * Returns the generated `eventId` for tracing.
-     *
-     * NOTE: Not yet implemented — tests for this API are skipped.
-     */
-    emit(eventName: string, data?: any): Promise<{ eventId: string }>;
   };
 
   // ---------------------------------------------------------------------------

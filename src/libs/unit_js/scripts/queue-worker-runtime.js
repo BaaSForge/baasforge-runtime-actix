@@ -89,17 +89,6 @@ globalThis.TerminalError = TerminalError;
     return resp.json();
   };
 
-  sdk.emit = async function (eventName, payload) {
-    var url = __baseUrl + "/api/v1/trigger/workerQueue/" + __projectId + "/sdk/emit";
-    var resp = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event: eventName, payload: payload !== undefined ? payload : {} }),
-    });
-    if (!resp.ok) throw new Error("sdk.emit: HTTP " + resp.status);
-    return resp.json();
-  };
-
   sdk.callWorkflow = async function (unitPath, data) {
     var parts = unitPath.split(".");
     if (parts.length !== 4) throw new Error("sdk.callWorkflow: invalid unitPath '" + unitPath + "'");
