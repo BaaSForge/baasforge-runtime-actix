@@ -29,6 +29,14 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             full_id: "test.queue-worker-tests.api.index.1".into(),
             compiled_code,
         },
+        "actor-tests" => UnitSpec {
+            context_slug: "test".into(),
+            module_slug: "actor-tests".into(),
+            unit_name_slug: "index".into(),
+            unit_type: "api".into(),
+            full_id: "test.actor-tests.api.index.1".into(),
+            compiled_code,
+        },
         other => UnitSpec {
             context_slug: "test".into(),
             module_slug: other.replace('-', "_").to_string(),

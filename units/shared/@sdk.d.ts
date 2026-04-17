@@ -4,27 +4,21 @@ declare module "@sdk" {
   // ---------------------------------------------------------------------------
 
   export const sdk: {
-    /**
-     * Invoke another workflow by its path (`context.module.workflow.name`).
-     *
-     * Suspends the caller via a durable promise until the callee workflow
-     * completes. No thread is held while waiting.
-     */
     callWorkflow<T = any>(unitPath: string, data?: any): Promise<T>;
 
-    /**
-     * Enqueue data to a queue worker unit.
-     *
-     * Returns `{ runId }` immediately — fire-and-forget from the caller's
-     * perspective. Poll the status/result endpoints to observe completion.
-     *
-     * For durability inside a workflow, wrap in `ctx.run()`.
-     */
     enqueueWorker<T = any>(
       unitPath: string,
       data?: T,
       opts?: EnqueueWorkerOptions,
     ): Promise<{ runId: string }>;
+
+    callActor<TResult = any>(
+      unitPath: string,
+      actorId: string,
+      handler: string,
+      payload?: any,
+      opts?: CallActorOptions,
+    ): Promise<TResult>;
   };
 
   // ---------------------------------------------------------------------------
@@ -46,6 +40,11 @@ declare module "@sdk" {
   export interface EnqueueWorkerOptions {
     delay?: Duration;
     deduplicationKey?: string;
+  }
+
+  export interface CallActorOptions {
+    timeoutMs?: number;
+    awaitResult?: boolean;
   }
 
   export interface RunOptions {
@@ -214,6 +213,53 @@ declare module "@sdk" {
   export interface DeterministicDate {
     now(): number;
   }
+
+  // ---------------------------------------------------------------------------
+  // Actor — metadata
+  // ---------------------------------------------------------------------------
+
+  export interface ActorMetadata {
+    handlers?: string[];
+    maxIdleTime?: string;
+    alarms?: string[];
+    stateLimit?: string;
+    retry?: RetryPolicy;
+    timeout?: number;
+    mailboxBacklog?: number;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Actor — execution context
+  // ---------------------------------------------------------------------------
+
+  export interface ActorContext<TState> {
+    readonly id: string;
+    readonly attempt: number;
+    state: TState;
+    setAlarm(name: string, at: Date | number | Duration): void;
+    cancelAlarm(name: string): void;
+    readonly TerminalError: typeof TerminalError;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Actor — definition
+  // ---------------------------------------------------------------------------
+
+  type ActorHandlers<TState> = {
+    [handler: string]: (ctx: ActorContext<TState>, payload?: any) => any;
+  };
+
+  export interface ActorConfig<TState> {
+    state: TState;
+    handlers: ActorHandlers<TState>;
+    metadata?: ActorMetadata;
+    onAlarm?: (ctx: ActorContext<TState>, name: string) => void | Promise<void>;
+    onDeadLetter?: (ctx: ActorContext<TState>, handler: string, payload: any, error: Error) => void | Promise<void>;
+  }
+
+  export interface ActorDefinition<TState = any> {}
+
+  export function actor<TState = any>(config: ActorConfig<TState>): ActorDefinition<TState>;
 
   // ---------------------------------------------------------------------------
   // Terminal error

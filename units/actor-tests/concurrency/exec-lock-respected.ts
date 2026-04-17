@@ -1,0 +1,13 @@
+import { actor } from "@sdk";
+
+type State = { count: number };
+
+export default actor<State>({
+  state: { count: 0 },
+  handlers: {
+    serializedIncrement(ctx, { seq }: { seq: number }) {
+      ctx.state.count++;
+      return { count: ctx.state.count, seq };
+    },
+  },
+});
