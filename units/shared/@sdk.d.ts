@@ -4,6 +4,12 @@ declare module "@sdk" {
   // ---------------------------------------------------------------------------
 
   export const sdk: {
+    /**
+     * Invoke another workflow by its path (`context.module.workflow.name`).
+     *
+     * Suspends the caller via a durable promise until the callee workflow
+     * completes. No thread is held while waiting.
+     */
     callWorkflow<T = any>(unitPath: string, data?: any): Promise<T>;
 
     /**
@@ -20,6 +26,16 @@ declare module "@sdk" {
       opts?: EnqueueWorkerOptions,
     ): Promise<{ runId: string }>;
 
+    /**
+     * Fire-and-forget event emission. Publishes the event on JetStream
+     * subject `evt.{projectId}.{eventName}`.
+     *
+     * For durability, wrap inside `ctx.run()` to avoid re-emission on replay.
+     *
+     * Returns the generated `eventId` for tracing.
+     *
+     * NOTE: Not yet implemented — tests for this API are skipped.
+     */
     emit(eventName: string, data?: any): Promise<{ eventId: string }>;
   };
 
@@ -36,7 +52,7 @@ declare module "@sdk" {
   }
 
   // ---------------------------------------------------------------------------
-  // Enqueue options
+  // Shared options
   // ---------------------------------------------------------------------------
 
   export interface EnqueueWorkerOptions {
@@ -44,9 +60,9 @@ declare module "@sdk" {
     deduplicationKey?: string;
   }
 
-  // ---------------------------------------------------------------------------
-  // Queue Worker — metadata (static config, read by runtime at registration)
-  // ---------------------------------------------------------------------------
+  export interface RunOptions {
+    retryPolicy?: RetryPolicy;
+  }
 
   export interface RetryPolicy {
     maxAttempts?: number;
@@ -54,6 +70,10 @@ declare module "@sdk" {
     maxInterval?: Duration;
     backoffFactor?: number;
   }
+
+  // ---------------------------------------------------------------------------
+  // Queue Worker — metadata (static config, read by runtime at registration)
+  // ---------------------------------------------------------------------------
 
   export interface RateLimitPolicy {
     max: number;
@@ -78,28 +98,10 @@ declare module "@sdk" {
   // Queue Worker — definition
   // ---------------------------------------------------------------------------
 
-  /**
-   * Define a queue worker unit (simple form — handler function only).
-   *
-   * ```ts
-   * export default queueWorker(async (ctx, data) => { ... });
-   * ```
-   */
   export function queueWorker<TData = any, TResult = any>(
     handler: (ctx: QueueWorkerContext, data: TData) => Promise<TResult>,
   ): QueueWorkerDefinition<TData, TResult>;
 
-  /**
-   * Define a queue worker unit (full form — with dead letter handler and metadata).
-   *
-   * ```ts
-   * export default queueWorker({
-   *   process: async (ctx, data) => { ... },
-   *   onDeadLetter: async (ctx, data, error) => { ... },
-   *   metadata: { retry: { maxAttempts: 5 } },
-   * });
-   * ```
-   */
   export function queueWorker<TData = any, TResult = any>(
     config: QueueWorkerConfig<TData, TResult>,
   ): QueueWorkerDefinition<TData, TResult>;
@@ -124,15 +126,7 @@ declare module "@sdk" {
   }
 
   // ---------------------------------------------------------------------------
-  // Terminal error (shared with workflow)
-  // ---------------------------------------------------------------------------
-
-  export class TerminalError extends Error {
-    constructor(message: string, options?: { cause?: unknown });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Workflow — kept for cross-unit files
+  // Workflow — definition
   // ---------------------------------------------------------------------------
 
   export function workflow<TInput = any, TOutput = any>(
@@ -150,23 +144,64 @@ declare module "@sdk" {
 
   export interface WorkflowDefinition<TInput = any, TOutput = any> {}
 
+  // ---------------------------------------------------------------------------
+  // Workflow — run context (available inside the `run` handler)
+  // ---------------------------------------------------------------------------
+
   export interface WorkflowContext {
     readonly key: string;
-    run<T>(name: string, fn: () => Promise<T>, opts?: WorkflowRunOptions): Promise<T>;
+
+    /**
+     * Execute a durable step. The result is persisted in Redis.
+     * On replay (after crash / sleep / promise), returns the cached result
+     * without re-executing `fn`.
+     */
+    run<T>(name: string, fn: () => Promise<T>, opts?: RunOptions): Promise<T>;
+
+    /**
+     * Durable timer. Suspends the workflow and resumes after the given
+     * duration. Survives crashes, restarts, and deployments.
+     */
     sleep(name: string, duration: Duration | number): Promise<void>;
+
+    /**
+     * Obtain a durable promise. Use `.get()` to suspend until the promise
+     * is resolved or rejected (or a timeout elapses). Use `.resolve()` /
+     * `.reject()` from a shared handler to unblock the workflow.
+     */
     promise<T = any>(name: string): DurablePromise<T>;
+
     set(key: string, value: any): void;
     get<T = any>(key: string): Promise<T | null>;
+
+    /**
+     * Deterministic random helpers. Values are seeded by the instance ID
+     * and step position so they produce the same result on replay.
+     */
     readonly rand: DeterministicRand;
+
+    /**
+     * Deterministic date helper. `ctx.date.now()` returns the timestamp
+     * captured at the step boundary, safe for replay.
+     */
     readonly date: DeterministicDate;
+
     readonly TerminalError: typeof TerminalError;
   }
+
+  // ---------------------------------------------------------------------------
+  // Workflow — shared context (available inside shared handlers)
+  // ---------------------------------------------------------------------------
 
   export interface WorkflowSharedContext {
     readonly key: string;
     promise<T = any>(name: string): DurablePromiseHandle<T>;
     get<T = any>(key: string): Promise<T | null>;
   }
+
+  // ---------------------------------------------------------------------------
+  // Durable promises
+  // ---------------------------------------------------------------------------
 
   export interface DurablePromise<T> {
     get(opts?: { timeout?: Duration }): Promise<T | null>;
@@ -179,9 +214,9 @@ declare module "@sdk" {
     reject(error: string): Promise<void>;
   }
 
-  export interface WorkflowRunOptions {
-    retryPolicy?: RetryPolicy;
-  }
+  // ---------------------------------------------------------------------------
+  // Deterministic helpers
+  // ---------------------------------------------------------------------------
 
   export interface DeterministicRand {
     uuidv4(): string;
@@ -191,7 +226,26 @@ declare module "@sdk" {
   export interface DeterministicDate {
     now(): number;
   }
+
+  // ---------------------------------------------------------------------------
+  // Terminal error
+  // ---------------------------------------------------------------------------
+
+  export class TerminalError extends Error {
+    constructor(message: string, options?: { cause?: unknown });
+  }
 }
+
+// -----------------------------------------------------------------------------
+// Cross-unit type imports
+//
+// Units can import types from other units via:
+//   import type { Input, Output } from "@units/context.module.workflow.name";
+//
+// This is compile-time only (stripped at runtime).
+// Only `import type` is allowed — value imports are rejected by the dashboard
+// platform's lint rules.
+// -----------------------------------------------------------------------------
 
 declare module "@units/*" {
   export type Input = any;

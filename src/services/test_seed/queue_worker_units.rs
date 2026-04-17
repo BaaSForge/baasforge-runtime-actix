@@ -3,7 +3,7 @@ use crate::configs::Settings;
 use crate::libs::unit_slug::normalize_filename_stem_to_slug;
 use std::path::Path;
 
-fn queue_worker_spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
+fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
     let stem = Path::new(rel_path).file_stem()?.to_str()?;
     let unit_name_slug = normalize_filename_stem_to_slug(stem)?;
     Some(UnitSpec {
@@ -14,33 +14,6 @@ fn queue_worker_spec_from_path(rel_path: &str, compiled_code: String) -> Option<
         full_id: format!("test.queue-worker.queue_worker.{unit_name_slug}.1"),
         compiled_code,
     })
-}
-
-fn discover_queue_worker_js_files(dir: &Path) -> Vec<(String, String)> {
-    let mut results = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return results;
-    };
-    let mut sorted: Vec<_> = entries.flatten().collect();
-    sorted.sort_by_key(|e| e.file_name());
-    for entry in sorted {
-        let path = entry.path();
-        if path.is_dir() {
-            for (rel, code) in discover_queue_worker_js_files(&path) {
-                let dir_name = entry.file_name().to_string_lossy().to_string();
-                results.push((format!("{dir_name}/{rel}"), code));
-            }
-        } else if path.extension().is_some_and(|e| e == "js") {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name == "index.js" {
-                continue;
-            }
-            if let Ok(code) = std::fs::read_to_string(&path) {
-                results.push((name, code));
-            }
-        }
-    }
-    results
 }
 
 pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
@@ -54,7 +27,7 @@ pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
         return Vec::new();
     }
 
-    let files = discover_queue_worker_js_files(dir);
+    let files = super::discover_unit_js_files(dir, true);
     tracing::info!(
         "test_seed: discovered {} queue worker JS files in {}",
         files.len(),
@@ -63,7 +36,7 @@ pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
 
     let mut out = Vec::new();
     for (rel_path, code) in files {
-        match queue_worker_spec_from_path(&rel_path, code) {
+        match spec_from_path(&rel_path, code) {
             Some(spec) => out.push(spec),
             None => tracing::warn!(
                 rel_path = %rel_path,

@@ -1,5 +1,3 @@
-//! Collects workflow-type [`UnitSpec`]s by scanning `TEST_WORKFLOW_DIR`.
-
 use super::UnitSpec;
 use crate::configs::Settings;
 use crate::libs::unit_slug::normalize_filename_stem_to_slug;
@@ -18,31 +16,6 @@ fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
     })
 }
 
-fn discover_js_files(dir: &Path) -> Vec<(String, String)> {
-    let mut results = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return results;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            for (rel, code) in discover_js_files(&path) {
-                let dir_name = entry.file_name().to_string_lossy().to_string();
-                results.push((format!("{dir_name}/{rel}"), code));
-            }
-        } else if path.extension().is_some_and(|e| e == "js") {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name == "index.js" {
-                continue;
-            }
-            if let Ok(code) = std::fs::read_to_string(&path) {
-                results.push((name, code));
-            }
-        }
-    }
-    results
-}
-
 pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
     let Some(ref wf_dir) = settings.test_workflow_dir else {
         return Vec::new();
@@ -54,7 +27,7 @@ pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
         return Vec::new();
     }
 
-    let files = discover_js_files(dir);
+    let files = super::discover_unit_js_files(dir, false);
     tracing::info!(
         "test_seed: discovered {} workflow JS files in {}",
         files.len(),

@@ -13,6 +13,7 @@ mod queue_worker_units;
 mod workflow_units;
 
 use crate::configs::Settings;
+use std::path::Path;
 use crate::database::DbPool;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -36,6 +37,35 @@ pub(crate) struct UnitSpec {
     pub unit_type: String,
     pub full_id: String,
     pub compiled_code: String,
+}
+
+pub(super) fn discover_unit_js_files(dir: &Path, sorted: bool) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return results;
+    };
+    let mut entries: Vec<_> = entries.flatten().collect();
+    if sorted {
+        entries.sort_by_key(|e| e.file_name());
+    }
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            for (rel, code) in discover_unit_js_files(&path, sorted) {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                results.push((format!("{dir_name}/{rel}"), code));
+            }
+        } else if path.extension().is_some_and(|e| e == "js") {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "index.js" {
+                continue;
+            }
+            if let Ok(code) = std::fs::read_to_string(&path) {
+                results.push((name, code));
+            }
+        }
+    }
+    results
 }
 
 pub(crate) fn unit_path_from_full_id(full_id: &str) -> String {

@@ -31,12 +31,12 @@
     "noPropertyAccessFromIndexSignature": true,
 
     "paths": {
-      "@sdk": ["./@sdk.d.ts"],
-      "@units/*": ["./@sdk.d.ts"]
+      "@sdk": ["../shared/@sdk.d.ts"],
+      "@units/*": ["../shared/@sdk.d.ts"]
     }
   },
   "include": [
-    "@sdk.d.ts",
+    "../shared/@sdk.d.ts",
     "**/*.ts"
   ]
 }
