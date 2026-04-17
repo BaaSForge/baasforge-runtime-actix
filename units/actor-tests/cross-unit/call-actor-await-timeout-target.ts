@@ -3,7 +3,7 @@ import { actor } from "@sdk";
 type State = { completed: boolean };
 
 export default actor<State>({
-  metadata: { timeout: 10000 },
+  metadata: { timeout: 200 },
   state: { completed: false },
   handlers: {
     async sleepLong(ctx, { timeoutMs }: { timeoutMs: number }) {

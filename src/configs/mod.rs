@@ -75,6 +75,19 @@ pub struct Settings {
     /// Directory containing compiled queue worker JS files to register as queue_worker units.
     /// Files are discovered recursively; the relative path (without .js) becomes the unit_name_slug.
     pub test_queue_worker_dir: Option<String>,
+
+    // -- Actor runtime infrastructure --
+
+    pub actor_database_url: Option<String>,
+    pub actor_database_pool_size: u32,
+    pub actor_database_connection_timeout_secs: u64,
+    pub actor_redis_url: Option<String>,
+    pub actor_nats_url: Option<String>,
+    pub actor_nats_jetstream_stream: Option<String>,
+    pub actor_nats_jetstream_consumer: Option<String>,
+    pub actor_lease_ttl_secs: u64,
+    pub actor_idle_sweep_secs: u64,
+    pub actor_pg_flush_interval_secs: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -194,6 +207,47 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let actor_database_url = env::var("ACTOR_DATABASE_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let actor_database_pool_size: u32 = env::var("ACTOR_DATABASE_POOL_SIZE")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(5);
+        let actor_database_connection_timeout_secs: u64 =
+            env::var("ACTOR_DATABASE_CONNECTION_TIMEOUT_SECS")
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(5);
+        let actor_redis_url = env::var("ACTOR_REDIS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let actor_nats_url = env::var("ACTOR_NATS_URL")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let actor_nats_jetstream_stream = env::var("ACTOR_NATS_JETSTREAM_STREAM")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let actor_nats_jetstream_consumer = env::var("ACTOR_NATS_JETSTREAM_CONSUMER")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let actor_lease_ttl_secs: u64 = env::var("ACTOR_LEASE_TTL_SECS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(30);
+        let actor_idle_sweep_secs: u64 = env::var("ACTOR_IDLE_SWEEP_SECS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(60);
+        let actor_pg_flush_interval_secs: u64 = env::var("ACTOR_PG_FLUSH_INTERVAL_SECS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(30);
         Ok(Settings {
             port,
             app_environment,
@@ -216,6 +270,16 @@ impl Settings {
             test_unit_files,
             test_workflow_dir,
             test_queue_worker_dir,
+            actor_database_url,
+            actor_database_pool_size,
+            actor_database_connection_timeout_secs,
+            actor_redis_url,
+            actor_nats_url,
+            actor_nats_jetstream_stream,
+            actor_nats_jetstream_consumer,
+            actor_lease_ttl_secs,
+            actor_idle_sweep_secs,
+            actor_pg_flush_interval_secs,
         })
     }
 }

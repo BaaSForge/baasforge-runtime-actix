@@ -24,11 +24,11 @@ WF_NATS_URL=nats://...
 
 ## Binaries
 
-Run all three processes. Each is an independent binary from the same crate.
+Run all five processes. Each is an independent binary from the same crate.
 
 ### 1. HTTP API server
 
-Serves all HTTP endpoints (API units, workflow triggers, WebSocket).
+Serves all HTTP endpoints (API units, workflow triggers, actor triggers, queue worker triggers, WebSocket).
 
 ```sh
 cargo run --release
@@ -46,9 +46,39 @@ cargo run --release --bin workflow_worker
 ./target/release/workflow_worker
 ```
 
-Requires `WF_REDIS_URL` and `WF_NATS_URL`. If either is missing the process starts but the consumer is silently disabled.
+Requires `WF_REDIS_URL` and `WF_NATS_URL`.
 
-### 3. Release listener
+### 3. Queue worker worker
+
+Consumes the JetStream `WQ_WORK` stream and executes queue worker units (including retries, dead-letter, and batch dispatch).
+
+```sh
+cargo run --release --bin queue_worker_worker
+# or:
+./target/release/queue_worker_worker
+```
+
+Requires `WQ_REDIS_URL` and `WQ_NATS_URL`.
+
+The `PORT` env var must match the running API server so SDK callbacks resolve correctly (`http://127.0.0.1:{PORT}`).
+
+### 4. Actor worker
+
+Consumes the JetStream `ACTOR_MAIL` stream and dispatches actor mailbox messages.
+
+```sh
+cargo run --release --bin actor_worker
+# or:
+./target/release/actor_worker
+```
+
+Requires `ACTOR_REDIS_URL` (or `WQ_REDIS_URL` as fallback) and `ACTOR_NATS_URL` (or `WQ_NATS_URL` as fallback).
+
+The `PORT` env var must match the running API server (same reason as queue worker worker above).
+
+Optional: `ACTOR_NATS_JETSTREAM_STREAM`, `ACTOR_NATS_JETSTREAM_CONSUMER` to override defaults.
+
+### 5. Release listener
 
 Listens for deploy events and invalidates the unit cache so newly deployed code is picked up without a restart.
 

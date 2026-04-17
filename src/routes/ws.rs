@@ -13,33 +13,35 @@ struct FilterMsg {
     instance_id: Option<String>,
 }
 
-enum WsSubjectSet {
-    Single(String),
-    Dual(String, String),
-}
-
-fn build_ws_subject_set(
+fn build_subjects(
     project_id: &str,
     unit_type: Option<&str>,
     instance_id: Option<&str>,
-) -> WsSubjectSet {
+) -> Vec<(String, &'static str)> {
     match (unit_type, instance_id) {
         (Some("queue-worker"), Some(iid)) => {
-            WsSubjectSet::Single(format!("qw.events.{project_id}.queue-worker.{iid}"))
+            vec![(format!("qw.events.{project_id}.queue-worker.{iid}"), "qw")]
         }
         (Some("queue-worker"), None) => {
-            WsSubjectSet::Single(format!("qw.events.{project_id}.queue-worker.>"))
+            vec![(format!("qw.events.{project_id}.queue-worker.>"), "qw")]
+        }
+        (Some("actor"), Some(iid)) => {
+            vec![(format!("actor.events.{project_id}.*.{iid}"), "actor")]
+        }
+        (Some("actor"), None) => {
+            vec![(format!("actor.events.{project_id}.>"), "actor")]
         }
         (Some(ut), Some(iid)) => {
-            WsSubjectSet::Single(format!("wf.events.{project_id}.{ut}.{iid}"))
+            vec![(format!("wf.events.{project_id}.{ut}.{iid}"), "wf")]
         }
         (Some(ut), None) => {
-            WsSubjectSet::Single(format!("wf.events.{project_id}.{ut}.>"))
+            vec![(format!("wf.events.{project_id}.{ut}.>"), "wf")]
         }
-        (None, _) => WsSubjectSet::Dual(
-            format!("wf.events.{project_id}.>"),
-            format!("qw.events.{project_id}.>"),
-        ),
+        (None, _) => vec![
+            (format!("wf.events.{project_id}.>"), "wf"),
+            (format!("qw.events.{project_id}.>"), "qw"),
+            (format!("actor.events.{project_id}.>"), "actor"),
+        ],
     }
 }
 
@@ -62,7 +64,10 @@ pub async fn ws_project_events(
 ) -> Result<HttpResponse, actix_web::Error> {
     let project_id = path.into_inner();
 
-    if ctx.wf_nats_client.is_none() && ctx.wq_nats_client.is_none() {
+    if ctx.wf_nats_client.is_none()
+        && ctx.wq_nats_client.is_none()
+        && ctx.actor_nats_client.is_none()
+    {
         return Ok(HttpResponse::ServiceUnavailable().body("NATS not configured"));
     }
 
@@ -73,23 +78,33 @@ pub async fn ws_project_events(
         msg_stream,
         ctx.wf_nats_client.clone(),
         ctx.wq_nats_client.clone(),
+        ctx.actor_nats_client.clone(),
         project_id,
     ));
 
     Ok(resp)
 }
 
-async fn subscribe_single(
+async fn subscribe_all(
+    subjects: &[(String, &str)],
     wf_nats: &Option<async_nats::Client>,
     wq_nats: &Option<async_nats::Client>,
-    subject: &str,
-) -> Option<async_nats::Subscriber> {
-    let client = if subject.starts_with("qw.") {
-        wq_nats.as_ref()?
-    } else {
-        wf_nats.as_ref()?
-    };
-    client.subscribe(subject.to_string()).await.ok()
+    actor_nats: &Option<async_nats::Client>,
+) -> Vec<async_nats::Subscriber> {
+    let mut subs = Vec::new();
+    for (subject, kind) in subjects {
+        let client = match *kind {
+            "qw" => wq_nats.as_ref(),
+            "actor" => actor_nats.as_ref(),
+            _ => wf_nats.as_ref(),
+        };
+        if let Some(c) = client {
+            if let Ok(s) = c.subscribe(subject.clone()).await {
+                subs.push(s);
+            }
+        }
+    }
+    subs
 }
 
 async fn run_ws(
@@ -97,119 +112,61 @@ async fn run_ws(
     mut msg_stream: actix_ws::MessageStream,
     wf_nats: Option<async_nats::Client>,
     wq_nats: Option<async_nats::Client>,
+    actor_nats: Option<async_nats::Client>,
     project_id: String,
 ) {
     let mut current_unit_type: Option<String> = None;
     let mut current_instance_id: Option<String> = None;
 
     'outer: loop {
-        let subject_set = build_ws_subject_set(
+        let subjects = build_subjects(
             &project_id,
             current_unit_type.as_deref(),
             current_instance_id.as_deref(),
         );
 
-        match subject_set {
-            WsSubjectSet::Single(subject) => {
-                let mut subscriber =
-                    match subscribe_single(&wf_nats, &wq_nats, &subject).await {
-                        Some(s) => s,
-                        None => {
-                            tracing::warn!(subject, "WS: NATS subscribe failed (client unavailable)");
-                            break;
-                        }
-                    };
+        let subs = subscribe_all(&subjects, &wf_nats, &wq_nats, &actor_nats).await;
 
-                loop {
-                    tokio::select! {
-                        ws_msg = msg_stream.next() => {
-                            match ws_msg {
-                                Some(Ok(actix_ws::Message::Text(text))) => {
-                                    if let Ok(filter) = serde_json::from_str::<FilterMsg>(&text)
-                                        && filter.action == "subscribe"
-                                    {
-                                        current_unit_type = filter.unit_type;
-                                        current_instance_id = filter.instance_id;
-                                        drop(subscriber);
-                                        continue 'outer;
-                                    }
-                                }
-                                Some(Ok(actix_ws::Message::Ping(bytes))) => {
-                                    if session.pong(&bytes).await.is_err() {
-                                        break 'outer;
-                                    }
-                                }
-                                Some(Ok(actix_ws::Message::Close(_))) | None => break 'outer,
-                                _ => {}
-                            }
-                        }
-                        nats_msg = subscriber.next() => {
-                            match nats_msg {
-                                Some(msg) => {
-                                    if let Ok(text) = std::str::from_utf8(&msg.payload)
-                                        && session.text(text.to_owned()).await.is_err()
-                                    {
-                                        break 'outer;
-                                    }
-                                }
-                                None => break 'outer,
-                            }
-                        }
-                    }
-                }
-            }
-            WsSubjectSet::Dual(wf_subject, wq_subject) => {
-                let mut streams: Vec<async_nats::Subscriber> = Vec::new();
-                if let Some(c) = &wf_nats {
-                    if let Ok(s) = c.subscribe(wf_subject).await {
-                        streams.push(s);
-                    }
-                }
-                if let Some(c) = &wq_nats {
-                    if let Ok(s) = c.subscribe(wq_subject).await {
-                        streams.push(s);
-                    }
-                }
-                if streams.is_empty() {
-                    break;
-                }
-                let mut merged = futures::stream::select_all(streams);
+        if subs.is_empty() {
+            tracing::warn!("WS: no NATS subscriptions could be made");
+            break;
+        }
 
-                loop {
-                    tokio::select! {
-                        ws_msg = msg_stream.next() => {
-                            match ws_msg {
-                                Some(Ok(actix_ws::Message::Text(text))) => {
-                                    if let Ok(filter) = serde_json::from_str::<FilterMsg>(&text)
-                                        && filter.action == "subscribe"
-                                    {
-                                        current_unit_type = filter.unit_type;
-                                        current_instance_id = filter.instance_id;
-                                        drop(merged);
-                                        continue 'outer;
-                                    }
-                                }
-                                Some(Ok(actix_ws::Message::Ping(bytes))) => {
-                                    if session.pong(&bytes).await.is_err() {
-                                        break 'outer;
-                                    }
-                                }
-                                Some(Ok(actix_ws::Message::Close(_))) | None => break 'outer,
-                                _ => {}
+        let mut merged = futures::stream::select_all(subs);
+
+        loop {
+            tokio::select! {
+                ws_msg = msg_stream.next() => {
+                    match ws_msg {
+                        Some(Ok(actix_ws::Message::Text(text))) => {
+                            if let Ok(filter) = serde_json::from_str::<FilterMsg>(&text)
+                                && filter.action == "subscribe"
+                            {
+                                current_unit_type = filter.unit_type;
+                                current_instance_id = filter.instance_id;
+                                drop(merged);
+                                continue 'outer;
                             }
                         }
-                        nats_msg = merged.next() => {
-                            match nats_msg {
-                                Some(msg) => {
-                                    if let Ok(text) = std::str::from_utf8(&msg.payload)
-                                        && session.text(text.to_owned()).await.is_err()
-                                    {
-                                        break 'outer;
-                                    }
-                                }
-                                None => break 'outer,
+                        Some(Ok(actix_ws::Message::Ping(bytes))) => {
+                            if session.pong(&bytes).await.is_err() {
+                                break 'outer;
                             }
                         }
+                        Some(Ok(actix_ws::Message::Close(_))) | None => break 'outer,
+                        _ => {}
+                    }
+                }
+                nats_msg = merged.next() => {
+                    match nats_msg {
+                        Some(msg) => {
+                            if let Ok(text) = std::str::from_utf8(&msg.payload)
+                                && session.text(text.to_owned()).await.is_err()
+                            {
+                                break 'outer;
+                            }
+                        }
+                        None => break 'outer,
                     }
                 }
             }

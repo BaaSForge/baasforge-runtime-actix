@@ -1,21 +1,34 @@
 use rquickjs::{Ctx, function::Func};
+use std::cell::Cell;
+use std::time::Instant;
 
 const POLYFILLS_JS: &str = include_str!("../scripts/polyfills.js");
 
-/// Synchronous OS-thread sleep exposed to QuickJS as `__baal_sleep_sync(ms)`.
-///
-/// QuickJS has no real async event loop, so blocking the OS thread is the only
-/// way to introduce a genuine wall-clock delay within a JavaScript execution.
-///
-/// The JavaScript polyfill layer caps the incoming value before calling here
-/// (`__BAAL_MAX_SLEEP_MS` for setTimeout, `__BAAL_IV_MAX_TICK_MS` for setInterval),
-/// so this function trusts the JS-side cap and simply sleeps for `ms`.
-///
-/// Workflow code must use `ctx.sleep()` for durable delays — that suspends the
-/// entire workflow instance via JetStream and never calls this function.
-fn host_sleep_sync(_ctx: Ctx<'_>, ms: f64) -> rquickjs::Result<()> {
+thread_local! {
+    pub static EXECUTION_DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+fn host_sleep_sync(ctx: Ctx<'_>, ms: f64) -> rquickjs::Result<()> {
     if ms > 0.0 {
-        std::thread::sleep(std::time::Duration::from_millis(ms as u64));
+        let requested = std::time::Duration::from_millis(ms as u64);
+        let actual = EXECUTION_DEADLINE.with(|d| {
+            if let Some(deadline) = d.get() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                requested.min(remaining)
+            } else {
+                requested
+            }
+        });
+        if !actual.is_zero() {
+            std::thread::sleep(actual);
+        }
+        let expired = EXECUTION_DEADLINE.with(|d| {
+            d.get().map_or(false, |dl| Instant::now() >= dl)
+        });
+        if expired {
+            let exc: rquickjs::Value = ctx.eval("new Error('actor timeout expired')")?;
+            return Err(ctx.throw(exc));
+        }
     }
     Ok(())
 }

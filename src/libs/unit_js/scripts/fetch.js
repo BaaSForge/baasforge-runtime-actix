@@ -4,6 +4,13 @@
   var _triggerPath = globalThis.__triggerBasePath || "";
   var _selfHost = (globalThis.__selfHost || "").toLowerCase();
 
+  function sanitizeFetchUrl(url) {
+    return url.replace(/[^\x21-\x7E]|[\x00-\x1F\x7F]/g, function(c) {
+      var code = c.charCodeAt(0);
+      return '%' + ('0' + code.toString(16).toUpperCase()).slice(-2);
+    });
+  }
+
   function rewriteSelfUrl(url) {
     if (!_triggerPath || _triggerPath === "/" || !_selfHost) return url;
     try {
@@ -69,6 +76,7 @@
         }
 
         url = rewriteSelfUrl(url);
+        url = sanitizeFetchUrl(url);
 
         var headersJson = JSON.stringify(Object.entries(headers));
         var result = _fetchSync(url, method, headersJson, body || "");

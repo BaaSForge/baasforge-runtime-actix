@@ -14,5 +14,11 @@
 
 ## How consumers run during tests
 
-In `TEST_MODE`, the HTTP server **spawns the workflow wake consumer in-process** — no separate `workflow_worker` binary is needed.
+In `TEST_MODE`, the HTTP server **spawns all three consumers in-process**:
+
+- Workflow wake consumer (`workflow_worker`)
+- Queue worker work consumer (`queue_worker_worker`)
+- Actor mailbox consumer (`actor_worker`)
+
+No separate worker binaries are needed when running tests.
 

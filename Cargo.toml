@@ -14,6 +14,14 @@ path = "src/bin/workflow_worker.rs"
 name = "release_listener"
 path = "src/bin/release_listener.rs"
 
+[[bin]]
+name = "queue_worker_worker"
+path = "src/bin/queue_worker_worker.rs"
+
+[[bin]]
+name = "actor_worker"
+path = "src/bin/actor_worker.rs"
+
 [dependencies]
 # Web Framework & Core
 actix = "0.13.5"

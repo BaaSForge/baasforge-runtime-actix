@@ -8,6 +8,7 @@
 //! `workflow_units`). Each returns `Vec<UnitSpec>` that the orchestrator
 //! here merges into a single release.
 
+mod actor_units;
 mod api_units;
 mod queue_worker_units;
 mod workflow_units;
@@ -84,6 +85,7 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     all_units.extend(api_units::collect(settings));
     all_units.extend(workflow_units::collect(settings));
     all_units.extend(queue_worker_units::collect(settings));
+    all_units.extend(actor_units::collect());
 
     tracing::info!("test_seed: seeding {} test unit(s)", all_units.len());
 

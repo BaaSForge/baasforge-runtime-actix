@@ -1,3 +1,4 @@
+pub mod actor;
 pub mod queue_worker;
 pub mod unit;
 pub mod workflow;
@@ -8,6 +9,7 @@ use crate::database::{establish_pool, DbPool, SharedRedisConn};
 use crate::services::workflow_engine::SharedRedis;
 use actix_web::Result;
 use actix_web::web;
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -29,7 +31,18 @@ pub struct AppContext {
     pub wq_nats_client: Option<async_nats::Client>,
     /// JetStream context for publishing queue worker work messages.
     pub wq_jetstream: Option<async_nats::jetstream::Context>,
+
+    /// Dedicated Redis connection for actor state (snapshots, leases, alarms).
+    pub actor_redis: Option<SharedRedis>,
+    /// NATS client for actor mailbox (JetStream) and lifecycle events (Core).
+    pub actor_nats_client: Option<async_nats::Client>,
+    /// JetStream context for publishing actor mailbox messages.
+    pub actor_jetstream: Option<async_nats::jetstream::Context>,
+    /// Per-actor execution locks: (project_id, unit_path, actor_id) → mutex.
+    pub actor_locks: ActorLocks,
 }
+
+pub type ActorLocks = Arc<Mutex<HashMap<(String, String, String), Arc<Mutex<()>>>>>;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]
@@ -43,6 +56,10 @@ impl AppContext {
         wq_redis: Option<SharedRedis>,
         wq_nats_client: Option<async_nats::Client>,
         wq_jetstream: Option<async_nats::jetstream::Context>,
+        actor_redis: Option<SharedRedis>,
+        actor_nats_client: Option<async_nats::Client>,
+        actor_jetstream: Option<async_nats::jetstream::Context>,
+        actor_locks: ActorLocks,
     ) -> Self {
         Self {
             pool,
@@ -54,6 +71,10 @@ impl AppContext {
             wq_redis,
             wq_nats_client,
             wq_jetstream,
+            actor_redis,
+            actor_nats_client,
+            actor_jetstream,
+            actor_locks,
         }
     }
 }
@@ -177,6 +198,49 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     let wq_jetstream: Option<async_nats::jetstream::Context> =
         wq_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
 
+    let actor_redis: Option<SharedRedis> = if let Some(url) = &settings.actor_redis_url {
+        match redis::Client::open(url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    tracing::info!("[actor_redis] actor Redis connected");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[actor_redis] connection failed, actors disabled");
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, "[actor_redis] client open failed, actors disabled");
+                None
+            }
+        }
+    } else {
+        tracing::info!("[actor_redis] ACTOR_REDIS_URL not set; falling back to wq_redis for actor state");
+        wq_redis.clone()
+    };
+
+    let actor_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.actor_nats_url {
+        match crate::configs::connect_nats(url).await {
+            Ok(client) => {
+                tracing::info!("[nats_actor] connected for actor mailbox");
+                Some(client)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "[nats_actor] connection failed, actor mailbox disabled");
+                None
+            }
+        }
+    } else {
+        tracing::info!("[nats_actor] ACTOR_NATS_URL not set; falling back to wq_nats");
+        wq_nats_client.clone()
+    };
+
+    let actor_jetstream: Option<async_nats::jetstream::Context> =
+        actor_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
+
+    let actor_locks: ActorLocks = Arc::new(Mutex::new(HashMap::new()));
+
     // In test mode, run the JetStream consumers in-process (normally handled
     // by the separate worker binaries).
     if settings.test_mode {
@@ -239,6 +303,49 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             });
         }
 
+        if let Some(ar) = &actor_redis {
+            let ar = ar.clone();
+            let actor_js = actor_jetstream.clone();
+            let actor_nc = actor_nats_client.clone();
+            let p = pool.clone();
+            let rc = redis_conn.clone();
+            let stream_name = settings
+                .actor_nats_jetstream_stream
+                .clone()
+                .unwrap_or_else(|| crate::services::actor_engine::ACTOR_NATS_STREAM.to_string());
+            let consumer_name = settings
+                .actor_nats_jetstream_consumer
+                .clone()
+                .unwrap_or_else(|| crate::services::actor_engine::ACTOR_NATS_CONSUMER.to_string());
+            let base_url = format!("http://127.0.0.1:{port}");
+            let locks = actor_locks.clone();
+            tracing::info!("[test_mode] starting inline actor mailbox consumer");
+            tokio::spawn(async move {
+                if let Err(e) =
+                    crate::services::actor_worker::runner::run_actor_consumer(
+                        ar, actor_js, actor_nc, p, rc, &stream_name, &consumer_name, &base_url, locks,
+                    )
+                    .await
+                {
+                    tracing::error!(error = %e, "[test_mode] actor consumer exited with error");
+                }
+            });
+
+            let ar2 = actor_redis.as_ref().unwrap().clone();
+            let actor_nc2 = actor_nats_client.clone();
+            let p2 = pool.clone();
+            let rc2 = redis_conn.clone();
+            let base_url2 = format!("http://127.0.0.1:{port}");
+            let locks2 = actor_locks.clone();
+            tracing::info!("[test_mode] starting inline actor alarm sweeper");
+            tokio::spawn(async move {
+                crate::services::actor_worker::alarms::run_alarm_sweeper(
+                    ar2, p2, rc2, actor_nc2, locks2, base_url2,
+                )
+                .await;
+            });
+        }
+
         tracing::info!("[test_mode] seeding test entities into database");
         crate::services::test_seed::seed_test_entities(&pool, &settings);
         crate::services::test_seed::print_trigger_urls(&settings);
@@ -254,6 +361,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         wq_redis,
         wq_nats_client,
         wq_jetstream,
+        actor_redis,
+        actor_nats_client,
+        actor_jetstream,
+        actor_locks,
     );
 
     let test_pool = if settings.test_mode { Some(pool) } else { None };
@@ -310,6 +421,22 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     .route(
                         "/{project_id}/{context_slug}/{module_slug}/{workflow_name_slug}",
                         web::post().to(workflow::start_workflow_production),
+                    ),
+            )
+            .service(
+                web::scope("/api/v1/trigger/actor")
+                    .app_data(web::PayloadConfig::default().limit(32 * 1024 * 1024))
+                    .route(
+                        "/{project_id}/{tail:.*}",
+                        web::post().to(actor::handle_actor_post),
+                    )
+                    .route(
+                        "/{project_id}/{tail:.*}",
+                        web::get().to(actor::handle_actor_get),
+                    )
+                    .route(
+                        "/{project_id}/{tail:.*}",
+                        web::delete().to(actor::handle_actor_delete),
                     ),
             )
             .service(

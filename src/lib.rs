@@ -11,6 +11,7 @@ pub fn init_tracing() {
         .try_init();
 }
 
+pub mod actor_schema;
 pub mod configs;
 pub mod database;
 pub mod libs;

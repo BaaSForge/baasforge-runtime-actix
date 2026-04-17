@@ -74,6 +74,27 @@ globalThis.TerminalError = TerminalError;
   var __projectId = globalThis.__baal_qw_project_id || "";
   var __baseUrl = globalThis.__baal_qw_base_url || "";
 
+  sdk.callActor = async function (unitPath, actorId, handler, payload, opts) {
+    var parts = unitPath.split(".");
+    if (parts.length < 4) throw new Error("sdk.callActor: invalid unitPath '" + unitPath + "'");
+    var context = parts[0];
+    var module = parts[1];
+    var unitName = parts[3];
+    var awaitResult = opts && opts.awaitResult === false ? "false" : "true";
+    var url = __baseUrl + "/api/v1/trigger/actor/" + __projectId + "/" + context + "/" + module + "/" + unitName + "/" + actorId + "/" + handler + "?await=" + awaitResult;
+    var resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload !== undefined ? payload : {}),
+    });
+    if (!resp.ok) {
+      var errText = await resp.text();
+      throw new Error("sdk.callActor: HTTP " + resp.status + ": " + errText);
+    }
+    var body = await resp.json();
+    return body.result !== undefined ? body.result : body;
+  };
+
   sdk.enqueueWorker = async function (unitPath, data) {
     var parts = unitPath.split(".");
     if (parts.length !== 4) throw new Error("sdk.enqueueWorker: invalid unitPath '" + unitPath + "'");

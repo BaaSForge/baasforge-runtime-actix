@@ -70,6 +70,35 @@ var sdk = {
   callWorkflow: function (_unitPath, _data) {
     throw new Error('sdk.callWorkflow is only available inside workflow units');
   },
+
+  callActor: async function (unitPath, actorId, handler, payload, opts) {
+    var projectId = globalThis.__baal_actor_project_id
+      || globalThis.__baal_qw_project_id
+      || globalThis.__baal_wf_project_id
+      || "";
+    var baseUrl = globalThis.__baal_actor_base_url
+      || globalThis.__baal_qw_base_url
+      || globalThis.__baal_wf_base_url
+      || "";
+    var parts = unitPath.split(".");
+    if (parts.length < 4) throw new Error("sdk.callActor: invalid unitPath '" + unitPath + "'");
+    var context = parts[0];
+    var module = parts[1];
+    var unitName = parts[3];
+    var awaitResult = (opts && opts.awaitResult === false) ? "false" : "true";
+    var url = baseUrl + "/api/v1/trigger/actor/" + projectId + "/" + context + "/" + module + "/" + unitName + "/" + actorId + "/" + handler + "?await=" + awaitResult;
+    var resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload !== undefined ? payload : {}),
+    });
+    if (!resp.ok) {
+      var errText = await resp.text();
+      throw new Error("sdk.callActor: HTTP " + resp.status + ": " + errText);
+    }
+    var body = await resp.json();
+    return body.result !== undefined ? body.result : body;
+  },
 };
 
 globalThis.sdk = sdk;

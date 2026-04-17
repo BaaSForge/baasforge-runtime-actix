@@ -21,6 +21,7 @@ fn require_wq_redis(ctx: &AppContext) -> Result<QueueWorkerRedis, HttpResponse> 
 
 struct ParsedQueueWorkerTail {
     context_slug: String,
+    module_slug: String,
     worker_name_slug: String,
     run_id: Option<String>,
     operation: QueueWorkerOperation,
@@ -34,24 +35,23 @@ enum QueueWorkerOperation {
 }
 
 /// Tail format (all segments URL-decoded, no leading slash):
-///   enqueue:  `{context}/queue-worker/{worker_name_slug}`
-///   status:   `{context}/queue-worker/{worker_name_slug}/{run_id}/status`
-///   result:   `{context}/queue-worker/{worker_name_slug}/{run_id}/result`
-///   cancel:   `{context}/queue-worker/{worker_name_slug}/{run_id}/cancel`  (POST)
+///   enqueue:  `{context}/{module}/{worker_name_slug}`
+///   status:   `{context}/{module}/{worker_name_slug}/{run_id}/status`
+///   result:   `{context}/{module}/{worker_name_slug}/{run_id}/result`
+///   cancel:   `{context}/{module}/{worker_name_slug}/{run_id}/cancel` (POST)
 fn parse_queue_worker_tail(tail: &str, is_post: bool) -> Option<ParsedQueueWorkerTail> {
     let parts: Vec<&str> = tail.split('/').filter(|s| !s.is_empty()).collect();
-    // Minimum: context + "queue-worker" + worker_slug = 3
     if parts.len() < 3 {
         return None;
     }
     let context_slug = parts[0];
-    if !is_valid_slug(context_slug) || parts[1] != "queue-worker" {
+    let module_slug = parts[1];
+    if !is_valid_slug(context_slug) || !is_valid_slug(module_slug) {
         return None;
     }
     let worker_name_slug_raw = parts[2];
     let worker_name_slug = normalize_filename_stem_to_slug(worker_name_slug_raw)?;
 
-    // With run_id + operation: 5 parts total
     if parts.len() == 5 {
         let run_id = parts[3];
         let op_str = parts[4];
@@ -64,6 +64,7 @@ fn parse_queue_worker_tail(tail: &str, is_post: bool) -> Option<ParsedQueueWorke
             };
             return Some(ParsedQueueWorkerTail {
                 context_slug: context_slug.to_string(),
+                module_slug: module_slug.to_string(),
                 worker_name_slug,
                 run_id: Some(run_id.to_string()),
                 operation,
@@ -74,6 +75,7 @@ fn parse_queue_worker_tail(tail: &str, is_post: bool) -> Option<ParsedQueueWorke
     if parts.len() == 3 && is_post {
         return Some(ParsedQueueWorkerTail {
             context_slug: context_slug.to_string(),
+            module_slug: module_slug.to_string(),
             worker_name_slug,
             run_id: None,
             operation: QueueWorkerOperation::Enqueue,
@@ -83,8 +85,8 @@ fn parse_queue_worker_tail(tail: &str, is_post: bool) -> Option<ParsedQueueWorke
     None
 }
 
-fn build_queue_worker_unit_path(context_slug: &str, worker_name_slug: &str) -> String {
-    format!("{context_slug}.queue-worker.queue_worker.{worker_name_slug}")
+fn build_queue_worker_unit_path(context_slug: &str, module_slug: &str, worker_name_slug: &str) -> String {
+    format!("{context_slug}.{module_slug}.queue_worker.{worker_name_slug}")
 }
 
 pub async fn handle_queue_worker_post(
@@ -112,7 +114,7 @@ pub async fn handle_queue_worker_post(
     };
 
     let unit_path =
-        build_queue_worker_unit_path(&parsed.context_slug, &parsed.worker_name_slug);
+        build_queue_worker_unit_path(&parsed.context_slug, &parsed.module_slug, &parsed.worker_name_slug);
 
     match parsed.operation {
         QueueWorkerOperation::Enqueue => {

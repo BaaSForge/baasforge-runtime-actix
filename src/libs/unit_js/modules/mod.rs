@@ -4,7 +4,7 @@ mod crypto;
 mod encoding;
 mod fetch;
 pub(crate) mod helpers;
-mod polyfills;
+pub(crate) mod polyfills;
 pub mod sdk;
 mod structured_clone;
 mod url;
