@@ -191,6 +191,15 @@ pub async fn call_handler(
     source: &str,
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
+    {
+        let meta_key = redis_key(project_id, instance_id, "meta");
+        let mut conn = redis.lock().await;
+        let meta: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
+        if meta.is_none() {
+            return Err("workflow instance not found".to_string());
+        }
+    }
+
     let handler_result = drive_workflow(
         redis,
         nats,
@@ -265,14 +274,21 @@ pub async fn get_workflow_status(
     Ok(resp)
 }
 
-/// Get the final result of a completed workflow. Returns `None` if not yet completed.
+/// Get the final result of a completed workflow.
+/// Returns `Ok(None)` if the instance exists but has not completed yet.
+/// Returns `Err` containing "not found" if the instance does not exist.
 pub async fn get_workflow_result(
     redis: &SharedRedis,
     project_id: &str,
     instance_id: &str,
 ) -> Result<Option<String>, String> {
+    let meta_key = redis_key(project_id, instance_id, "meta");
     let result_key = redis_key(project_id, instance_id, "result");
     let mut conn = redis.lock().await;
+    let meta: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
+    if meta.is_none() {
+        return Err("workflow instance not found".to_string());
+    }
     conn.get(&result_key).await.map_err(|e| e.to_string())
 }
 

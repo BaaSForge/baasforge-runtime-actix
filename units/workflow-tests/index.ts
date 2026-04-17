@@ -2180,7 +2180,7 @@ function allEndpointTests(): EndpointTestDef[] {
           const r = await httpGetFull(`${instanceBase}/status`);
           if (r.body?.meta?.status === "completed") {
             const res = await httpGetFull(`${instanceBase}/result`);
-            if (res.body?.result?.input?.value !== "stage-input")
+            if (res.body?.result?.value !== "stage-input")
               throw new Error(`stage input not passed: ${JSON.stringify(res.body?.result)}`);
             return;
           }
@@ -2330,9 +2330,9 @@ function allEndpointTests(): EndpointTestDef[] {
               httpGetFull(`${prodBase}/result`),
               httpGetFull(`${stageBase}/result`),
             ]);
-            if (prodResult.body?.result?.input?.source !== "prod")
+            if (prodResult.body?.result?.source !== "prod")
               throw new Error(`prod result has wrong source: ${JSON.stringify(prodResult.body?.result)}`);
-            if (stageResult.body?.result?.input?.source !== "stage")
+            if (stageResult.body?.result?.source !== "stage")
               throw new Error(`stage result has wrong source: ${JSON.stringify(stageResult.body?.result)}`);
             return;
           }

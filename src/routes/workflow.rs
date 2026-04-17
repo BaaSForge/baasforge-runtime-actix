@@ -77,6 +77,10 @@ pub struct StageHandlerPath {
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn is_valid_handler_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 fn build_unit_path(
     context_slug: &str,
     module_slug: &str,
@@ -170,6 +174,10 @@ async fn do_call_handler(
     source: &str,
     body: &[u8],
 ) -> HttpResponse {
+    if !is_valid_handler_name(handler_name) {
+        return HttpResponse::BadRequest().json(api_error("invalid handler name", json!({})));
+    }
+
     let wf_redis = match require_wf_redis(ctx) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -215,8 +223,14 @@ async fn do_call_handler(
             HttpResponse::Ok().json(val)
         }
         Err(e) => {
-            tracing::error!(error = %e, "workflow handler call error");
-            HttpResponse::InternalServerError().json(api_error(&e, json!({})))
+            if e.contains("not found") {
+                HttpResponse::NotFound().json(api_error(&e, json!({})))
+            } else if e.contains("Unknown shared handler") {
+                HttpResponse::BadRequest().json(api_error(&e, json!({})))
+            } else {
+                tracing::error!(error = %e, "workflow handler call error");
+                HttpResponse::InternalServerError().json(api_error(&e, json!({})))
+            }
         }
     }
 }
@@ -261,8 +275,11 @@ async fn do_cancel(ctx: &AppContext, project_id: Uuid, instance_id: &str) -> Htt
     {
         Ok(()) => HttpResponse::Ok().json(json!({ "status": "cancelled" })),
         Err(e) => {
-            tracing::error!(error = %e, "workflow cancel error");
-            HttpResponse::BadRequest().json(api_error(&e, json!({})))
+            if e.contains("not found") {
+                HttpResponse::NotFound().json(api_error(&e, json!({})))
+            } else {
+                HttpResponse::BadRequest().json(api_error(&e, json!({})))
+            }
         }
     }
 }
@@ -288,8 +305,12 @@ async fn do_get_result(ctx: &AppContext, project_id: Uuid, instance_id: &str) ->
             "message": "workflow has not completed yet",
         })),
         Err(e) => {
-            tracing::error!(error = %e, "workflow result error");
-            HttpResponse::InternalServerError().json(api_error(&e, json!({})))
+            if e.contains("not found") {
+                HttpResponse::NotFound().json(api_error(&e, json!({})))
+            } else {
+                tracing::error!(error = %e, "workflow result error");
+                HttpResponse::InternalServerError().json(api_error(&e, json!({})))
+            }
         }
     }
 }
