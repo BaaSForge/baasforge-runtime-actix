@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { alarmFired: boolean; scheduledAt: number | null };
+export type State = { alarmFired: boolean; scheduledAt: number | null };
+export type ScheduleAlarmInput = { delayMs: number };
 
 export default actor<State>({
   state: { alarmFired: false, scheduledAt: null },
   handlers: {
-    scheduleAlarm(ctx, { delayMs }: { delayMs: number }) {
+    scheduleAlarm(ctx, { delayMs }: ScheduleAlarmInput) {
       ctx.state.scheduledAt = Date.now();
       ctx.setAlarm("test", Date.now() + delayMs);
     },

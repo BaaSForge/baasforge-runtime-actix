@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { dlqCallCount: number };
+export type State = { dlqCallCount: number };
 
 export default actor<State>({
   state: { dlqCallCount: 0 },

@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { firedCount: number };
+export type State = { firedCount: number };
 
 export default actor<State>({
   state: { firedCount: 0 },

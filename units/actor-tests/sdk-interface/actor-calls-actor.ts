@@ -1,12 +1,18 @@
 import { actor, sdk } from "@sdk";
 
-type State = { calledChild: boolean };
+// import type { ReceiveInput, ReceiveOutput } from "@units/test.actor-tests.actor.actor-calls-actor-child";
+type ReceiveInput = { value: number };
+type ReceiveOutput = { ok: boolean };
+
+export type State = { calledChild: boolean };
+export type CallChildInput = { childId: string; value: number };
+export type CallChildOutput = { ok: boolean };
 
 export default actor<State>({
   state: { calledChild: false },
   handlers: {
-    async callChild(ctx, { childId, value }: { childId: string; value: number }) {
-      await sdk.callActor("test.actor-tests.actor.actor-calls-actor-child", childId, "receive", { value });
+    async callChild(ctx, { childId, value }: CallChildInput): Promise<CallChildOutput> {
+      await sdk.callActor<ReceiveInput, ReceiveOutput>("test.actor-tests.actor.actor-calls-actor-child", childId, "receive", { value });
       ctx.state.calledChild = true;
       return { ok: true };
     },

@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { value: number };
+export type State = { value: number };
+export type SetBaseInput = { value: number };
 
 export default actor<State>({
   state: { value: 0 },
   handlers: {
-    setBase(ctx, { value }: { value: number }) {
+    setBase(ctx, { value }: SetBaseInput) {
       ctx.state.value = value;
     },
   },

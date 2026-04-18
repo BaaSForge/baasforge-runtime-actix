@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { completed: boolean };
+export type State = { completed: boolean };
 
 export default actor<State>({
   state: { completed: false },
@@ -10,7 +10,6 @@ export default actor<State>({
       ctx.state.completed = false;
       await new Promise(() => {});
       ctx.state.completed = true;
-      return { completed: true };
     },
   },
 });

@@ -1,12 +1,13 @@
 import { actor } from "@sdk";
 
-type State = { touched: boolean };
+export type State = { touched: boolean };
+export type KnownOnlyOutput = { ok: boolean };
 
 export default actor<State>({
   metadata: { handlers: ["knownOnly"] },
   state: { touched: false },
   handlers: {
-    knownOnly(ctx) {
+    knownOnly(ctx): KnownOnlyOutput {
       return { ok: true };
     },
   },

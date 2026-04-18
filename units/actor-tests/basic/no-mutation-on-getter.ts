@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { count: number };
+export type State = { count: number };
+export type ReadStateOutput = State;
 
 export default actor<State>({
   state: { count: 0 },
   handlers: {
-    readState(ctx) {
+    readState(ctx): ReadStateOutput {
       return ctx.state;
     },
   },

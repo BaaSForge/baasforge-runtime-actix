@@ -1,12 +1,13 @@
 import { actor } from "@sdk";
 
-type State = { attempt: number };
+export type State = { attempt: number };
+export type SucceedOnThirdOutput = State;
 
 export default actor<State>({
   state: { attempt: 0 },
   metadata: { retry: { maxAttempts: 5 } },
   handlers: {
-    succeedOnThird(ctx) {
+    succeedOnThird(ctx): SucceedOnThirdOutput {
       ctx.state.attempt = ctx.attempt;
       if (ctx.attempt < 3) throw new Error("transient");
       return ctx.state;

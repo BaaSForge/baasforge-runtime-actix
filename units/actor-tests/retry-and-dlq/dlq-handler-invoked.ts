@@ -1,12 +1,13 @@
 import { actor } from "@sdk";
 
-type State = { dlqPayloadReceived: boolean };
+export type State = { dlqPayloadReceived: boolean };
+export type FailAndDlqInput = unknown;
 
 export default actor<State>({
   state: { dlqPayloadReceived: false },
   metadata: { retry: { maxAttempts: 1 } },
   handlers: {
-    failAndDlq(ctx, payload) {
+    failAndDlq(ctx, payload: FailAndDlqInput) {
       throw new Error("trigger dlq");
     },
   },

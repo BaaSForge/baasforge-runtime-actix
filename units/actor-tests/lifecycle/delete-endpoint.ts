@@ -1,14 +1,16 @@
 import { actor } from "@sdk";
 
-type State = { v: number | null };
+export type State = { v: number | null };
+export type SetDataInput = { v: number };
+export type GetDataOutput = State;
 
 export default actor<State>({
   state: { v: null },
   handlers: {
-    setData(ctx, { v }: { v: number }) {
+    setData(ctx, { v }: SetDataInput) {
       ctx.state.v = v;
     },
-    getData(ctx) {
+    getData(ctx): GetDataOutput {
       return ctx.state;
     },
   },

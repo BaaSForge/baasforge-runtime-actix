@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { firedAt: number | null; fireCount: number };
+export type State = { firedAt: number | null; fireCount: number };
+export type ScheduleAlarmTwiceInput = { first: number; second: number };
 
 export default actor<State>({
   state: { firedAt: null, fireCount: 0 },
   handlers: {
-    scheduleAlarmTwice(ctx, { first, second }: { first: number; second: number }) {
+    scheduleAlarmTwice(ctx, { first, second }: ScheduleAlarmTwiceInput) {
       ctx.setAlarm("dup", Date.now() + first);
       ctx.setAlarm("dup", Date.now() + second);
     },

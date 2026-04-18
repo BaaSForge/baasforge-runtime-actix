@@ -301,14 +301,48 @@ Error semantics: `UnknownHandler` and `TerminalError` outcomes from the actor wo
 
 Actor units export their handler contracts so callers can `import type` them.
 
+| Export Name           | Required                               | Description                                                             |
+| --------------------- | -------------------------------------- | ----------------------------------------------------------------------- |
+| `State`               | Always                                 | The actor's persistent state shape.                                     |
+| `{HandlerName}Input`  | When handler has non-void input        | PascalCase handler name + `Input`. Omit for handlers with no input.     |
+| `{HandlerName}Output` | When handler has non-void return value | PascalCase handler name + `Output`. Omit for handlers returning `void`. |
+
+`onAlarm` and `onDeadLetter` are internal lifecycle callbacks — **not** exported.
+
+Only `export type` and `export interface` are allowed — no value exports besides `export default`.
+
 ```typescript
+import { actor } from "@sdk";
+
 export type State = { items: CartItem[]; total: number };
 export type AddItemInput = CartItem;
-export type AddItemOutput = void;
-export type CheckoutInput = void;
+export type RemoveItemInput = { itemId: string };
 export type CheckoutOutput = { items: CartItem[]; total: number };
 
-export default actor<State>({ ... });
+export default actor<State>({
+  state: { items: [], total: 0 },
+  handlers: {
+    addItem(ctx, item: AddItemInput) {
+      ctx.state.items.push(item);
+      ctx.state.total += item.price;
+    },
+    removeItem(ctx, { itemId }: RemoveItemInput) {
+      const idx = ctx.state.items.findIndex(i => i.id === itemId);
+      if (idx >= 0) {
+        ctx.state.total -= ctx.state.items[idx].price;
+        ctx.state.items.splice(idx, 1);
+      }
+    },
+    checkout(ctx): CheckoutOutput {
+      const order = { items: ctx.state.items, total: ctx.state.total };
+      ctx.state = { items: [], total: 0 };
+      return order;
+    },
+    getState(ctx) {
+      return ctx.state;
+    },
+  },
+});
 ```
 
 Consumer:
@@ -317,6 +351,7 @@ Consumer:
 import type { AddItemInput, CheckoutOutput } from "@units/ecom.cart.actor.shopping-cart";
 
 await sdk.callActor<AddItemInput, void>("ecom.cart.actor.shopping-cart", "cart-42", "addItem", item);
+const order = await sdk.callActor<void, CheckoutOutput>("ecom.cart.actor.shopping-cart", "cart-42", "checkout");
 ```
 
 ---

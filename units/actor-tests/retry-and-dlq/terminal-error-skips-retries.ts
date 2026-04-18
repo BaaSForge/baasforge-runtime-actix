@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { attempt: number };
+export type State = { attempt: number };
 
 export default actor<State>({
   state: { attempt: 0 },

@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { count: number };
+export type State = { count: number };
+export type ActivateOutput = { id: string };
 
 export default actor<State>({
   state: { count: 0 },
   handlers: {
-    activate(ctx) {
+    activate(ctx): ActivateOutput {
       ctx.state.count++;
       return { id: ctx.id };
     },

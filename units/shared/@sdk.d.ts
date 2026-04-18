@@ -12,11 +12,11 @@ declare module "@sdk" {
       opts?: EnqueueWorkerOptions,
     ): Promise<{ runId: string }>;
 
-    callActor<TResult = any>(
+    callActor<TInput = any, TResult = any>(
       unitPath: string,
       actorId: string,
       handler: string,
-      payload?: any,
+      payload?: TInput,
       opts?: CallActorOptions,
     ): Promise<TResult>;
 
@@ -25,11 +25,11 @@ declare module "@sdk" {
      * promise until the actor handler completes, then resumes with the result.
      * Only available inside a workflow `run` handler; patched by workflow-runtime.js.
      */
-    callActorDurable<TResult = any>(
+    callActorDurable<TInput = any, TResult = any>(
       unitPath: string,
       actorId: string,
       handler: string,
-      payload?: any,
+      payload?: TInput,
     ): Promise<TResult>;
   };
 

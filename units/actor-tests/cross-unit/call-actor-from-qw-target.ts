@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { touched: boolean };
+export type State = { touched: boolean };
+export type TouchOutput = { ok: boolean };
 
 export default actor<State>({
   state: { touched: false },
   handlers: {
-    touch(ctx) {
+    touch(ctx): TouchOutput {
       ctx.state.touched = true;
       return { ok: true };
     },

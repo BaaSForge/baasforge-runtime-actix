@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { count: number };
+export type State = { count: number };
 
 export default actor<State>({
   metadata: { mailboxBacklog: 10 },

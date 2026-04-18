@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { attempts: number };
+export type State = { attempts: number };
 
 export default actor<State>({
   metadata: { retry: { maxAttempts: 5 } },

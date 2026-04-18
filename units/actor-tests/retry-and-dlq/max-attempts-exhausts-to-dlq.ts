@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { dlqInvoked: boolean; attempts: number };
+export type State = { dlqInvoked: boolean; attempts: number };
 
 export default actor<State>({
   state: { dlqInvoked: false, attempts: 0 },

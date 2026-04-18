@@ -94,6 +94,51 @@ Workflow units may export the following named types (plus the required `export d
 
 Only `export type` and `export interface` are allowed — no value exports besides `export default`.
 
+### Export Convention (Actor Units)
+
+Actor units may export the following named types (plus the required `export default actor(...)`):
+
+
+| Export Name           | Required                              | Description                                                              |
+| --------------------- | ------------------------------------- | ------------------------------------------------------------------------ |
+| `State`               | Always                                | The actor's persistent state shape.                                      |
+| `{HandlerName}Input`  | When handler has non-void input       | PascalCase handler name + `Input`. Omit for handlers with no input.      |
+| `{HandlerName}Output` | When handler has non-void return value | PascalCase handler name + `Output`. Omit for handlers returning `void`. |
+
+
+`onAlarm` and `onDeadLetter` are internal lifecycle callbacks and are **not** exported.
+
+Only `export type` and `export interface` are allowed — no value exports besides `export default`.
+
+Example:
+
+```typescript
+import { actor } from "@sdk";
+
+export type State = { items: CartItem[]; total: number };
+export type AddItemInput = CartItem;
+export type RemoveItemInput = { itemId: string };
+export type CheckoutOutput = { items: CartItem[]; total: number };
+
+export default actor<State>({
+  state: { items: [], total: 0 },
+  handlers: {
+    addItem(ctx, item: AddItemInput) { ... },
+    removeItem(ctx, input: RemoveItemInput) { ... },
+    checkout(ctx): CheckoutOutput { ... },
+  },
+});
+```
+
+Consumer:
+
+```typescript
+import type { AddItemInput, CheckoutOutput } from "@units/ecom.cart.actor.shopping-cart";
+
+await sdk.callActor<AddItemInput, void>("ecom.cart.actor.shopping-cart", "cart-42", "addItem", item);
+const order = await sdk.callActor<void, CheckoutOutput>("ecom.cart.actor.shopping-cart", "cart-42", "checkout");
+```
+
 ### Lint Rules
 
 Lint/type-checking of unit code is performed by the **dashboard platform** (a completely separate project). That project validates unit code before deployment. The rules it enforces:

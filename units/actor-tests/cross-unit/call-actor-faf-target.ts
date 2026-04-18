@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { applied: boolean };
+export type State = { applied: boolean };
+export type FireAndForgetOutput = { applied: boolean };
 
 export default actor<State>({
   state: { applied: false },
   handlers: {
-    fireAndForget(ctx) {
+    fireAndForget(ctx): FireAndForgetOutput {
       ctx.state.applied = true;
       return { applied: true };
     },

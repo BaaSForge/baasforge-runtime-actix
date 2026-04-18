@@ -1,11 +1,12 @@
 import { actor } from "@sdk";
 
-type State = { count: number };
+export type State = { count: number };
+export type IncrementOutput = State;
 
 export default actor<State>({
   state: { count: 0 },
   handlers: {
-    increment(ctx) {
+    increment(ctx): IncrementOutput {
       ctx.state.count++;
       return ctx.state;
     },

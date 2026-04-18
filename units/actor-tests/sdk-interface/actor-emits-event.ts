@@ -1,6 +1,6 @@
 import { actor } from "@sdk";
 
-type State = { emitted: boolean };
+export type State = { emitted: boolean };
 
 export default actor<State>({
   state: { emitted: false },
