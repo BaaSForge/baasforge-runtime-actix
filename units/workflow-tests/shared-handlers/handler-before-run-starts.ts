@@ -10,7 +10,7 @@ export type AllowOutput = { unblocked: boolean };
  */
 export default workflow({
   run: async (ctx, _input) => {
-    await ctx.promise("go").get({ timeout: { hours: 1 } });
+    await ctx.promise<void>("go").get({ timeout: { hours: 1 } });
     return await ctx.run("after-gate", async () => {
       ctx.set("entered", true);
       return { phase: "main-work" };
@@ -18,7 +18,7 @@ export default workflow({
   },
   handlers: {
     allow: async (ctx) => {
-      await ctx.promise("go").resolve(undefined);
+      await ctx.promise<void>("go").resolve(undefined);
       return { unblocked: true };
     },
   },

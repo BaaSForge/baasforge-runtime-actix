@@ -1,0 +1,46 @@
+---
+description: No default type parameters in @sdk.d.ts — all generics must be explicit
+globs: units/shared/@sdk.d.ts,units/**/*.ts
+alwaysApply: false
+---
+
+# SDK Definition: No Default Type Parameters
+
+`units/shared/@sdk.d.ts` must never use default type arguments (e.g. `T = unknown`, `T = void`). Every generic must be explicit so callers are forced to declare intent.
+
+## Rule
+
+Never write:
+```ts
+function queueWorker<TData, TResult = unknown>(...)
+function workflow<TInput, TOutput = void>(...)
+```
+
+Always write:
+```ts
+function queueWorker<TData, TResult>(...)
+function workflow<TInput, TOutput>(...)
+```
+
+## Callers must be explicit
+
+When a worker or workflow has no meaningful return, the correct type is `never` (always throws) or `void` (returns nothing):
+
+```ts
+// ❌
+export default queueWorker<Input>({ ... })
+
+// ✅ — process always throws
+export type Output = never;
+export default queueWorker<Input, never>({ ... })
+
+// ✅ — process returns nothing
+export type Output = void;
+export default queueWorker<Input, void>({ ... })
+
+// ✅ — process returns a value
+export type Output = { processed: true };
+export default queueWorker<Input, Output>({ ... })
+```
+
+Same rule applies to `workflow<TInput, TOutput>` and any future SDK generics.

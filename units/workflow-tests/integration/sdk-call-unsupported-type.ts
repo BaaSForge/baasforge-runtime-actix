@@ -14,7 +14,7 @@ export default workflow<Input, Output>(async (ctx) => {
   const target = "workflowtests.integration.api.not_a_workflow_unit";
 
   try {
-    await sdk.callWorkflow(target, {});
+    await sdk.callWorkflow<void>(target, {});
     return { ok: false, reason: "expected sdk.callWorkflow to reject non-workflow units" };
   } catch (e) {
     const err = e as Error;

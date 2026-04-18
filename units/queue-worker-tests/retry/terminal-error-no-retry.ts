@@ -3,7 +3,7 @@ import { queueWorker, sdk } from "@sdk";
 export type Input = Record<string, never>;
 export type Output = never;
 
-export default queueWorker<Input>({
+export default queueWorker<Input, never>({
   metadata: { retry: { maxAttempts: 10 }, deadLetter: { enabled: true } },
   async process(ctx, _data) {
     void sdk;

@@ -39,7 +39,7 @@ export default workflow<Input, Output>({
 
   handlers: {
     approve: async (ctx, req: ApproveInput): Promise<ApproveOutput> => {
-      await ctx.promise("manager-approval").resolve(req.secret);
+      await ctx.promise<string>("manager-approval").resolve(req.secret);
       return { accepted: true };
     },
   },

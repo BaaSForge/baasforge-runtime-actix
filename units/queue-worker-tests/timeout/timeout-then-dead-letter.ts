@@ -1,9 +1,9 @@
 import { queueWorker, sdk } from "@sdk";
 
 export type Input = Record<string, never>;
-export type Output = never;
+export type Output = void;
 
-export default queueWorker<Input>({
+export default queueWorker<Input, Output>({
   metadata: {
     timeout: 500,
     retry: { maxAttempts: 2 },
@@ -12,7 +12,6 @@ export default queueWorker<Input>({
   async process(_ctx, _data) {
     void sdk;
     await new Promise((resolve) => setTimeout(resolve, 5000));
-    return {};
   },
   async onDeadLetter(_ctx, _data, _error) {
     void sdk;

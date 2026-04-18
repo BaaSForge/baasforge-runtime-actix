@@ -17,7 +17,7 @@ export type Output = { first: number; second: number };
  */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const a = await sdk.callWorkflow("test.wf.workflow.sdk-call-callee", { n: 3 });
-  const b = await sdk.callWorkflow("test.wf.workflow.sdk-call-callee", { n: 5 });
+  const a = await sdk.callWorkflow<{ doubled: number }>("test.wf.workflow.sdk-call-callee", { n: 3 });
+  const b = await sdk.callWorkflow<{ doubled: number }>("test.wf.workflow.sdk-call-callee", { n: 5 });
   return { first: a?.doubled, second: b?.doubled };
 });

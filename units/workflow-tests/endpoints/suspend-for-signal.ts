@@ -15,7 +15,7 @@ export default workflow({
   run: async (ctx, _input) => {
     ctx.set("phase", "waiting");
     ctx.set("counter", 42);
-    const signal = await ctx.promise("gate").get({ timeout: { hours: 24 } });
+    const signal = await ctx.promise<unknown>("gate").get({ timeout: { hours: 24 } });
     return { phase: "done", signal };
   },
   handlers: {
@@ -26,7 +26,7 @@ export default workflow({
       };
     },
     signal: async (ctx, input?: any) => {
-      await ctx.promise("gate").resolve(input ?? "default");
+      await ctx.promise<unknown>("gate").resolve(input ?? "default");
       return { accepted: true };
     },
   },

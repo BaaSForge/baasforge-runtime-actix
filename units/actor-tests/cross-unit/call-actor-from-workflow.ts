@@ -4,7 +4,7 @@ import { workflow, sdk } from "@sdk";
 type SetInput = { value: number };
 type SetOutput = { ok: boolean };
 
-export default workflow(async (ctx, data) => {
+export default workflow(async (ctx, data: { actorId: string; value: number }) => {
   const { actorId, value } = data;
   const result = await ctx.run("call-actor", () =>
     sdk.callActor<SetInput, SetOutput>("test.actor-tests.actor.call-actor-from-workflow-target", actorId, "set", { value })

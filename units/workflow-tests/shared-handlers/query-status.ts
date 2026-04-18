@@ -11,7 +11,7 @@ export type ReleaseOutput = { ok: boolean };
 export default workflow({
   run: async (ctx, _input) => {
     ctx.set("status", { phase: "running", counter: 1 });
-    await ctx.promise("stop").get({ timeout: { hours: 1 } });
+    await ctx.promise<void>("stop").get({ timeout: { hours: 1 } });
     const status = await ctx.get<{ phase: string; counter: number }>("status");
     return { status, done: true };
   },
@@ -20,7 +20,7 @@ export default workflow({
       return (await ctx.get<{ phase: string; counter: number }>("status")) ?? null;
     },
     release: async (ctx) => {
-      await ctx.promise("stop").resolve(undefined);
+      await ctx.promise<void>("stop").resolve(undefined);
       return { ok: true };
     },
   },

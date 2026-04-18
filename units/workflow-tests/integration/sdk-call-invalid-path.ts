@@ -13,7 +13,7 @@ export default workflow<Input, Output>(async (ctx) => {
   void ctx;
 
   try {
-    await sdk.callWorkflow("bad-path", {});
+    await sdk.callWorkflow<void>("bad-path", {});
     return { ok: false, reason: "expected sdk.callWorkflow to reject invalid path" };
   } catch (e) {
     const err = e as Error;
