@@ -7,6 +7,7 @@ pub mod actor_runner;
 pub mod modules;
 pub mod queue_worker_runner;
 pub mod types;
+pub mod unit_prompts;
 pub mod workflow_runner;
 
 mod api_runner;
