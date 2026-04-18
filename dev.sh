@@ -11,4 +11,5 @@ export PORT="$1"
 export CARGO_BUILD_RUSTC_WRAPPER=
 # Run full `cargo clippy` then run; clippy must pass (e.g. no uuid::Uuid::new_v4) before the app runs
 # -x prepends "cargo ", so use "clippy && cargo run" to get "cargo clippy && cargo run"
-CARGO_INCREMENTAL=1 PORT="$PORT" cargo watch -w src -x "clippy && cargo run"
+# CARGO_INCREMENTAL=1 PORT="$PORT" cargo watch -w src -x "clippy && cargo run"
+cargo clippy && CARGO_INCREMENTAL=1 PORT="$PORT" cargo run
