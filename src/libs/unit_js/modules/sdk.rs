@@ -306,6 +306,8 @@ pub fn register_sdk_comm(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     ctx.globals().set("__baal_call_actor_async", Func::from(host_call_actor_async))?;
     ctx.globals().set("__baal_enqueue_worker", Func::from(host_enqueue_worker))?;
     ctx.globals().set("__baal_call_workflow_sync", Func::from(host_call_workflow_sync))?;
+    ctx.globals().set("__baal_start_workflow_fire_forget", Func::from(host_start_workflow_fire_forget))?;
+    ctx.globals().set("__baal_call_workflow_handler_sync", Func::from(host_call_workflow_handler_sync))?;
     ctx.globals().set("__baal_start_actor_call", Func::from(host_start_actor_call))?;
     Ok(())
 }
@@ -489,6 +491,154 @@ fn host_call_workflow_sync(
             {
                 Ok(result) => result,
                 Err(_) => Ok(serde_json::json!({ "ok": false, "error": format!("sdk.callWorkflow: timed out after {}ms", timeout_ms as u64) }).to_string()),
+            }
+        })
+    });
+    res.map_err(|e| Exception::throw_message(&ctx, &e))
+}
+
+/// Fire-and-forget workflow start: creates the instance, spawns drive in the
+/// background, and returns `{ instanceId }` immediately. Used by
+/// `sdk.callWorkflow(path, data, { awaitResult: false })`.
+fn host_start_workflow_fire_forget(
+    ctx: Ctx<'_>,
+    unit_path: String,
+    input_json: String,
+) -> rquickjs::Result<String> {
+    use crate::models::projects::ProjectUnitType;
+    use crate::services::project_release::load_unit_for_path_production;
+    use crate::services::workflow_engine::start_workflow;
+
+    let res: Result<String, String> = with_comm_ctx(|comm| {
+        let wf_redis = comm.wf_redis.clone()
+            .ok_or_else(|| "sdk.callWorkflow: workflow Redis not configured".to_string())?;
+        let wf_nats = comm.wf_nats.clone();
+        let wf_js = comm.wf_js.clone();
+        let pool = comm.pool.clone();
+        let redis_conn = comm.redis_conn.clone();
+        let project_id = comm.project_id.clone();
+
+        let parts: Vec<&str> = unit_path.split('.').collect();
+        if parts.len() != 4 {
+            return Err(format!("sdk.callWorkflow: invalid unitPath '{unit_path}' — expected 4 segments (context.module.workflow.name)"));
+        }
+        if parts[2] != "workflow" {
+            let label = if parts[2] == "api" { "API unit" } else { parts[2] };
+            return Err(format!("sdk.callWorkflow: target is an {label}, not a workflow unit"));
+        }
+
+        block_async(async move {
+            let project_uuid = uuid::Uuid::parse_str(&project_id)
+                .map_err(|e| format!("invalid project_id: {e}"))?;
+
+            let unit = load_unit_for_path_production(&pool, &redis_conn, project_uuid, ProjectUnitType::Workflow, &unit_path)
+                .await
+                .map_err(|e| format!("sdk.callWorkflow: load unit error: {e}"))?
+                .ok_or_else(|| format!("sdk.callWorkflow: workflow unit not found: {unit_path}"))?;
+
+            let source = unit.compiled_code.as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("sdk.callWorkflow: workflow unit has no compiled code")?
+                .to_string();
+
+            let instance_id = crate::libs::ids::new_uuid().to_string();
+            let callee_comm = comm.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
+
+            let wf_redis_bg = wf_redis.clone();
+            let wf_nats_bg = wf_nats.clone();
+            let wf_js_bg = wf_js.clone();
+            let project_id_bg = project_id.clone();
+            let unit_path_bg = unit_path.clone();
+            let instance_id_bg = instance_id.clone();
+            let input_json_bg = input_json.clone();
+            let source_bg = source.clone();
+            tokio::spawn(async move {
+                if let Err(e) = start_workflow(
+                    &wf_redis_bg,
+                    &wf_nats_bg,
+                    &wf_js_bg,
+                    &project_id_bg,
+                    &unit_path_bg,
+                    &instance_id_bg,
+                    &input_json_bg,
+                    &source_bg,
+                    callee_comm,
+                ).await {
+                    tracing::error!(error = %e, unit_path = %unit_path_bg, instance_id = %instance_id_bg, "fire-and-forget workflow start failed");
+                }
+            });
+
+            Ok(serde_json::json!({ "instanceId": instance_id }).to_string())
+        })
+    });
+    res.map_err(|e| Exception::throw_message(&ctx, &e))
+}
+
+/// Blocking call to invoke a shared handler on a running workflow instance.
+/// Used by `sdk.callWorkflowHandler(path, instanceId, handler, input, opts?)`.
+fn host_call_workflow_handler_sync(
+    ctx: Ctx<'_>,
+    unit_path: String,
+    instance_id: String,
+    handler_name: String,
+    input_json: String,
+    timeout_ms: f64,
+) -> rquickjs::Result<String> {
+    use crate::models::projects::ProjectUnitType;
+    use crate::services::project_release::load_unit_for_path_production;
+    use crate::services::workflow_engine::call_handler;
+
+    let res: Result<String, String> = with_comm_ctx(|comm| {
+        let wf_redis = comm.wf_redis.clone()
+            .ok_or_else(|| "sdk.callWorkflowHandler: workflow Redis not configured".to_string())?;
+        let wf_nats = comm.wf_nats.clone();
+        let wf_js = comm.wf_js.clone();
+        let pool = comm.pool.clone();
+        let redis_conn = comm.redis_conn.clone();
+        let project_id = comm.project_id.clone();
+        let timeout = std::time::Duration::from_millis(timeout_ms as u64);
+
+        let parts: Vec<&str> = unit_path.split('.').collect();
+        if parts.len() != 4 {
+            return Err(format!("sdk.callWorkflowHandler: invalid unitPath '{unit_path}' — expected 4 segments"));
+        }
+        if parts[2] != "workflow" {
+            let label = if parts[2] == "api" { "API unit" } else { parts[2] };
+            return Err(format!("sdk.callWorkflowHandler: target is an {label}, not a workflow unit"));
+        }
+        if handler_name.is_empty() {
+            return Err("sdk.callWorkflowHandler: handler name is required".to_string());
+        }
+        if instance_id.is_empty() {
+            return Err("sdk.callWorkflowHandler: instanceId is required".to_string());
+        }
+
+        block_async(async move {
+            let project_uuid = uuid::Uuid::parse_str(&project_id)
+                .map_err(|e| format!("invalid project_id: {e}"))?;
+
+            let unit = load_unit_for_path_production(&pool, &redis_conn, project_uuid, ProjectUnitType::Workflow, &unit_path)
+                .await
+                .map_err(|e| format!("sdk.callWorkflowHandler: load unit error: {e}"))?
+                .ok_or_else(|| format!("sdk.callWorkflowHandler: workflow unit not found: {unit_path}"))?;
+
+            let source = unit.compiled_code.as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .ok_or("sdk.callWorkflowHandler: workflow unit has no compiled code")?
+                .to_string();
+
+            let callee_comm = comm.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
+
+            match tokio::time::timeout(
+                timeout,
+                call_handler(&wf_redis, &wf_nats, &wf_js, &project_id, &instance_id, &handler_name, &input_json, &source, callee_comm),
+            ).await {
+                Ok(Ok(result)) => {
+                    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or(serde_json::Value::Null);
+                    Ok(serde_json::json!({ "ok": true, "value": parsed }).to_string())
+                }
+                Ok(Err(e)) => Ok(serde_json::json!({ "ok": false, "error": e }).to_string()),
+                Err(_) => Ok(serde_json::json!({ "ok": false, "error": format!("sdk.callWorkflowHandler: timed out after {}ms", timeout_ms as u64) }).to_string()),
             }
         })
     });

@@ -7,9 +7,11 @@ export type TriggerWorkflowOutput = State;
 export default actor<State>({
   state: { workflowResult: null },
   handlers: {
-    async triggerWorkflow(ctx, { n }: TriggerWorkflowInput): Promise<TriggerWorkflowOutput> {
-      const result = await sdk.callWorkflow<{ doubled: number }>("test.actor-tests.workflow.double-n", { n });
-      ctx.state.workflowResult = result?.doubled ?? result;
+    triggerWorkflow(ctx, { n }: TriggerWorkflowInput): TriggerWorkflowOutput {
+      const result = sdk.callWorkflowAndWaitForOutputSync<
+        { n: number }, { doubled: number }
+      >("test.actor-tests.workflow.double-n", { n });
+      ctx.state.workflowResult = result.doubled;
       return ctx.state;
     },
   },

@@ -11,8 +11,10 @@ export type CallChildOutput = { ok: boolean };
 export default actor<State>({
   state: { calledChild: false },
   handlers: {
-    async callChild(ctx, { childId, value }: CallChildInput): Promise<CallChildOutput> {
-      await sdk.callActor<ReceiveInput, ReceiveOutput>("test.actor-tests.actor.actor-calls-actor-child", childId, "receive", { value });
+    callChild(ctx, { childId, value }: CallChildInput): CallChildOutput {
+      sdk.callActorAndWaitForResultSync<ReceiveInput, ReceiveOutput>(
+        "test.actor-tests.actor.actor-calls-actor-child", childId, "receive", { value },
+      );
       ctx.state.calledChild = true;
       return { ok: true };
     },

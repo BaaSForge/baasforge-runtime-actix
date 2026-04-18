@@ -69,34 +69,53 @@ function __stripImports(source) {
 
 // --- sdk (inter-unit communication) ---
 // Thin proxies to Rust __baal_* host functions. No fetch(), no business logic.
+// All methods are synchronous and return plain values — never Promises.
 
 var sdk = {
-  callActor: function (unitPath, actorId, handler, payload, opts) {
-    var awaitResult = !(opts && opts.awaitResult === false);
+  callActorAndWaitForResultSync: function (unitPath, actorId, handler, payload, opts) {
     var timeoutMs = (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : 30000;
     var payloadJson = payload !== undefined ? JSON.stringify(payload) : '{}';
-    if (!awaitResult) {
-      __baal_call_actor_async(unitPath, actorId, handler, payloadJson);
-      return Promise.resolve({ delivered: true });
-    }
     var resultJson = __baal_call_actor_sync(unitPath, actorId, handler, payloadJson, timeoutMs);
     var parsed = JSON.parse(resultJson);
-    if (!parsed.ok) throw new Error(parsed.error || 'sdk.callActor failed');
-    return Promise.resolve(parsed.result);
+    if (!parsed.ok) throw new Error(parsed.error || 'sdk.callActorAndWaitForResultSync failed');
+    return parsed.result;
   },
 
-  enqueueWorker: function (unitPath, data) {
+  sendActorMessageSync: function (unitPath, actorId, handler, payload) {
+    var payloadJson = payload !== undefined ? JSON.stringify(payload) : '{}';
+    __baal_call_actor_async(unitPath, actorId, handler, payloadJson);
+    return { delivered: true };
+  },
+
+  enqueueWorkerSync: function (unitPath, data, opts) {
+    void opts;
     var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
     var resultJson = __baal_enqueue_worker(unitPath, dataJson);
-    return Promise.resolve(JSON.parse(resultJson));
+    return JSON.parse(resultJson);
   },
 
-  callWorkflow: function (unitPath, data) {
+  startWorkflowSync: function (unitPath, data) {
     var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
-    var resultJson = __baal_call_workflow_sync(unitPath, dataJson, 300000);
+    var startedJson = __baal_start_workflow_fire_forget(unitPath, dataJson);
+    return JSON.parse(startedJson);
+  },
+
+  callWorkflowAndWaitForOutputSync: function (unitPath, data, opts) {
+    var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
+    var timeoutMs = (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : 300000;
+    var resultJson = __baal_call_workflow_sync(unitPath, dataJson, timeoutMs);
     var parsed = JSON.parse(resultJson);
-    if (!parsed.ok) throw new Error(parsed.error || 'sdk.callWorkflow failed');
-    return Promise.resolve(parsed.value);
+    if (!parsed.ok) throw new Error(parsed.error || 'sdk.callWorkflowAndWaitForOutputSync failed');
+    return parsed.value;
+  },
+
+  callWorkflowHandlerAndWaitForResultSync: function (unitPath, instanceId, handler, input, opts) {
+    var inputJson = input !== undefined ? JSON.stringify(input) : 'null';
+    var timeoutMs = (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : 30000;
+    var resultJson = __baal_call_workflow_handler_sync(unitPath, instanceId, handler, inputJson, timeoutMs);
+    var parsed = JSON.parse(resultJson);
+    if (!parsed.ok) throw new Error(parsed.error || 'sdk.callWorkflowHandlerAndWaitForResultSync failed');
+    return parsed.value;
   },
 
   getApiUnitTriggerUrl: function (unitPathOrId) {

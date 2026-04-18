@@ -4,7 +4,7 @@ export type Input = { value: number };
 export type Output = { enqueuedRunId: string };
 
 export default queueWorker<Input, Output>(async (_ctx, data) => {
-  const { runId } = await sdk.enqueueWorker(
+  const { runId } = sdk.enqueueWorkerSync<{ value: number }>(
     "test.queue-worker.queue_worker.enqueue-from-worker-b",
     { value: data.value },
   );

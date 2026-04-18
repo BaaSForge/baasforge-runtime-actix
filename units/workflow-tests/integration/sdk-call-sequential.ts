@@ -4,20 +4,17 @@ export type Input = void;
 export type Output = { first: number; second: number };
 
 /**
- * Makes two sequential sdk.callWorkflow invocations to verify the call-index counter
- * (sdk_call_0, sdk_call_1) works correctly for multiple calls in one workflow.
- *
- * On replay:
- *   - sdk_call_0 → cached in wfCtx.__promises["sdk_call_0"] → returns first result
- *   - sdk_call_1 → cached in wfCtx.__promises["sdk_call_1"] → returns second result
- *   Neither call re-invokes __baal_start_call on replay.
- *
- * REQUIRES Phase C (.start consumer in workflow_worker).
- * Test is registered but skipped until Phase C is complete.
+ * Two sequential callWorkflowAndWaitForOutputSync invocations verify the
+ * call-index counter (sdk_call_0, sdk_call_1) caches each suspension
+ * independently on replay.
  */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const a = await sdk.callWorkflow<{ doubled: number }>("test.wf.workflow.sdk-call-callee", { n: 3 });
-  const b = await sdk.callWorkflow<{ doubled: number }>("test.wf.workflow.sdk-call-callee", { n: 5 });
-  return { first: a?.doubled, second: b?.doubled };
+  const a = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>(
+    "test.wf.workflow.sdk-call-callee", { n: 3 },
+  );
+  const b = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>(
+    "test.wf.workflow.sdk-call-callee", { n: 5 },
+  );
+  return { first: a.doubled, second: b.doubled };
 });

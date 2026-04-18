@@ -5,7 +5,7 @@ type State = { value: number | null; callCount: number };
 
 export default workflow(async (_ctx, data: { actorId: string }) => {
   try {
-    await sdk.callActorDurable(
+    sdk.callActorDurableAndWaitForResultSync<unknown, State>(
       "test.actor-tests.actor.call-actor-durable-target",
       data.actorId,
       "handlerDoesNotExist",

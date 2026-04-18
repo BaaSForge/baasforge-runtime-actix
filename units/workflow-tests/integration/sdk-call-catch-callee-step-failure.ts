@@ -5,7 +5,9 @@ export type Output = { caught: boolean; errorMessage: string };
 
 export default workflow<Input, Output>(async (_ctx) => {
   try {
-    await sdk.callWorkflow<void>("test.wf.workflow.sdk-call-failing-after-steps", {});
+    sdk.callWorkflowAndWaitForOutputSync<unknown, void>(
+      "test.wf.workflow.sdk-call-failing-after-steps", {},
+    );
     return { caught: false, errorMessage: "" };
   } catch (e) {
     const err = e as Error;

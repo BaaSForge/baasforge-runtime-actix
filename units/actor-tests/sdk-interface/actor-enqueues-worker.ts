@@ -7,8 +7,10 @@ export type TriggerWorkerOutput = { runId: string };
 export default actor<State>({
   state: { enqueuedRunId: null },
   handlers: {
-    async triggerWorker(ctx, { value }: TriggerWorkerInput): Promise<TriggerWorkerOutput> {
-      const { runId } = await sdk.enqueueWorker("test.actor-tests.queue_worker.echo-target", { value });
+    triggerWorker(ctx, { value }: TriggerWorkerInput): TriggerWorkerOutput {
+      const { runId } = sdk.enqueueWorkerSync<{ value: number }>(
+        "test.actor-tests.queue_worker.echo-target", { value },
+      );
       ctx.state.enqueuedRunId = runId;
       return { runId };
     },

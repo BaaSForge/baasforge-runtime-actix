@@ -1018,6 +1018,20 @@ function allTests(): TestDef[] {
       ],
     },
     {
+      // Verifies sdk.startWorkflowSync returns { instanceId } immediately
+      // (fire-and-forget) without suspending the caller — the caller completes
+      // right away regardless of whether the callee is still running.
+      name: "sdk-start-workflow-fire-forget", category: "integration",
+      workflowSlug: "sdk-start-workflow-fire-forget",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      checks: [
+        { type: "true", path: "nonEmpty" },
+        { type: "notNull", path: "instanceId" },
+      ],
+    },
+    {
       name: "sdk-call-failure-propagates", category: "integration",
       workflowSlug: "sdk-call-failure-propagates",
       input: {},
