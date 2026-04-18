@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::error::{format_js_error, log_js_failure};
 use super::modules;
-use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
+use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx, get_project_id};
 use super::types::{JsResponseRaw, TriggerHttpResponse, TriggerHttpSnapshot};
 
 fn register_globals(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
@@ -56,6 +56,11 @@ fn run_in_ctx(
         .map_err(|e| e.to_string())?;
     ctx.globals()
         .set("__selfHost", self_host)
+        .map_err(|e| e.to_string())?;
+
+    let project_id = get_project_id().unwrap_or_default();
+    ctx.globals()
+        .set("__baal_project_id", project_id.as_str())
         .map_err(|e| e.to_string())?;
 
     register_globals(ctx).map_err(|e| {

@@ -59,6 +59,10 @@ pub fn clear_comm_ctx() {
     COMM_CTX.with(|c| *c.borrow_mut() = None);
 }
 
+pub fn get_project_id() -> Option<String> {
+    COMM_CTX.with(|c| c.borrow().as_ref().map(|ctx| ctx.project_id.clone()))
+}
+
 fn with_comm_ctx<F, R>(f: F) -> Result<R, String>
 where
     F: FnOnce(Arc<SdkCommCtx>) -> Result<R, String>,
