@@ -390,10 +390,26 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
 
     let test_pool = if settings.test_mode { Some(pool) } else { None };
 
+    let enable_dev_cors = cfg!(debug_assertions);
+
+    use actix_cors::Cors;
     use actix_web::guard;
+    use actix_web::middleware::Condition;
 
     HttpServer::new(move || {
         App::new()
+            .wrap(Condition::new(
+                enable_dev_cors,
+                Cors::default()
+                    .allowed_origin_fn(|origin, _| {
+                        matches!(
+                            origin.as_bytes(),
+                            b"http://localhost:1200" | b"http://localhost:1200/"
+                        )
+                    })
+                    .allow_any_method()
+                    .allow_any_header(),
+            ))
             .app_data(web::Data::new(app_context.clone()))
             .route(
                 "/api/v1/ws/{project_id}",
