@@ -33,7 +33,19 @@ pub(crate) const TEST_ALT_CHAT_SESSION_ID: &str = "00000000-aaaa-bbbb-cccc-00000
 
 pub(crate) const TEST_STAGE_RUNTIME_ID: &str = "00000000-aaaa-bbbb-cccc-000000000022";
 pub(crate) const TEST_STAGE_RELEASE_ID: &str = "00000000-aaaa-bbbb-cccc-000000000032";
+pub(crate) const TEST_STAGE_CHAT_SESSION_ID: &str = "00000000-aaaa-bbbb-cccc-000000000042";
+pub(crate) const TEST_STAGE_B_RUNTIME_ID: &str = "00000000-aaaa-bbbb-cccc-000000000023";
+pub(crate) const TEST_STAGE_B_RELEASE_ID: &str = "00000000-aaaa-bbbb-cccc-000000000033";
+pub(crate) const TEST_STAGE_B_CHAT_SESSION_ID: &str = "00000000-aaaa-bbbb-cccc-000000000043";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RuntimeTarget {
+    All,
+    StageAOnly,
+    StageBOnly,
+}
+
+#[derive(Clone)]
 pub(crate) struct UnitSpec {
     pub context_slug: String,
     pub module_slug: String,
@@ -41,6 +53,7 @@ pub(crate) struct UnitSpec {
     pub unit_type: String,
     pub full_id: String,
     pub compiled_code: String,
+    pub(super) runtime_target: RuntimeTarget,
 }
 
 pub(super) fn discover_unit_js_files(dir: &Path, sorted: bool) -> Vec<(String, String)> {
@@ -77,6 +90,31 @@ pub(crate) fn unit_path_from_full_id(full_id: &str) -> String {
     parts[..parts.len() - 1].join(".")
 }
 
+fn merge_stage_overrides(base_units: &[UnitSpec], stage_overrides: Vec<UnitSpec>) -> Vec<UnitSpec> {
+    let mut merged: Vec<UnitSpec> = base_units.to_vec();
+    for override_spec in stage_overrides {
+        if let Some(idx) = merged
+            .iter()
+            .position(|u| u.full_id == override_spec.full_id)
+        {
+            merged[idx] = override_spec;
+        } else {
+            merged.push(override_spec);
+        }
+    }
+    merged
+}
+
+pub(super) fn stem_without_runtime_suffix(stem: &str) -> (String, RuntimeTarget) {
+    if let Some(base) = stem.strip_suffix("-runtime-stage-a") {
+        return (base.to_string(), RuntimeTarget::StageAOnly);
+    }
+    if let Some(base) = stem.strip_suffix("-runtime-stage-b") {
+        return (base.to_string(), RuntimeTarget::StageBOnly);
+    }
+    (stem.to_string(), RuntimeTarget::All)
+}
+
 // ---------------------------------------------------------------------------
 // Public API (called from routes/mod.rs)
 // ---------------------------------------------------------------------------
@@ -84,11 +122,24 @@ pub(crate) fn unit_path_from_full_id(full_id: &str) -> String {
 pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     let mut conn = pool.get().expect("test_seed: cannot get DB connection");
 
+    let mut discovered_units: Vec<UnitSpec> = Vec::new();
+    discovered_units.extend(api_units::collect(settings));
+    discovered_units.extend(workflow_units::collect(settings));
+    discovered_units.extend(queue_worker_units::collect(settings));
+    discovered_units.extend(actor_units::collect());
+
     let mut all_units: Vec<UnitSpec> = Vec::new();
-    all_units.extend(api_units::collect(settings));
-    all_units.extend(workflow_units::collect(settings));
-    all_units.extend(queue_worker_units::collect(settings));
-    all_units.extend(actor_units::collect());
+    let mut stage_a_overrides: Vec<UnitSpec> = Vec::new();
+    let mut stage_b_overrides: Vec<UnitSpec> = Vec::new();
+    for spec in discovered_units {
+        match spec.runtime_target {
+            RuntimeTarget::All => all_units.push(spec),
+            RuntimeTarget::StageAOnly => stage_a_overrides.push(spec),
+            RuntimeTarget::StageBOnly => stage_b_overrides.push(spec),
+        }
+    }
+    let stage_a_units = merge_stage_overrides(&all_units, stage_a_overrides);
+    let stage_b_units = merge_stage_overrides(&all_units, stage_b_overrides);
 
     tracing::info!("test_seed: seeding {} test unit(s)", all_units.len());
 
@@ -170,8 +221,31 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .execute(&mut conn)
     .expect("test_seed: insert alt chat_session");
 
+    sql_query(
+        "INSERT INTO chat_sessions (id, project_id, user_id, title, created_at) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'test-stage-session', NOW()) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind::<Text, _>(TEST_STAGE_CHAT_SESSION_ID)
+    .bind::<Text, _>(TEST_PROJECT_ID)
+    .bind::<Text, _>(TEST_USER_ID)
+    .execute(&mut conn)
+    .expect("test_seed: insert stage chat_session");
+    sql_query(
+        "INSERT INTO chat_sessions (id, project_id, user_id, title, created_at) \
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'test-stage-b-session', NOW()) \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind::<Text, _>(TEST_STAGE_B_CHAT_SESSION_ID)
+    .bind::<Text, _>(TEST_PROJECT_ID)
+    .bind::<Text, _>(TEST_USER_ID)
+    .execute(&mut conn)
+    .expect("test_seed: insert stage-b chat_session");
+
     let mut combined_unit_ids: Vec<serde_json::Value> = Vec::new();
     let mut alt_combined_unit_ids: Vec<serde_json::Value> = Vec::new();
+    let mut stage_a_combined_unit_ids: Vec<serde_json::Value> = Vec::new();
+    let mut stage_b_combined_unit_ids: Vec<serde_json::Value> = Vec::new();
 
     for spec in &all_units {
         combined_unit_ids.push(serde_json::json!({
@@ -227,6 +301,60 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
         .execute(&mut conn)
         .unwrap_or_else(|e| panic!("test_seed: insert alt unit '{}': {e}", spec.full_id));
     }
+    for spec in &stage_a_units {
+        stage_a_combined_unit_ids.push(serde_json::json!({
+            "unitId": spec.full_id,
+            "chatSessionId": TEST_STAGE_CHAT_SESSION_ID,
+        }));
+        sql_query(
+            "INSERT INTO project_units \
+             (project_id, chat_session_id, id, revision, unit_type, \
+              context_slug, module_slug, unit_name_slug, \
+              compiled_code, code, is_deleted) \
+             VALUES ($1::uuid, $2::uuid, $3, 1, $4::project_unit_type, \
+                     $5, $6, $7, $8, $9, false) \
+             ON CONFLICT (project_id, chat_session_id, id, revision) DO UPDATE \
+             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code",
+        )
+        .bind::<Text, _>(TEST_PROJECT_ID)
+        .bind::<Text, _>(TEST_STAGE_CHAT_SESSION_ID)
+        .bind::<Text, _>(&spec.full_id)
+        .bind::<Text, _>(&spec.unit_type)
+        .bind::<Text, _>(&spec.context_slug)
+        .bind::<Text, _>(&spec.module_slug)
+        .bind::<Text, _>(&spec.unit_name_slug)
+        .bind::<Text, _>(&spec.compiled_code)
+        .bind::<Text, _>(&spec.compiled_code)
+        .execute(&mut conn)
+        .unwrap_or_else(|e| panic!("test_seed: insert stage unit '{}': {e}", spec.full_id));
+    }
+    for spec in &stage_b_units {
+        stage_b_combined_unit_ids.push(serde_json::json!({
+            "unitId": spec.full_id,
+            "chatSessionId": TEST_STAGE_B_CHAT_SESSION_ID,
+        }));
+        sql_query(
+            "INSERT INTO project_units \
+             (project_id, chat_session_id, id, revision, unit_type, \
+              context_slug, module_slug, unit_name_slug, \
+              compiled_code, code, is_deleted) \
+             VALUES ($1::uuid, $2::uuid, $3, 1, $4::project_unit_type, \
+                     $5, $6, $7, $8, $9, false) \
+             ON CONFLICT (project_id, chat_session_id, id, revision) DO UPDATE \
+             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code",
+        )
+        .bind::<Text, _>(TEST_PROJECT_ID)
+        .bind::<Text, _>(TEST_STAGE_B_CHAT_SESSION_ID)
+        .bind::<Text, _>(&spec.full_id)
+        .bind::<Text, _>(&spec.unit_type)
+        .bind::<Text, _>(&spec.context_slug)
+        .bind::<Text, _>(&spec.module_slug)
+        .bind::<Text, _>(&spec.unit_name_slug)
+        .bind::<Text, _>(&spec.compiled_code)
+        .bind::<Text, _>(&spec.compiled_code)
+        .execute(&mut conn)
+        .unwrap_or_else(|e| panic!("test_seed: insert stage-b unit '{}': {e}", spec.full_id));
+    }
 
     let units_metadata = serde_json::json!({
         "combinedUnitIDs": combined_unit_ids,
@@ -236,6 +364,16 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     let alt_units_metadata = serde_json::json!({
         "combinedUnitIDs": alt_combined_unit_ids,
         "newUnitIDs": alt_combined_unit_ids,
+        "previousUnitIDs": [],
+    });
+    let stage_a_units_metadata = serde_json::json!({
+        "combinedUnitIDs": stage_a_combined_unit_ids,
+        "newUnitIDs": stage_a_combined_unit_ids,
+        "previousUnitIDs": [],
+    });
+    let stage_b_units_metadata = serde_json::json!({
+        "combinedUnitIDs": stage_b_combined_unit_ids,
+        "newUnitIDs": stage_b_combined_unit_ids,
         "previousUnitIDs": [],
     });
 
@@ -290,9 +428,19 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     )
     .bind::<Text, _>(TEST_STAGE_RELEASE_ID)
     .bind::<Text, _>(TEST_PROJECT_ID)
-    .bind::<Text, _>(units_metadata.to_string())
+    .bind::<Text, _>(stage_a_units_metadata.to_string())
     .execute(&mut conn)
     .expect("test_seed: insert stage release");
+    sql_query(
+        "INSERT INTO project_releases (id, project_id, units_metadata, created_at, is_stage, revision) \
+         VALUES ($1::uuid, $2::uuid, $3::jsonb, NOW(), true, 1.0) \
+         ON CONFLICT (id) DO UPDATE SET units_metadata = EXCLUDED.units_metadata",
+    )
+    .bind::<Text, _>(TEST_STAGE_B_RELEASE_ID)
+    .bind::<Text, _>(TEST_PROJECT_ID)
+    .bind::<Text, _>(stage_b_units_metadata.to_string())
+    .execute(&mut conn)
+    .expect("test_seed: insert stage-b release");
 
     sql_query(
         "INSERT INTO project_runtimes (id, project_id, environment, name, slug, live_release_id) \
@@ -304,6 +452,16 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .bind::<Text, _>(TEST_STAGE_RELEASE_ID)
     .execute(&mut conn)
     .expect("test_seed: insert stage runtime");
+    sql_query(
+        "INSERT INTO project_runtimes (id, project_id, environment, name, slug, live_release_id) \
+         VALUES ($1::uuid, $2::uuid, 'prod'::platform_environment_type, 'stage-b', 'stage-b', $3::uuid) \
+         ON CONFLICT (id) DO UPDATE SET live_release_id = EXCLUDED.live_release_id",
+    )
+    .bind::<Text, _>(TEST_STAGE_B_RUNTIME_ID)
+    .bind::<Text, _>(TEST_PROJECT_ID)
+    .bind::<Text, _>(TEST_STAGE_B_RELEASE_ID)
+    .execute(&mut conn)
+    .expect("test_seed: insert stage-b runtime");
 
     for spec in &all_units {
         let path = unit_path_from_full_id(&spec.full_id);

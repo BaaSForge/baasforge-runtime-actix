@@ -18,6 +18,13 @@ fn redis_key(project_id: &str, instance_id: &str, suffix: &str) -> String {
     format!("wf:{project_id}:{instance_id}:{suffix}")
 }
 
+fn workflow_dedup_name_key(project_id: &str, unit_path: &str, stage_runtime_id: Option<Uuid>) -> String {
+    match stage_runtime_id {
+        Some(rid) => format!("wf:{project_id}:name:stage:{rid}:{unit_path}"),
+        None => format!("wf:{project_id}:name:{unit_path}"),
+    }
+}
+
 /// Get or create the durable JetStream stream that captures all workflow wake subjects.
 /// The stream subject `wf.*.*.wake` matches every wake publish, including immediate
 /// core-NATS publishes (promise resolved, retry exhausted) which are auto-captured.
@@ -77,7 +84,7 @@ pub async fn start_workflow(
     // actively running or suspended. Completed/failed/cancelled instances are
     // NOT reused so that subsequent triggers always start a fresh execution.
     // SET NX atomically claims the name_key so concurrent starts can't both pass.
-    let name_key = format!("wf:{project_id}:name:{unit_path}");
+    let name_key = workflow_dedup_name_key(project_id, unit_path, comm.stage_runtime_id);
     {
         let mut conn = redis.lock().await;
         let claimed: bool = redis::cmd("SET")
@@ -595,7 +602,7 @@ pub async fn launch_callee_workflow(
 
     meta.status = "running".to_string();
     let updated_meta = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
-    let name_key = format!("wf:{project_id}:name:{unit_path}");
+    let name_key = workflow_dedup_name_key(project_id, unit_path, meta.stage_runtime_id);
     {
         let mut conn = redis.lock().await;
         let _: () = conn.set(&meta_key, &updated_meta).await.map_err(|e| e.to_string())?;

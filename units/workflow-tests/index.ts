@@ -17,6 +17,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
+const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
@@ -2353,6 +2354,45 @@ function allEndpointTests(): EndpointTestDef[] {
           }
         }
         throw new Error("prod and stage workflows did not both complete in time");
+      },
+    },
+    {
+      name: "runtime-scope-workflow-chain",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const prodStart = await httpPostFull(epWfUrl(baseUrl, "runtime-scope-chain"), { marker: "prod-marker" });
+        const stageAStart = await httpPostFull(epWfStageUrl(baseUrl, "runtime-scope-chain", STAGE_RUNTIME_ID), { marker: "stage-a-marker" });
+        const stageBStart = await httpPostFull(epWfStageUrl(baseUrl, "runtime-scope-chain", STAGE_B_RUNTIME_ID), { marker: "stage-b-marker" });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) {
+          throw new Error(`prod start failed: ${prodStart.status} ${JSON.stringify(prodStart.body)}`);
+        }
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) {
+          throw new Error(`stage-a start failed: ${stageAStart.status} ${JSON.stringify(stageAStart.body)}`);
+        }
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) {
+          throw new Error(`stage-b start failed: ${stageBStart.status} ${JSON.stringify(stageBStart.body)}`);
+        }
+        const prodBase = `${epWfUrl(baseUrl, "runtime-scope-chain")}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${epWfStageUrl(baseUrl, "runtime-scope-chain", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${epWfStageUrl(baseUrl, "runtime-scope-chain", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([epPollStatus(prodBase, "completed"), epPollStatus(stageABase, "completed"), epPollStatus(stageBBase, "completed")]);
+        const [prodResultResp, stageAResultResp, stageBResultResp] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const prodResult = prodResultResp.body?.result;
+        const stageAResult = stageAResultResp.body?.result;
+        const stageBResult = stageBResultResp.body?.result;
+        if (prodResult?.workflowScope !== "prod") {
+          throw new Error(`prod workflow resolved wrong scope: ${JSON.stringify(prodResult)}`);
+        }
+        if (stageAResult?.workflowScope !== "stage-a") {
+          throw new Error(`stage-a workflow resolved wrong scope: ${JSON.stringify(stageAResult)}`);
+        }
+        if (stageBResult?.workflowScope !== "stage-b") {
+          throw new Error(`stage-b workflow resolved wrong scope: ${JSON.stringify(stageBResult)}`);
+        }
       },
     },
 

@@ -5,7 +5,8 @@ use std::path::Path;
 
 fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
     let stem = Path::new(rel_path).file_stem()?.to_str()?;
-    let unit_name_slug = normalize_filename_stem_to_slug(stem)?;
+    let (base_stem, runtime_target) = super::stem_without_runtime_suffix(stem);
+    let unit_name_slug = normalize_filename_stem_to_slug(&base_stem)?;
     Some(UnitSpec {
         context_slug: "test".into(),
         module_slug: "wf".into(),
@@ -13,6 +14,7 @@ fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
         unit_type: "workflow".into(),
         full_id: format!("test.wf.workflow.{unit_name_slug}.1"),
         compiled_code,
+        runtime_target,
     })
 }
 

@@ -16,6 +16,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
+const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
+const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
@@ -28,6 +30,14 @@ function workerUrl(baseUrl: string, slug: string, projectId = PROJECT_ID): strin
 
 function workerRunUrl(baseUrl: string, slug: string, runId: string, suffix: string, projectId = PROJECT_ID): string {
   return `${workerUrl(baseUrl, slug, projectId)}/${runId}/${suffix}`;
+}
+
+function wfUrl(baseUrl: string, slug: string, projectId = PROJECT_ID): string {
+  return `${baseUrl}/api/v1/trigger/wf/${projectId}/test/queue-worker/${slug}`;
+}
+
+function wfStageUrl(baseUrl: string, slug: string, runtimeId = STAGE_RUNTIME_ID): string {
+  return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/queue-worker/${slug}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +829,60 @@ function allInlineTests(): WorkerInlineTestDef[] {
         if (da.result?.projectTag !== "A") throw new Error("project A data leaked");
         if (db.result?.projectTag !== "B") throw new Error("project B data leaked");
         if (da.result?.runId === db.result?.runId) throw new Error("run IDs collided across projects");
+      },
+    },
+    {
+      name: "runtime-stage-scope-via-workflow",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const prodStart = await httpPostFull(wfUrl(baseUrl, "runtime-scope-worker-caller"), { marker: "prod" });
+        const stageAStart = await httpPostFull(wfStageUrl(baseUrl, "runtime-scope-worker-caller", STAGE_RUNTIME_ID), { marker: "stage-a" });
+        const stageBStart = await httpPostFull(wfStageUrl(baseUrl, "runtime-scope-worker-caller", STAGE_B_RUNTIME_ID), { marker: "stage-b" });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error("prod start failed");
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error("stage-a start failed");
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error("stage-b start failed");
+        const prodBase = `${wfUrl(baseUrl, "runtime-scope-worker-caller")}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, "runtime-scope-worker-caller", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, "runtime-scope-worker-caller", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        for (let i = 0; i < 100; i++) {
+          await sleep(150);
+          const [prodSt, stageASt, stageBSt] = await Promise.all([
+            httpGetFull(`${prodBase}/status`),
+            httpGetFull(`${stageABase}/status`),
+            httpGetFull(`${stageBBase}/status`),
+          ]);
+          if (
+            prodSt.body?.meta?.status === "completed" &&
+            stageASt.body?.meta?.status === "completed" &&
+            stageBSt.body?.meta?.status === "completed"
+          ) {
+            const [prodWfRes, stageAWfRes, stageBWfRes] = await Promise.all([
+              httpGetFull(`${prodBase}/result`),
+              httpGetFull(`${stageABase}/result`),
+              httpGetFull(`${stageBBase}/result`),
+            ]);
+            const prodRunId = prodWfRes.body?.result?.workerRunId as string | undefined;
+            const stageARunId = stageAWfRes.body?.result?.workerRunId as string | undefined;
+            const stageBRunId = stageBWfRes.body?.result?.workerRunId as string | undefined;
+            if (!prodRunId || !stageARunId || !stageBRunId) throw new Error("missing worker runId from workflow result");
+            const [prodWorker, stageAWorker, stageBWorker] = await Promise.all([
+              pollWorker(baseUrl, "runtime-scope-worker-target", prodRunId, 100),
+              pollWorker(baseUrl, "runtime-scope-worker-target", stageARunId, 100),
+              pollWorker(baseUrl, "runtime-scope-worker-target", stageBRunId, 100),
+            ]);
+            if (prodWorker.result?.runtimeScope !== "prod") {
+              throw new Error(`prod worker scope mismatch: ${JSON.stringify(prodWorker.result)}`);
+            }
+            if (stageAWorker.result?.runtimeScope !== "stage-a") {
+              throw new Error(`stage-a worker scope mismatch: ${JSON.stringify(stageAWorker.result)}`);
+            }
+            if (stageBWorker.result?.runtimeScope !== "stage-b") {
+              throw new Error(`stage-b worker scope mismatch: ${JSON.stringify(stageBWorker.result)}`);
+            }
+            return;
+          }
+        }
+        throw new Error("workflow callers did not complete");
       },
     },
 

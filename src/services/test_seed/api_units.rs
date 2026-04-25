@@ -1,6 +1,6 @@
 //! Collects API-type [`UnitSpec`]s from `TEST_UNIT_FILES`.
 
-use super::UnitSpec;
+use super::{RuntimeTarget, UnitSpec};
 use crate::configs::Settings;
 
 pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
@@ -12,6 +12,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.runtime.api.check.1".into(),
             compiled_code,
+            runtime_target: RuntimeTarget::All,
         },
         "workflow-tests" => UnitSpec {
             context_slug: "test".into(),
@@ -20,6 +21,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.wf.api.test.1".into(),
             compiled_code,
+            runtime_target: RuntimeTarget::All,
         },
         "queue-worker-tests" => UnitSpec {
             context_slug: "test".into(),
@@ -28,6 +30,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.queue-worker-tests.api.index.1".into(),
             compiled_code,
+            runtime_target: RuntimeTarget::All,
         },
         "actor-tests" => UnitSpec {
             context_slug: "test".into(),
@@ -36,6 +39,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.actor-tests.api.index.1".into(),
             compiled_code,
+            runtime_target: RuntimeTarget::All,
         },
         other => UnitSpec {
             context_slug: "test".into(),
@@ -44,6 +48,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: format!("test.{m}.api.{m}.1", m = other.replace('-', "_")),
             compiled_code,
+            runtime_target: RuntimeTarget::All,
         },
     }
 }

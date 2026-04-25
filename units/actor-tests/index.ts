@@ -36,6 +36,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
+const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
+const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
@@ -214,6 +216,10 @@ async function deleteActor(
 
 function wfUrl(baseUrl: string, slug: string, projectId = PROJECT_ID): string {
   return `${baseUrl}/api/v1/trigger/wf/${projectId}/test/actor-tests/${slug}`;
+}
+
+function wfStageUrl(baseUrl: string, slug: string, runtimeId = STAGE_RUNTIME_ID): string {
+  return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/actor-tests/${slug}`;
 }
 
 async function startWorkflow(
@@ -1181,6 +1187,51 @@ function allInlineTests(): ActorInlineTestDef[] {
         ]);
         if (sA?.state?.v !== 111) throw new Error(`instance A state wrong`);
         if (sB?.state?.v !== 222) throw new Error(`instance B state wrong`);
+      },
+    },
+    {
+      name: "runtime-stage-scope-via-workflow",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const actorId = `iso-stage-actor-${uid()}`;
+        await deleteActor(baseUrl, "runtime-scope-actor-target", actorId);
+        const prodStart = await httpPostFull(wfUrl(baseUrl, "runtime-scope-actor-caller"), {
+          actorId,
+          marker: "prod",
+        });
+        const stageAStart = await httpPostFull(wfStageUrl(baseUrl, "runtime-scope-actor-caller", STAGE_RUNTIME_ID), {
+          actorId,
+          marker: "stage-a",
+        });
+        const stageBStart = await httpPostFull(wfStageUrl(baseUrl, "runtime-scope-actor-caller", STAGE_B_RUNTIME_ID), {
+          actorId,
+          marker: "stage-b",
+        });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error(`prod start failed`);
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error(`stage-a start failed`);
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error(`stage-b start failed`);
+        const prodBase = `${wfUrl(baseUrl, "runtime-scope-actor-caller")}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, "runtime-scope-actor-caller", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, "runtime-scope-actor-caller", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          pollWorkflowStatus(prodBase, "completed"),
+          pollWorkflowStatus(stageABase, "completed"),
+          pollWorkflowStatus(stageBBase, "completed"),
+        ]);
+        const [prodResultResp, stageAResultResp, stageBResultResp] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        if (prodResultResp.body?.result?.actorScope !== "prod") {
+          throw new Error(`prod actor scope mismatch: ${JSON.stringify(prodResultResp.body?.result)}`);
+        }
+        if (stageAResultResp.body?.result?.actorScope !== "stage-a") {
+          throw new Error(`stage-a actor scope mismatch: ${JSON.stringify(stageAResultResp.body?.result)}`);
+        }
+        if (stageBResultResp.body?.result?.actorScope !== "stage-b") {
+          throw new Error(`stage-b actor scope mismatch: ${JSON.stringify(stageBResultResp.body?.result)}`);
+        }
       },
     },
     {

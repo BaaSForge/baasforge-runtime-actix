@@ -549,3 +549,49 @@ pub enum ServiceError {
     #[error("loaded unit does not match requested unit type")]
     LoadedUnitTypeMismatch,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::projects::{ProjectReleaseRow, UnitIdEntry, UnitsMetadata};
+    use chrono::Utc;
+
+    #[test]
+    fn resolve_unit_from_release_metadata_uses_combined_only() {
+        let project_id = crate::libs::ids::new_uuid();
+        let unit_path = "ctx.mod.actor.worker";
+        let session = crate::libs::ids::new_uuid();
+
+        let release = ProjectReleaseRow {
+            id: crate::libs::ids::new_uuid(),
+            project_id,
+            units_metadata: Some(UnitsMetadata {
+                new_unit_ids: vec![UnitIdEntry {
+                    unit_id: format!("{unit_path}.3"),
+                    chat_session_id: session,
+                }],
+                combined_unit_ids: vec![],
+                previous_unit_ids: vec![UnitIdEntry {
+                    unit_id: format!("{unit_path}.2"),
+                    chat_session_id: session,
+                }],
+            }),
+            created_at: Utc::now(),
+            notes: None,
+            chat_session_id: None,
+            is_stage: true,
+            revision: 4.0,
+        };
+
+        let resolved = resolve_unit_from_release_metadata(&release, unit_path);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn path_and_revision_from_full_unit_id_parses_expected_shape() {
+        let parsed = path_and_revision_from_full_unit_id("ctx.mod.queue_worker.name.7")
+            .expect("valid full unit id should parse");
+        assert_eq!(parsed.0, "ctx.mod.queue_worker.name");
+        assert_eq!(parsed.1, 7);
+    }
+}

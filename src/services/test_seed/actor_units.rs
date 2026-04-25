@@ -8,15 +8,17 @@ fn unit_type_for_stem(stem: &str) -> &'static str {
         "call-actor-from-workflow" | "call-actor-from-queue-worker" | "echo-target" => "queue_worker",
         "double-n"
         | "call-actor-durable-basic"
-        | "call-actor-durable-unknown-handler" => "workflow",
+        | "call-actor-durable-unknown-handler"
+        | "runtime-scope-actor-caller" => "workflow",
         _ => "actor",
     }
 }
 
 fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
     let stem = Path::new(rel_path).file_stem()?.to_str()?;
-    let unit_name_slug = normalize_filename_stem_to_slug(stem)?;
-    let unit_type = unit_type_for_stem(stem);
+    let (base_stem, runtime_target) = super::stem_without_runtime_suffix(stem);
+    let unit_name_slug = normalize_filename_stem_to_slug(&base_stem)?;
+    let unit_type = unit_type_for_stem(&base_stem);
     Some(UnitSpec {
         context_slug: "test".into(),
         module_slug: "actor-tests".into(),
@@ -24,6 +26,7 @@ fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
         unit_type: unit_type.into(),
         full_id: format!("test.actor-tests.{unit_type}.{unit_name_slug}.1"),
         compiled_code,
+        runtime_target,
     })
 }
 
