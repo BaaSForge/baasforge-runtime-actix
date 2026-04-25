@@ -832,6 +832,19 @@ function allInlineTests(): WorkerInlineTestDef[] {
       },
     },
     {
+      name: "endpoint-status-cross-project-404",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const enqueued = await enqueue(baseUrl, "echo-worker", { tag: "status-xproj" });
+        if (!enqueued) throw new Error("enqueue failed");
+        const url = `${baseUrl}/api/v1/trigger/workerQueue/${ALT_PROJECT_ID}/test/queue-worker/echo-worker/${enqueued.runId}/status`;
+        const resp = await httpGetFull(url);
+        if (resp.status !== 404) {
+          throw new Error(`expected 404 for worker status under different project_id, got ${resp.status}`);
+        }
+      },
+    },
+    {
       name: "runtime-stage-scope-via-workflow",
       category: "isolation",
       run: async (baseUrl) => {

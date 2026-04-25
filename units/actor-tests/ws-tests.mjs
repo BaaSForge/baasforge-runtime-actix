@@ -31,6 +31,7 @@ if (nodeMajor < 22) {
 
 const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3335";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
+const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const ACTOR_BASE = `${BASE_URL}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests`;
 
 // ---------------------------------------------------------------------------
@@ -362,6 +363,29 @@ const WS_FILTERING = [
 ];
 
 // ---------------------------------------------------------------------------
+// ws_actor_isolation (1)
+// ---------------------------------------------------------------------------
+
+const WS_ISOLATION = [
+  {
+    name: "ws-wrong-project-receives-no-actor-events",
+    run: async () => {
+      const msgs = await wsCollect(toWsUrl(ALT_PROJECT_ID), 3_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(200);
+        await callActor("lifecycle-events-broadcast", `ws-wrong-proj-${uid()}`, "increment");
+      });
+      if (msgs.length > 0) {
+        throw new Error(
+          `expected no actor events on wrong-project WebSocket, got ${msgs.length}: ` +
+            JSON.stringify(msgs.slice(0, 2).map((m) => m.raw)),
+        );
+      }
+    },
+  },
+];
+
+// ---------------------------------------------------------------------------
 // ws_actor_edge_cases tests (3)
 // ---------------------------------------------------------------------------
 
@@ -458,6 +482,7 @@ async function main() {
   const sections = [
     { label: "ws_actor_lifecycle", tests: WS_LIFECYCLE },
     { label: "ws_actor_filtering", tests: WS_FILTERING },
+    { label: "ws_actor_isolation", tests: WS_ISOLATION },
     { label: "ws_actor_edge_cases", tests: WS_EDGE_CASES },
   ];
 

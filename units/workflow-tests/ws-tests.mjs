@@ -39,8 +39,10 @@ if (nodeMajor < 22) {
 
 const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3334";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
+const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 
 const WF_BASE = `${BASE_URL}/api/v1/trigger/wf/${PROJECT_ID}/test/wf`;
+const WF_STAGE_BASE = `${BASE_URL}/api/v1/trigger/wf/${PROJECT_ID}/stage/${STAGE_RUNTIME_ID}/test/wf`;
 
 // ---------------------------------------------------------------------------
 // Helpers — HTTP
@@ -83,6 +85,17 @@ async function epStart(slug, input = {}) {
   return {
     instanceId: resp.body.instanceId,
     base: `${WF_BASE}/${slug}/${resp.body.instanceId}`,
+  };
+}
+
+async function epStageStart(slug, input = {}) {
+  const resp = await httpPost(`${WF_STAGE_BASE}/${slug}`, input);
+  if (resp.status !== 200 || !resp.body?.instanceId) {
+    throw new Error(`stage start ${slug} failed: ${resp.status} ${JSON.stringify(resp.body)}`);
+  }
+  return {
+    instanceId: resp.body.instanceId,
+    base: `${WF_STAGE_BASE}/${slug}/${resp.body.instanceId}`,
   };
 }
 
@@ -422,6 +435,86 @@ const TESTS = [
         throw new Error(
           `expected workflow.completed after signal; got: ${JSON.stringify(events)}`,
         );
+    },
+  },
+  {
+    name: "ws-parallel-prod-and-stage-distinct-instance-ids",
+    run: async () => {
+      let prodId;
+      let stageId;
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 6_000, async () => {
+        const [p, s] = await Promise.all([
+          epStart("echo-input", { lane: "prod" }),
+          epStageStart("echo-input", { lane: "stage" }),
+        ]);
+        prodId = p.instanceId;
+        stageId = s.instanceId;
+      });
+      if (prodId === stageId) {
+        throw new Error(`prod and stage returned identical instanceId: ${prodId}`);
+      }
+      const ids = new Set(wsInstanceIds(msgs));
+      if (!ids.has(prodId)) {
+        throw new Error(`missing WS events for prod instance ${prodId}; saw ${[...ids].join(",")}`);
+      }
+      if (!ids.has(stageId)) {
+        throw new Error(`missing WS events for stage instance ${stageId}; saw ${[...ids].join(",")}`);
+      }
+    },
+  },
+  {
+    name: "ws-dual-narrow-filters-no-cross-talk-prod-vs-stage",
+    run: async () => {
+      const { instanceId: idProd, base: baseProd } = await epStart("suspend-for-signal", {});
+      await epPollStatus(baseProd, "suspended");
+      const { instanceId: idStage, base: baseStage } = await epStageStart("suspend-for-signal", {});
+      await epPollStatus(baseStage, "suspended");
+
+      const ws1 = await wsOpen(toWsUrl(PROJECT_ID));
+      const ws2 = await wsOpen(toWsUrl(PROJECT_ID));
+      const m1 = [];
+      const m2 = [];
+      ws1.addEventListener("message", (ev) => {
+        const raw = typeof ev.data === "string" ? ev.data : String(ev.data);
+        try {
+          m1.push(JSON.parse(raw));
+        } catch {
+          m1.push(raw);
+        }
+      });
+      ws2.addEventListener("message", (ev) => {
+        const raw = typeof ev.data === "string" ? ev.data : String(ev.data);
+        try {
+          m2.push(JSON.parse(raw));
+        } catch {
+          m2.push(raw);
+        }
+      });
+
+      try {
+        ws1.send(JSON.stringify({ action: "subscribe", unitType: "workflow", instanceId: idProd }));
+        ws2.send(JSON.stringify({ action: "subscribe", unitType: "workflow", instanceId: idStage }));
+        await sleep(500);
+        await httpPost(`${baseStage}/handlers/signal`, {});
+        await httpPost(`${baseProd}/handlers/signal`, {});
+        await sleep(3_000);
+      } finally {
+        ws1.close();
+        ws2.close();
+      }
+
+      const badOn1 = m1.filter((x) => x && typeof x === "object" && x.instanceId === idStage);
+      const badOn2 = m2.filter((x) => x && typeof x === "object" && x.instanceId === idProd);
+      if (badOn1.length > 0) {
+        throw new Error(`client bound to prod instance saw stage instance events: ${badOn1.length}`);
+      }
+      if (badOn2.length > 0) {
+        throw new Error(`client bound to stage instance saw prod instance events: ${badOn2.length}`);
+      }
+      const done1 = m1.some((x) => x?.event === "workflow.completed" && x.instanceId === idProd);
+      const done2 = m2.some((x) => x?.event === "workflow.completed" && x.instanceId === idStage);
+      if (!done1) throw new Error(`client 1 never saw workflow.completed for ${idProd}`);
+      if (!done2) throw new Error(`client 2 never saw workflow.completed for ${idStage}`);
     },
   },
 ];

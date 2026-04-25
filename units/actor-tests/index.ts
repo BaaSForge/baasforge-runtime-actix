@@ -1128,7 +1128,7 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
 
-    // ---- isolation (8) ----
+    // ---- isolation (11) ----
     {
       name: "cross-project-isolation",
       category: "isolation",
@@ -1187,6 +1187,35 @@ function allInlineTests(): ActorInlineTestDef[] {
         ]);
         if (sA?.state?.v !== 111) throw new Error(`instance A state wrong`);
         if (sB?.state?.v !== 222) throw new Error(`instance B state wrong`);
+      },
+    },
+    {
+      name: "http-same-actor-id-two-units-no-cross-state",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const shared = `shared-id-${uid()}`;
+        await deleteActor(baseUrl, "cross-unit-isolation-a", shared);
+        await deleteActor(baseUrl, "cross-unit-isolation-b", shared);
+        await callActor(baseUrl, "cross-unit-isolation-a", shared, "setValue", { v: "unit-a" });
+        await callActor(baseUrl, "cross-unit-isolation-b", shared, "setValue", { v: "unit-b" });
+        const sa = await getState(baseUrl, "cross-unit-isolation-a", shared);
+        const sb = await getState(baseUrl, "cross-unit-isolation-b", shared);
+        if (sa?.state?.v !== "unit-a") throw new Error(`unit A state leaked or wrong: ${JSON.stringify(sa)}`);
+        if (sb?.state?.v !== "unit-b") throw new Error(`unit B state leaked or wrong: ${JSON.stringify(sb)}`);
+      },
+    },
+    {
+      name: "http-actor-state-cross-project-404",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const id = `cross-proj-http-${uid()}`;
+        await deleteActor(baseUrl, "cross-unit-isolation-a", id);
+        await callActor(baseUrl, "cross-unit-isolation-a", id, "setValue", { v: "only-main-project" });
+        const url = actorStateUrl(baseUrl, "cross-unit-isolation-a", id, ALT_PROJECT_ID);
+        const r = await httpGetFull(url);
+        if (r.status !== 404) {
+          throw new Error(`expected 404 for actor state under different project_id, got ${r.status}`);
+        }
       },
     },
     {

@@ -31,6 +31,7 @@ if (nodeMajor < 22) {
 
 const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3335";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
+const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 
 const QW_BASE = `${BASE_URL}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/queue-worker`;
 
@@ -484,6 +485,22 @@ const WS_FILTERING = [
         throw new Error(
           `expected no events for other run after narrowing; got ${forOther.length}`,
         );
+    },
+  },
+  {
+    name: "ws-wrong-project-receives-no-queue-worker-events",
+    run: async () => {
+      const msgs = await wsCollect(toWsUrl(ALT_PROJECT_ID), 3_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
+        await sleep(200);
+        await enqueueWorker("echo-worker", { wsWrongProj: 1 });
+      });
+      if (msgs.length > 0) {
+        throw new Error(
+          `expected no QW events on wrong-project WebSocket, got ${msgs.length}: ` +
+            JSON.stringify(msgs.slice(0, 2).map((m) => m.raw)),
+        );
+      }
     },
   },
 ];

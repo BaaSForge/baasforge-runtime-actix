@@ -16,6 +16,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // ---------------------------------------------------------------------------
 
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
+const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
@@ -2354,6 +2355,64 @@ function allEndpointTests(): EndpointTestDef[] {
           }
         }
         throw new Error("prod and stage workflows did not both complete in time");
+      },
+    },
+    {
+      name: "endpoint-workflow-status-cross-project-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const { instanceId, base } = await epStart(baseUrl, "echo-input", { probe: "cross-project" });
+        await epPollStatus(base, "completed");
+        const wrongUrl = `${baseUrl}/api/v1/trigger/wf/${ALT_PROJECT_ID}/test/wf/echo-input/${instanceId}/status`;
+        const r = await httpGetFull(wrongUrl);
+        if (r.status !== 404) {
+          throw new Error(`expected 404 for status with same instanceId under different project, got ${r.status}`);
+        }
+      },
+    },
+    {
+      name: "endpoint-stage-workflow-handler-via-production-url",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const start = await httpPostFull(epWfStageUrl(baseUrl, "suspend-for-signal", STAGE_RUNTIME_ID), {});
+        if (start.status !== 200 || !start.body?.instanceId) {
+          throw new Error(`stage start failed: ${start.status}`);
+        }
+        const id = start.body.instanceId as string;
+        const stageBase = `${epWfStageUrl(baseUrl, "suspend-for-signal", STAGE_RUNTIME_ID)}/${id}`;
+        await epPollStatus(stageBase, "suspended");
+        const prodHandler = `${epWfUrl(baseUrl, "suspend-for-signal")}/${id}/handlers/signal`;
+        const hr = await httpPostFull(prodHandler, {});
+        if (hr.status !== 200) {
+          throw new Error(`handler via production URL expected 200, got ${hr.status}`);
+        }
+        await epPollStatus(stageBase, "completed");
+        const prodStatus = await httpGetFull(`${epWfUrl(baseUrl, "suspend-for-signal")}/${id}/status`);
+        const sid = prodStatus.body?.meta?.stageRuntimeId as string | undefined;
+        if (!sid || sid.replace(/-/g, "").toLowerCase() !== STAGE_RUNTIME_ID.replace(/-/g, "").toLowerCase()) {
+          throw new Error(`expected meta.stageRuntimeId to remain stage creator; got ${JSON.stringify(prodStatus.body?.meta)}`);
+        }
+      },
+    },
+    {
+      name: "endpoint-stage-b-status-via-stage-a-url-preserves-creator-meta",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const start = await httpPostFull(epWfStageUrl(baseUrl, "echo-input", STAGE_B_RUNTIME_ID), { tag: "from-b" });
+        if (start.status !== 200 || !start.body?.instanceId) {
+          throw new Error(`stage-b start failed: ${start.status}`);
+        }
+        const id = start.body.instanceId as string;
+        const stageBBase = `${epWfStageUrl(baseUrl, "echo-input", STAGE_B_RUNTIME_ID)}/${id}`;
+        await epPollStatus(stageBBase, "completed");
+        const viaA = await httpGetFull(`${epWfStageUrl(baseUrl, "echo-input", STAGE_RUNTIME_ID)}/${id}/status`);
+        if (viaA.status !== 200) {
+          throw new Error(`status via stage-a URL expected 200, got ${viaA.status}`);
+        }
+        const sid = viaA.body?.meta?.stageRuntimeId as string | undefined;
+        if (!sid || sid.replace(/-/g, "").toLowerCase() !== STAGE_B_RUNTIME_ID.replace(/-/g, "").toLowerCase()) {
+          throw new Error(`meta.stageRuntimeId must reflect instance creator (stage-b), not URL prefix: ${JSON.stringify(viaA.body?.meta)}`);
+        }
       },
     },
     {
