@@ -91,17 +91,23 @@ pub async fn publish_actor_event(
     unit_path: &str,
     actor_id: &str,
     event_type: &str,
+    stage_runtime_id: Option<Uuid>,
 ) {
     let Some(nc) = nats else { return };
     let encoded_unit_path = encode_nats_component(unit_path);
     let subject = format!("actor.events.{project_id}.{encoded_unit_path}.{actor_id}");
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "type": event_type,
         "project_id": project_id,
         "unit_path": unit_path,
         "actor_id": actor_id,
         "at": chrono::Utc::now().timestamp_millis(),
     });
+    if let Some(rid) = stage_runtime_id {
+        if let serde_json::Value::Object(ref mut obj) = payload {
+            obj.insert("stageRuntimeId".to_string(), serde_json::json!(rid.to_string()));
+        }
+    }
     if let Err(e) = nc
         .publish(subject, bytes::Bytes::from(payload.to_string()))
         .await

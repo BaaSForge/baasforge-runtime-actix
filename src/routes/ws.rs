@@ -1,6 +1,7 @@
 use actix_web::{web, HttpRequest, HttpResponse};
 use futures::StreamExt;
 use serde::Deserialize;
+use uuid::Uuid;
 
 use crate::routes::AppContext;
 
@@ -45,17 +46,31 @@ fn build_subjects(
     }
 }
 
-/// WebSocket endpoint: `GET /api/v1/ws/{project_id}`
-///
-/// Upgrades the connection and subscribes to NATS lifecycle event subjects,
-/// forwarding every matching event as a JSON text frame.
-///
-/// Clients may send filter messages to narrow the subscription:
-/// ```json
-/// {"action":"subscribe","unitType":"queue-worker","instanceId":"abc-123"}
-/// {"action":"subscribe","unitType":"workflow"}
-/// {"action":"subscribe"}
-/// ```
+fn include_nats_payload(text: &str, stage_filter: Option<&Uuid>) -> bool {
+    match stage_filter {
+        None => {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+                return true;
+            };
+            match v.get("stageRuntimeId") {
+                None | Some(serde_json::Value::Null) => true,
+                Some(serde_json::Value::String(st)) => Uuid::parse_str(st).is_err(),
+                Some(_) => false,
+            }
+        }
+        Some(want) => {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else {
+                return false;
+            };
+            v.get("stageRuntimeId")
+                .and_then(|x| x.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .map(|id| id == *want)
+                .unwrap_or(false)
+        }
+    }
+}
+
 pub async fn ws_project_events(
     req: HttpRequest,
     stream: web::Payload,
@@ -63,7 +78,26 @@ pub async fn ws_project_events(
     ctx: web::Data<AppContext>,
 ) -> Result<HttpResponse, actix_web::Error> {
     let project_id = path.into_inner();
+    ws_project_events_impl(req, stream, ctx, project_id, None).await
+}
 
+pub async fn ws_project_events_stage(
+    req: HttpRequest,
+    stream: web::Payload,
+    path: web::Path<(String, Uuid)>,
+    ctx: web::Data<AppContext>,
+) -> Result<HttpResponse, actix_web::Error> {
+    let (project_id, runtime_id) = path.into_inner();
+    ws_project_events_impl(req, stream, ctx, project_id, Some(runtime_id)).await
+}
+
+async fn ws_project_events_impl(
+    req: HttpRequest,
+    stream: web::Payload,
+    ctx: web::Data<AppContext>,
+    project_id: String,
+    stage_filter: Option<Uuid>,
+) -> Result<HttpResponse, actix_web::Error> {
     if ctx.wf_nats_client.is_none()
         && ctx.wq_nats_client.is_none()
         && ctx.actor_nats_client.is_none()
@@ -80,6 +114,7 @@ pub async fn ws_project_events(
         ctx.wq_nats_client.clone(),
         ctx.actor_nats_client.clone(),
         project_id,
+        stage_filter,
     ));
 
     Ok(resp)
@@ -114,6 +149,7 @@ async fn run_ws(
     wq_nats: Option<async_nats::Client>,
     actor_nats: Option<async_nats::Client>,
     project_id: String,
+    stage_filter: Option<Uuid>,
 ) {
     let mut current_unit_type: Option<String> = None;
     let mut current_instance_id: Option<String> = None;
@@ -160,10 +196,13 @@ async fn run_ws(
                 nats_msg = merged.next() => {
                     match nats_msg {
                         Some(msg) => {
-                            if let Ok(text) = std::str::from_utf8(&msg.payload)
-                                && session.text(text.to_owned()).await.is_err()
-                            {
-                                break 'outer;
+                            if let Ok(text) = std::str::from_utf8(&msg.payload) {
+                                if !include_nats_payload(text, stage_filter.as_ref()) {
+                                    continue;
+                                }
+                                if session.text(text.to_owned()).await.is_err() {
+                                    break 'outer;
+                                }
                             }
                         }
                         None => break 'outer,

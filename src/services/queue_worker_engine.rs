@@ -84,6 +84,7 @@ pub async fn enqueue_queue_worker_run(
         &run_id,
         "queueWorker.queued",
         serde_json::json!({ "workerPath": unit_path }),
+        stage_runtime_id,
     )
     .await;
 
@@ -193,7 +194,15 @@ pub async fn cancel_queue_worker_run(
     let _: () = conn.set(&meta_key, &updated).await.map_err(|e| e.to_string())?;
     drop(conn);
 
-    publish_qw_event(nats, project_id, run_id, "queueWorker.cancelled", serde_json::json!({})).await;
+    publish_qw_event(
+        nats,
+        project_id,
+        run_id,
+        "queueWorker.cancelled",
+        serde_json::json!({}),
+        meta.stage_runtime_id,
+    )
+    .await;
 
     Ok(serde_json::json!({ "status": "cancelled" }))
 }
@@ -204,6 +213,7 @@ pub async fn publish_qw_event(
     run_id: &str,
     event_type: &str,
     extra: serde_json::Value,
+    stage_runtime_id: Option<Uuid>,
 ) {
     let Some(nats_client) = nats else { return };
     let subject = format!("qw.events.{project_id}.queue-worker.{run_id}");
@@ -213,6 +223,11 @@ pub async fn publish_qw_event(
         "projectId": project_id,
         "timestamp": chrono::Utc::now().timestamp_millis(),
     });
+    if let Some(rid) = stage_runtime_id {
+        if let serde_json::Value::Object(ref mut obj) = payload {
+            obj.insert("stageRuntimeId".to_string(), serde_json::json!(rid.to_string()));
+        }
+    }
     if let serde_json::Value::Object(extras) = extra
         && let serde_json::Value::Object(ref mut obj) = payload
     {

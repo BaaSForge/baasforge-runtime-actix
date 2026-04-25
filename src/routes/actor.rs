@@ -132,11 +132,31 @@ fn is_valid_handler_name(s: &str) -> bool {
 pub async fn handle_actor_post(
     ctx: web::Data<AppContext>,
     path: web::Path<(Uuid, String)>,
-    mut payload: web::Payload,
+    payload: web::Payload,
     query: web::Query<ActorQuery>,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
+    actor_post_inner(ctx, project_id, None, tail, payload, query).await
+}
 
+pub async fn handle_actor_post_stage(
+    ctx: web::Data<AppContext>,
+    path: web::Path<(Uuid, Uuid, String)>,
+    payload: web::Payload,
+    query: web::Query<ActorQuery>,
+) -> HttpResponse {
+    let (project_id, runtime_id, tail) = path.into_inner();
+    actor_post_inner(ctx, project_id, Some(runtime_id), tail, payload, query).await
+}
+
+async fn actor_post_inner(
+    ctx: web::Data<AppContext>,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+    tail: String,
+    mut payload: web::Payload,
+    query: web::Query<ActorQuery>,
+) -> HttpResponse {
     let parsed = match parse_actor_tail(&tail, "POST") {
         Some(p) => p,
         None => {
@@ -201,6 +221,7 @@ pub async fn handle_actor_post(
                 &project_id_str,
                 &unit_path,
                 &parsed.actor_id,
+                stage_runtime_id,
             )
             .await;
             HttpResponse::Ok().json(json!({ "passivated": true }))
@@ -237,7 +258,7 @@ pub async fn handle_actor_post(
                     project_id: project_id_str.clone(),
                     source_unit_path: unit_path.clone(),
                     source_instance_id: None,
-                    stage_runtime_id: None,
+                    stage_runtime_id,
                 });
 
                 let run_future = run_actor_with_lock(input, comm);
@@ -277,6 +298,7 @@ pub async fn handle_actor_post(
                         .json(api_error("actor NATS not configured", json!({})));
                 };
 
+                let stage_s = stage_runtime_id.map(|u| u.to_string());
                 match publish_actor_message(
                     js,
                     &project_id_str,
@@ -285,7 +307,7 @@ pub async fn handle_actor_post(
                     &handler_name,
                     &payload_json,
                     None,
-                    None,
+                    stage_s.as_deref(),
                 )
                 .await
                 {
@@ -308,7 +330,23 @@ pub async fn handle_actor_get(
     path: web::Path<(Uuid, String)>,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
+    actor_get_inner(ctx, project_id, None, tail).await
+}
 
+pub async fn handle_actor_get_stage(
+    ctx: web::Data<AppContext>,
+    path: web::Path<(Uuid, Uuid, String)>,
+) -> HttpResponse {
+    let (project_id, runtime_id, tail) = path.into_inner();
+    actor_get_inner(ctx, project_id, Some(runtime_id), tail).await
+}
+
+async fn actor_get_inner(
+    ctx: web::Data<AppContext>,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+    tail: String,
+) -> HttpResponse {
     let parsed = match parse_actor_tail(&tail, "GET") {
         Some(p) => p,
         None => {
@@ -339,7 +377,7 @@ pub async fn handle_actor_get(
             match get_actor_state_and_version(
                 &actor_redis,
                 &project_id_str,
-                None,
+                stage_runtime_id,
                 &unit_path,
                 &parsed.actor_id,
             )
@@ -361,7 +399,23 @@ pub async fn handle_actor_delete(
     path: web::Path<(Uuid, String)>,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
+    actor_delete_inner(ctx, project_id, None, tail).await
+}
 
+pub async fn handle_actor_delete_stage(
+    ctx: web::Data<AppContext>,
+    path: web::Path<(Uuid, Uuid, String)>,
+) -> HttpResponse {
+    let (project_id, runtime_id, tail) = path.into_inner();
+    actor_delete_inner(ctx, project_id, Some(runtime_id), tail).await
+}
+
+async fn actor_delete_inner(
+    ctx: web::Data<AppContext>,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+    tail: String,
+) -> HttpResponse {
     let parsed = match parse_actor_tail(&tail, "DELETE") {
         Some(p) => p,
         None => {
@@ -393,7 +447,7 @@ pub async fn handle_actor_delete(
                 &actor_redis,
                 &ctx.actor_nats_client,
                 &project_id_str,
-                None,
+                stage_runtime_id,
                 &unit_path,
                 &parsed.actor_id,
             )

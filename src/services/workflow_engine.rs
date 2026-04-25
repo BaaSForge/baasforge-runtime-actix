@@ -159,6 +159,7 @@ pub async fn start_workflow(
         "workflow.started",
         unit_path,
         serde_json::json!({ "input": input_json }),
+        comm.stage_runtime_id,
     )
     .await;
 
@@ -383,6 +384,7 @@ async fn publish_wf_event(
     event_type: &str,
     unit_path: &str,
     extra: serde_json::Value,
+    stage_runtime_id: Option<Uuid>,
 ) {
     let Some(nats_client) = nats else { return };
     let subject = format!("wf.events.{project_id}.workflow.{instance_id}");
@@ -393,6 +395,11 @@ async fn publish_wf_event(
         "unitPath": unit_path,
         "timestamp": chrono::Utc::now().to_rfc3339(),
     });
+    if let Some(rid) = stage_runtime_id {
+        if let serde_json::Value::Object(ref mut obj) = payload {
+            obj.insert("stageRuntimeId".to_string(), serde_json::json!(rid.to_string()));
+        }
+    }
     if let serde_json::Value::Object(extras) = extra
         && let serde_json::Value::Object(ref mut obj) = payload
     {
@@ -609,7 +616,16 @@ pub async fn launch_callee_workflow(
         let _: () = conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
     }
 
-    publish_wf_event(nats, project_id, instance_id, "workflow.started", unit_path, serde_json::json!({ "input": input_json })).await;
+    publish_wf_event(
+        nats,
+        project_id,
+        instance_id,
+        "workflow.started",
+        unit_path,
+        serde_json::json!({ "input": input_json }),
+        meta.stage_runtime_id,
+    )
+    .await;
     drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, comm).await?;
     Ok(())
 }
@@ -691,6 +707,7 @@ async fn drive_workflow(
                 "workflow.completed",
                 &unit_path,
                 serde_json::json!({ "result": value }),
+                comm.stage_runtime_id,
             )
             .await;
 
@@ -835,6 +852,7 @@ async fn drive_workflow(
                 "workflow.suspended",
                 &unit_path,
                 serde_json::json!({ "suspensionType": suspension_type, "name": name }),
+                comm.stage_runtime_id,
             )
             .await;
 
@@ -928,6 +946,7 @@ async fn drive_workflow(
                 "workflow.failed",
                 &unit_path,
                 serde_json::json!({ "error": error }),
+                comm.stage_runtime_id,
             )
             .await;
 

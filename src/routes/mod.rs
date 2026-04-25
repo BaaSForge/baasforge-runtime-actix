@@ -413,6 +413,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             ))
             .app_data(web::Data::new(app_context.clone()))
             .route(
+                "/api/v1/ws/{project_id}/stage/{runtime_id}",
+                web::get().to(ws::ws_project_events_stage),
+            )
+            .route(
                 "/api/v1/ws/{project_id}",
                 web::get().to(ws::ws_project_events),
             )
@@ -464,6 +468,18 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             .service(
                 web::scope("/api/v1/trigger/actor")
                     .route(
+                        "/{project_id}/stage/{runtime_id}/{tail:.*}",
+                        web::post().to(actor::handle_actor_post_stage),
+                    )
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{tail:.*}",
+                        web::get().to(actor::handle_actor_get_stage),
+                    )
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{tail:.*}",
+                        web::delete().to(actor::handle_actor_delete_stage),
+                    )
+                    .route(
                         "/{project_id}/{tail:.*}",
                         web::post().to(actor::handle_actor_post),
                     )
@@ -478,6 +494,14 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             )
             .service(
                 web::scope("/api/v1/trigger/workerQueue")
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{tail:.*}",
+                        web::post().to(queue_worker::handle_queue_worker_post_stage),
+                    )
+                    .route(
+                        "/{project_id}/stage/{runtime_id}/{tail:.*}",
+                        web::get().to(queue_worker::handle_queue_worker_get_stage),
+                    )
                     .route(
                         "/{project_id}/{tail:.*}",
                         web::post().to(queue_worker::handle_queue_worker_post),

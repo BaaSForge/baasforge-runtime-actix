@@ -2,13 +2,12 @@ use crate::libs::api_response::api_error;
 use crate::libs::unit_slug::{is_valid_slug, normalize_filename_stem_to_slug};
 use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
-use crate::services::project_release::load_unit_for_path_production;
+use crate::services::project_release::load_unit_for_path_scoped;
 use crate::services::queue_worker_engine::{
     QueueWorkerRedis, cancel_queue_worker_run, enqueue_queue_worker_run,
     get_queue_worker_run_result, get_queue_worker_run_status,
 };
 use actix_web::{web, HttpRequest, HttpResponse};
-use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -96,6 +95,27 @@ pub async fn handle_queue_worker_post(
     req: HttpRequest,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
+    queue_worker_post_inner(ctx, project_id, None, tail, body, req).await
+}
+
+pub async fn handle_queue_worker_post_stage(
+    ctx: web::Data<AppContext>,
+    path: web::Path<(Uuid, Uuid, String)>,
+    body: web::Bytes,
+    req: HttpRequest,
+) -> HttpResponse {
+    let (project_id, runtime_id, tail) = path.into_inner();
+    queue_worker_post_inner(ctx, project_id, Some(runtime_id), tail, body, req).await
+}
+
+async fn queue_worker_post_inner(
+    ctx: web::Data<AppContext>,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+    tail: String,
+    body: web::Bytes,
+    req: HttpRequest,
+) -> HttpResponse {
     let _ = req;
 
     let parsed = match parse_queue_worker_tail(&tail, true) {
@@ -118,10 +138,11 @@ pub async fn handle_queue_worker_post(
 
     match parsed.operation {
         QueueWorkerOperation::Enqueue => {
-            let unit_exists = load_unit_for_path_production(
+            let unit_exists = load_unit_for_path_scoped(
                 &ctx.pool,
                 &ctx.redis_conn,
                 project_id,
+                stage_runtime_id,
                 ProjectUnitType::QueueWorker,
                 &unit_path,
             )
@@ -149,7 +170,7 @@ pub async fn handle_queue_worker_post(
                 &project_id_str,
                 &unit_path,
                 &data_json,
-                None,
+                stage_runtime_id,
             )
             .await
             {
@@ -193,7 +214,22 @@ pub async fn handle_queue_worker_get(
     path: web::Path<(Uuid, String)>,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
+    queue_worker_get_inner(ctx, project_id, tail).await
+}
 
+pub async fn handle_queue_worker_get_stage(
+    ctx: web::Data<AppContext>,
+    path: web::Path<(Uuid, Uuid, String)>,
+) -> HttpResponse {
+    let (project_id, _runtime_id, tail) = path.into_inner();
+    queue_worker_get_inner(ctx, project_id, tail).await
+}
+
+async fn queue_worker_get_inner(
+    ctx: web::Data<AppContext>,
+    project_id: Uuid,
+    tail: String,
+) -> HttpResponse {
     let parsed = match parse_queue_worker_tail(&tail, false) {
         Some(p) => p,
         None => {

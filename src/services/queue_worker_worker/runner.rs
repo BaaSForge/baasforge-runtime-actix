@@ -294,6 +294,7 @@ async fn handle_work_message(
         &run_id,
         "queueWorker.processing",
         serde_json::json!({ "attempt": attempt }),
+        wq_stage,
     )
     .await;
 
@@ -356,6 +357,7 @@ async fn handle_work_message(
                         &nats_opt, &project_id, &run_id,
                         "queueWorker.retrying",
                         serde_json::json!({ "attempt": next_attempt }),
+                        wq_stage,
                     ).await;
                     release_exec_lock(&wq_redis, &lock_key).await;
                     let _ = msg.ack_with(async_nats::jetstream::AckKind::Nak(
@@ -411,6 +413,7 @@ async fn handle_work_message(
                         &run_id,
                         "queueWorker.completed",
                         serde_json::json!({ "result": result_val }),
+                        wq_stage,
                     )
                     .await;
                     release_exec_lock(&wq_redis, &lock_key).await;
@@ -490,6 +493,7 @@ async fn process_failed_outcome(
         run_id,
         "queueWorker.failed",
         serde_json::json!({ "error": error_msg, "attempt": attempt }),
+        stage_runtime_id,
     )
     .await;
 
@@ -513,6 +517,7 @@ async fn process_failed_outcome(
             run_id,
             "queueWorker.retrying",
             serde_json::json!({ "attempt": next_attempt }),
+            stage_runtime_id,
         )
         .await;
         let delay = queue_worker_backoff_delay(policy, attempt);
@@ -573,6 +578,7 @@ async fn move_to_dead_letter(
         run_id,
         "queueWorker.dead_letter",
         serde_json::json!({ "error": error_msg }),
+        stage_runtime_id,
     )
     .await;
 }
@@ -826,7 +832,15 @@ async fn batch_mark_processing(
             let mut conn = wq_redis.lock().await;
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
-        publish_qw_event(nats, project_id, run_id, "queueWorker.processing", serde_json::json!({ "attempt": attempt })).await;
+        publish_qw_event(
+            nats,
+            project_id,
+            run_id,
+            "queueWorker.processing",
+            serde_json::json!({ "attempt": attempt }),
+            stage_runtime_id,
+        )
+        .await;
     }
 }
 
@@ -854,7 +868,15 @@ async fn batch_mark_retrying(
             let mut conn = wq_redis.lock().await;
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
-        publish_qw_event(nats, project_id, run_id, "queueWorker.retrying", serde_json::json!({ "attempt": next_attempt })).await;
+        publish_qw_event(
+            nats,
+            project_id,
+            run_id,
+            "queueWorker.retrying",
+            serde_json::json!({ "attempt": next_attempt }),
+            stage_runtime_id,
+        )
+        .await;
     }
 }
 
@@ -890,7 +912,15 @@ async fn batch_complete(
         }
         let result_val: serde_json::Value = serde_json::from_str(value_json)
             .unwrap_or(serde_json::json!(value_json));
-        publish_qw_event(nats, project_id, run_id, "queueWorker.completed", serde_json::json!({ "result": result_val })).await;
+        publish_qw_event(
+            nats,
+            project_id,
+            run_id,
+            "queueWorker.completed",
+            serde_json::json!({ "result": result_val }),
+            stage_runtime_id,
+        )
+        .await;
     }
 }
 

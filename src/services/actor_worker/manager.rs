@@ -201,6 +201,7 @@ async fn run_actor_inner(
                         &input.unit_path,
                         &input.actor_id,
                         "activated",
+                        comm.stage_runtime_id,
                     )
                     .await;
                 }
@@ -249,6 +250,7 @@ async fn run_actor_inner(
                     &input.unit_path,
                     &input.actor_id,
                     "failed",
+                    comm.stage_runtime_id,
                 )
                 .await;
 
@@ -282,6 +284,7 @@ async fn run_actor_inner(
                         &input.unit_path,
                         &input.actor_id,
                         "failed",
+                        comm.stage_runtime_id,
                     )
                     .await;
 
@@ -384,6 +387,7 @@ async fn run_dead_letter(
         &input.unit_path,
         &input.actor_id,
         "dead_letter",
+        comm.stage_runtime_id,
     )
     .await;
 }
@@ -394,8 +398,17 @@ pub async fn passivate_actor(
     project_id: &str,
     unit_path: &str,
     actor_id: &str,
+    stage_runtime_id: Option<Uuid>,
 ) {
-    publish_actor_event(nats, project_id, unit_path, actor_id, "passivated").await;
+    publish_actor_event(
+        nats,
+        project_id,
+        unit_path,
+        actor_id,
+        "passivated",
+        stage_runtime_id,
+    )
+    .await;
     let _ = actor_redis;
 }
 
