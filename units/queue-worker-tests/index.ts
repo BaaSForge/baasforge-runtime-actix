@@ -33,11 +33,11 @@ function workerRunUrl(baseUrl: string, slug: string, runId: string, suffix: stri
 }
 
 function wfUrl(baseUrl: string, slug: string, projectId = PROJECT_ID): string {
-  return `${baseUrl}/api/v1/trigger/wf/${projectId}/test/queue-worker/${slug}`;
+  return `${baseUrl}/api/v1/trigger/wf/${projectId}/test/wf/${slug}`;
 }
 
 function wfStageUrl(baseUrl: string, slug: string, runtimeId = STAGE_RUNTIME_ID): string {
-  return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/queue-worker/${slug}`;
+  return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/wf/${slug}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +883,124 @@ function allInlineTests(): WorkerInlineTestDef[] {
           }
         }
         throw new Error("workflow callers did not complete");
+      },
+    },
+    {
+      name: "runtime-stage-scope-via-workflow-serial",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const runWf = async (marker: string, which: "prod" | "a" | "b") => {
+          const start =
+            which === "prod"
+              ? await httpPostFull(wfUrl(baseUrl, "runtime-scope-worker-caller"), { marker })
+              : await httpPostFull(
+                  wfStageUrl(
+                    baseUrl,
+                    "runtime-scope-worker-caller",
+                    which === "a" ? STAGE_RUNTIME_ID : STAGE_B_RUNTIME_ID,
+                  ),
+                  { marker },
+                );
+          if (start.status !== 200 || !start.body?.instanceId) throw new Error(`start ${marker} failed`);
+          const iid = start.body.instanceId as string;
+          const base =
+            which === "prod"
+              ? `${wfUrl(baseUrl, "runtime-scope-worker-caller")}/${iid}`
+              : `${wfStageUrl(baseUrl, "runtime-scope-worker-caller", which === "a" ? STAGE_RUNTIME_ID : STAGE_B_RUNTIME_ID)}/${iid}`;
+          for (let i = 0; i < 100; i++) {
+            await sleep(150);
+            const st = await httpGetFull(`${base}/status`);
+            if (st.body?.meta?.status === "completed") {
+              const wr = await httpGetFull(`${base}/result`);
+              const runId = wr.body?.result?.workerRunId as string | undefined;
+              if (!runId) throw new Error("missing workerRunId");
+              const w = await pollWorker(baseUrl, "runtime-scope-worker-target", runId, 100);
+              return w.result;
+            }
+          }
+          throw new Error(`workflow ${marker} did not complete`);
+        };
+        const rB = await runWf("stage-b", "b");
+        const rA = await runWf("stage-a", "a");
+        const rP = await runWf("prod", "prod");
+        if (rB?.runtimeScope !== "stage-b") throw new Error(`serial stage-b: ${JSON.stringify(rB)}`);
+        if (rA?.runtimeScope !== "stage-a") throw new Error(`serial stage-a: ${JSON.stringify(rA)}`);
+        if (rP?.runtimeScope !== "prod") throw new Error(`serial prod: ${JSON.stringify(rP)}`);
+      },
+    },
+    {
+      name: "runtime-isolation-qw-sdk-chain-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const assertChain = async (
+          label: string,
+          marker: string,
+          expScope: "prod" | "stage-a" | "stage-b",
+          rootRunId: string,
+        ) => {
+          const root = await pollWorker(baseUrl, "runtime-isolation-qw-chain-root", rootRunId, 120);
+          if (root.status !== "completed") throw new Error(`${label} root worker: ${root.status}`);
+          const rr = root.result;
+          if (rr?.wfDoubled !== 14 || rr?.marker !== marker || !rr?.nestedRunId) {
+            throw new Error(`${label} root result: ${JSON.stringify(rr)}`);
+          }
+          const nested = await pollWorker(
+            baseUrl,
+            "runtime-isolation-qw-nested",
+            rr.nestedRunId as string,
+            120,
+          );
+          if (nested.status !== "completed") throw new Error(`${label} nested worker: ${nested.status}`);
+          const ns = nested.result;
+          if (ns?.runtimeScope !== expScope || ns?.marker !== marker) {
+            throw new Error(`${label} nested scope: ${JSON.stringify(ns)}`);
+          }
+        };
+        const prodStart = await httpPostFull(wfUrl(baseUrl, "runtime-isolation-qw-chain-caller"), { marker: "mp" });
+        const stageAStart = await httpPostFull(
+          wfStageUrl(baseUrl, "runtime-isolation-qw-chain-caller", STAGE_RUNTIME_ID),
+          { marker: "ma" },
+        );
+        const stageBStart = await httpPostFull(
+          wfStageUrl(baseUrl, "runtime-isolation-qw-chain-caller", STAGE_B_RUNTIME_ID),
+          { marker: "mb" },
+        );
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error("prod wf start failed");
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error("stage-a wf start failed");
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error("stage-b wf start failed");
+        const prodBase = `${wfUrl(baseUrl, "runtime-isolation-qw-chain-caller")}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, "runtime-isolation-qw-chain-caller", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, "runtime-isolation-qw-chain-caller", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        for (let i = 0; i < 120; i++) {
+          await sleep(150);
+          const [ps, as, bs] = await Promise.all([
+            httpGetFull(`${prodBase}/status`),
+            httpGetFull(`${stageABase}/status`),
+            httpGetFull(`${stageBBase}/status`),
+          ]);
+          if (
+            ps.body?.meta?.status === "completed" &&
+            as.body?.meta?.status === "completed" &&
+            bs.body?.meta?.status === "completed"
+          ) {
+            const [pr, ar, br] = await Promise.all([
+              httpGetFull(`${prodBase}/result`),
+              httpGetFull(`${stageABase}/result`),
+              httpGetFull(`${stageBBase}/result`),
+            ]);
+            const prodRunId = pr.body?.result?.rootRunId as string | undefined;
+            const stageARunId = ar.body?.result?.rootRunId as string | undefined;
+            const stageBRunId = br.body?.result?.rootRunId as string | undefined;
+            if (!prodRunId || !stageARunId || !stageBRunId) throw new Error("missing rootRunId from caller workflow");
+            await Promise.all([
+              assertChain("prod", "mp", "prod", prodRunId),
+              assertChain("stage-a", "ma", "stage-a", stageARunId),
+              assertChain("stage-b", "mb", "stage-b", stageBRunId),
+            ]);
+            return;
+          }
+        }
+        throw new Error("runtime-isolation-qw-chain-caller workflows did not complete");
       },
     },
 

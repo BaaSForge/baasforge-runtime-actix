@@ -9,7 +9,9 @@ fn unit_type_for_stem(stem: &str) -> &'static str {
         "double-n"
         | "call-actor-durable-basic"
         | "call-actor-durable-unknown-handler"
-        | "runtime-scope-actor-caller" => "workflow",
+        | "runtime-scope-actor-caller"
+        | "runtime-isolation-chain-wf-leaf"
+        | "runtime-isolation-actor-chain-runner" => "workflow",
         _ => "actor",
     }
 }

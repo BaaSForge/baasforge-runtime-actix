@@ -2395,6 +2395,100 @@ function allEndpointTests(): EndpointTestDef[] {
         }
       },
     },
+    {
+      name: "runtime-scope-workflow-target-direct-triple",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const prodStart = await httpPostFull(epWfUrl(baseUrl, "runtime-scope-workflow-target"), { marker: "p" });
+        const stageAStart = await httpPostFull(
+          epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_RUNTIME_ID),
+          { marker: "a" },
+        );
+        const stageBStart = await httpPostFull(
+          epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_B_RUNTIME_ID),
+          { marker: "b" },
+        );
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) {
+          throw new Error(`prod start failed: ${prodStart.status}`);
+        }
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) {
+          throw new Error(`stage-a start failed: ${stageAStart.status}`);
+        }
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) {
+          throw new Error(`stage-b start failed: ${stageBStart.status}`);
+        }
+        const prodBase = `${epWfUrl(baseUrl, "runtime-scope-workflow-target")}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          epPollStatus(prodBase, "completed"),
+          epPollStatus(stageABase, "completed"),
+          epPollStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const pr = rp.body?.result;
+        const sar = ra.body?.result;
+        const sbr = rb.body?.result;
+        if (pr?.runtimeScope !== "prod" || pr?.marker !== "p") {
+          throw new Error(`prod direct workflow wrong: ${JSON.stringify(pr)}`);
+        }
+        if (sar?.runtimeScope !== "stage-a" || sar?.marker !== "a") {
+          throw new Error(`stage-a direct workflow wrong: ${JSON.stringify(sar)}`);
+        }
+        if (sbr?.runtimeScope !== "stage-b" || sbr?.marker !== "b") {
+          throw new Error(`stage-b direct workflow wrong: ${JSON.stringify(sbr)}`);
+        }
+      },
+    },
+    {
+      name: "runtime-isolation-sdk-chain-triple",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const assertChain = (label: string, r: any, expMid: string, expChild: string, expMarker: string) => {
+          if (r?.midSelf !== expMid || r?.childScope !== expChild || r?.marker !== expMarker) {
+            throw new Error(`${label} nested workflow chain: ${JSON.stringify(r)}`);
+          }
+        };
+        const prodStart = await httpPostFull(epWfUrl(baseUrl, "runtime-isolation-sdk-chain"), { marker: "p" });
+        const stageAStart = await httpPostFull(
+          epWfStageUrl(baseUrl, "runtime-isolation-sdk-chain", STAGE_RUNTIME_ID),
+          { marker: "a" },
+        );
+        const stageBStart = await httpPostFull(
+          epWfStageUrl(baseUrl, "runtime-isolation-sdk-chain", STAGE_B_RUNTIME_ID),
+          { marker: "b" },
+        );
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) {
+          throw new Error(`prod start failed: ${prodStart.status}`);
+        }
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) {
+          throw new Error(`stage-a start failed: ${stageAStart.status}`);
+        }
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) {
+          throw new Error(`stage-b start failed: ${stageBStart.status}`);
+        }
+        const prodBase = `${epWfUrl(baseUrl, "runtime-isolation-sdk-chain")}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${epWfStageUrl(baseUrl, "runtime-isolation-sdk-chain", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${epWfStageUrl(baseUrl, "runtime-isolation-sdk-chain", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          epPollStatus(prodBase, "completed"),
+          epPollStatus(stageABase, "completed"),
+          epPollStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        assertChain("prod", rp.body?.result, "prod", "prod", "p");
+        assertChain("stage-a", ra.body?.result, "stage-a", "stage-a", "a");
+        assertChain("stage-b", rb.body?.result, "stage-b", "stage-b", "b");
+      },
+    },
 
   ];
   // Note: WebSocket tests (endpoint_ws) are intentionally absent here.

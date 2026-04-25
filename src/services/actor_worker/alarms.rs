@@ -17,7 +17,7 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let due = pop_due_alarms(&actor_redis, now_ms).await;
 
-        for (project_id, unit_path, actor_id, alarm_name) in due {
+        for (stage_runtime_id, project_id, unit_path, actor_id, alarm_name) in due {
             let input = ActorRunInput {
                 project_id: project_id.clone(),
                 unit_path: unit_path.clone(),
@@ -29,7 +29,7 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
                 error_msg: None,
             };
 
-            let comm_for_alarm = comm.for_unit(project_id.clone(), unit_path.clone(), None);
+            let comm_for_alarm = comm.with_stage_runtime(stage_runtime_id);
 
             if let Err(e) = run_actor_with_lock(input, comm_for_alarm).await {
                 warn!(

@@ -1128,7 +1128,7 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
 
-    // ---- isolation (5) ----
+    // ---- isolation (8) ----
     {
       name: "cross-project-isolation",
       category: "isolation",
@@ -1232,6 +1232,111 @@ function allInlineTests(): ActorInlineTestDef[] {
         if (stageBResultResp.body?.result?.actorScope !== "stage-b") {
           throw new Error(`stage-b actor scope mismatch: ${JSON.stringify(stageBResultResp.body?.result)}`);
         }
+      },
+    },
+    {
+      name: "runtime-stage-scope-via-workflow-serial",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const actorId = `iso-stage-serial-${uid()}`;
+        await deleteActor(baseUrl, "runtime-scope-actor-target", actorId);
+        const runOne = async (marker: string, which: "prod" | "a" | "b") => {
+          const start =
+            which === "prod"
+              ? await httpPostFull(wfUrl(baseUrl, "runtime-scope-actor-caller"), { actorId, marker })
+              : await httpPostFull(
+                  wfStageUrl(
+                    baseUrl,
+                    "runtime-scope-actor-caller",
+                    which === "a" ? STAGE_RUNTIME_ID : STAGE_B_RUNTIME_ID,
+                  ),
+                  { actorId, marker },
+                );
+          if (start.status !== 200 || !start.body?.instanceId) {
+            throw new Error(`start failed ${marker}: ${start.status}`);
+          }
+          const iid = start.body.instanceId as string;
+          const base =
+            which === "prod"
+              ? `${wfUrl(baseUrl, "runtime-scope-actor-caller")}/${iid}`
+              : `${wfStageUrl(baseUrl, "runtime-scope-actor-caller", which === "a" ? STAGE_RUNTIME_ID : STAGE_B_RUNTIME_ID)}/${iid}`;
+          await pollWorkflowStatus(base, "completed");
+          const res = await httpGetFull(`${base}/result`);
+          return res.body?.result;
+        };
+        const rB = await runOne("stage-b", "b");
+        const rA = await runOne("stage-a", "a");
+        const rP = await runOne("prod", "prod");
+        if (rB?.actorScope !== "stage-b") throw new Error(`serial stage-b: ${JSON.stringify(rB)}`);
+        if (rA?.actorScope !== "stage-a") throw new Error(`serial stage-a: ${JSON.stringify(rA)}`);
+        if (rP?.actorScope !== "prod") throw new Error(`serial prod: ${JSON.stringify(rP)}`);
+      },
+    },
+    {
+      name: "runtime-isolation-actor-chain-runner-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const triple = (tag: string) => ({
+          root: `r-${tag}-${uid()}`,
+          chain: `c-${tag}-${uid()}`,
+          leaf: `l-${tag}-${uid()}`,
+        });
+        const prod = triple("p");
+        const sa = triple("a");
+        const sb = triple("b");
+        await Promise.all([
+          deleteActor(baseUrl, "runtime-isolation-actor-chain-root", prod.root),
+          deleteActor(baseUrl, "runtime-isolation-chain-actor-mid", prod.chain),
+          deleteActor(baseUrl, "runtime-isolation-chain-actor-leaf", prod.leaf),
+          deleteActor(baseUrl, "runtime-isolation-actor-chain-root", sa.root),
+          deleteActor(baseUrl, "runtime-isolation-chain-actor-mid", sa.chain),
+          deleteActor(baseUrl, "runtime-isolation-chain-actor-leaf", sa.leaf),
+          deleteActor(baseUrl, "runtime-isolation-actor-chain-root", sb.root),
+          deleteActor(baseUrl, "runtime-isolation-chain-actor-mid", sb.chain),
+          deleteActor(baseUrl, "runtime-isolation-chain-actor-leaf", sb.leaf),
+        ]);
+        const prodStart = await httpPostFull(wfUrl(baseUrl, "runtime-isolation-actor-chain-runner"), {
+          marker: "prod",
+          rootActorId: prod.root,
+          chainActorId: prod.chain,
+          leafActorId: prod.leaf,
+        });
+        const stageAStart = await httpPostFull(wfStageUrl(baseUrl, "runtime-isolation-actor-chain-runner", STAGE_RUNTIME_ID), {
+          marker: "stage-a",
+          rootActorId: sa.root,
+          chainActorId: sa.chain,
+          leafActorId: sa.leaf,
+        });
+        const stageBStart = await httpPostFull(wfStageUrl(baseUrl, "runtime-isolation-actor-chain-runner", STAGE_B_RUNTIME_ID), {
+          marker: "stage-b",
+          rootActorId: sb.root,
+          chainActorId: sb.chain,
+          leafActorId: sb.leaf,
+        });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error(`prod start failed: ${prodStart.status}`);
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error(`stage-a start failed: ${stageAStart.status}`);
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error(`stage-b start failed: ${stageBStart.status}`);
+        const prodBase = `${wfUrl(baseUrl, "runtime-isolation-actor-chain-runner")}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, "runtime-isolation-actor-chain-runner", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, "runtime-isolation-actor-chain-runner", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          pollWorkflowStatus(prodBase, "completed"),
+          pollWorkflowStatus(stageABase, "completed"),
+          pollWorkflowStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const assertRes = (label: string, r: any, exp: string, marker: string) => {
+          if (r?.midScope !== exp || r?.wfScope !== exp || r?.marker !== marker) {
+            throw new Error(`${label} actor chain: ${JSON.stringify(r)}`);
+          }
+        };
+        assertRes("prod", rp.body?.result, "prod", "prod");
+        assertRes("stage-a", ra.body?.result, "stage-a", "stage-a");
+        assertRes("stage-b", rb.body?.result, "stage-b", "stage-b");
       },
     },
     {

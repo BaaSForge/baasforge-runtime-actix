@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 pub type SharedRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
 pub type SdkActorLocks =
-    Arc<Mutex<HashMap<(String, String, String), Arc<Mutex<()>>>>>;
+    Arc<Mutex<HashMap<(String, String, String, Option<Uuid>), Arc<Mutex<()>>>>>;
 
 /// All connections + call-site metadata needed by the `__baal_*` host functions.
 ///
@@ -44,6 +44,13 @@ impl SdkCommCtx {
             project_id,
             source_unit_path: unit_path,
             source_instance_id: instance_id,
+            ..self.clone()
+        })
+    }
+
+    pub fn with_stage_runtime(&self, stage_runtime_id: Option<Uuid>) -> Arc<Self> {
+        Arc::new(SdkCommCtx {
+            stage_runtime_id,
             ..self.clone()
         })
     }

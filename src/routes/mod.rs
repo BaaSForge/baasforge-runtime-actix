@@ -38,11 +38,11 @@ pub struct AppContext {
     pub actor_nats_client: Option<async_nats::Client>,
     /// JetStream context for publishing actor mailbox messages.
     pub actor_jetstream: Option<async_nats::jetstream::Context>,
-    /// Per-actor execution locks: (project_id, unit_path, actor_id) → mutex.
+    /// Per-actor execution locks: (project_id, unit_path, actor_id, stage_runtime_id) → mutex.
     pub actor_locks: ActorLocks,
 }
 
-pub type ActorLocks = Arc<Mutex<HashMap<(String, String, String), Arc<Mutex<()>>>>>;
+pub type ActorLocks = Arc<Mutex<HashMap<(String, String, String, Option<uuid::Uuid>), Arc<Mutex<()>>>>>;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]

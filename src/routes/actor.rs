@@ -339,6 +339,7 @@ pub async fn handle_actor_get(
             match get_actor_state_and_version(
                 &actor_redis,
                 &project_id_str,
+                None,
                 &unit_path,
                 &parsed.actor_id,
             )
@@ -392,6 +393,7 @@ pub async fn handle_actor_delete(
                 &actor_redis,
                 &ctx.actor_nats_client,
                 &project_id_str,
+                None,
                 &unit_path,
                 &parsed.actor_id,
             )

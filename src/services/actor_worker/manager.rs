@@ -44,6 +44,7 @@ pub async fn run_actor_with_lock(
         input.project_id.clone(),
         input.unit_path.clone(),
         input.actor_id.clone(),
+        comm.stage_runtime_id,
     );
 
     let actor_mutex = {
@@ -104,8 +105,14 @@ async fn run_actor_inner(
     let state_limit = metadata.state_limit_bytes;
 
     let (loaded_state, loaded_version) =
-        match load_hot_state(&actor_redis, &input.project_id, &input.unit_path, &input.actor_id)
-            .await
+        match load_hot_state(
+            &actor_redis,
+            &input.project_id,
+            comm.stage_runtime_id,
+            &input.unit_path,
+            &input.actor_id,
+        )
+        .await
         {
             Some((s, v)) => (Some(s), v),
             None => (None, 0),
@@ -154,6 +161,7 @@ async fn run_actor_inner(
                     commit_state(
                         &actor_redis,
                         &input.project_id,
+                        comm.stage_runtime_id,
                         &input.unit_path,
                         &input.actor_id,
                         &new_state,
@@ -166,6 +174,7 @@ async fn run_actor_inner(
                     set_alarm(
                         &actor_redis,
                         &input.project_id,
+                        comm.stage_runtime_id,
                         &input.unit_path,
                         &input.actor_id,
                         &alarm.name,
@@ -177,6 +186,7 @@ async fn run_actor_inner(
                     cancel_alarm(
                         &actor_redis,
                         &input.project_id,
+                        comm.stage_runtime_id,
                         &input.unit_path,
                         &input.actor_id,
                         name,
@@ -310,10 +320,15 @@ async fn run_dead_letter(
     state_limit: Option<u64>,
     comm: Arc<SdkCommCtx>,
 ) {
-    let loaded_state =
-        load_hot_state(actor_redis, &input.project_id, &input.unit_path, &input.actor_id)
-            .await
-            .map(|(s, _)| s);
+    let loaded_state = load_hot_state(
+        actor_redis,
+        &input.project_id,
+        comm.stage_runtime_id,
+        &input.unit_path,
+        &input.actor_id,
+    )
+    .await
+    .map(|(s, _)| s);
 
     let dl_ctx = ActorCtxJson {
         actor_id: input.actor_id.clone(),
@@ -346,6 +361,7 @@ async fn run_dead_letter(
                 if let Err(e) = commit_state(
                     actor_redis,
                     &input.project_id,
+                    comm.stage_runtime_id,
                     &input.unit_path,
                     &input.actor_id,
                     &new_state,
@@ -387,9 +403,10 @@ pub async fn delete_actor(
     actor_redis: &ActorRedis,
     nats: &Option<async_nats::Client>,
     project_id: &str,
+    stage_runtime_id: Option<Uuid>,
     unit_path: &str,
     actor_id: &str,
 ) {
-    delete_actor_state(actor_redis, project_id, unit_path, actor_id).await;
+    delete_actor_state(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await;
     let _ = nats;
 }
