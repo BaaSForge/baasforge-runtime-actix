@@ -237,6 +237,7 @@ pub async fn handle_actor_post(
                     project_id: project_id_str.clone(),
                     source_unit_path: unit_path.clone(),
                     source_instance_id: None,
+                    stage_runtime_id: None,
                 });
 
                 let run_future = run_actor_with_lock(input, comm);
@@ -283,6 +284,7 @@ pub async fn handle_actor_post(
                     &parsed.actor_id,
                     &handler_name,
                     &payload_json,
+                    None,
                     None,
                 )
                 .await

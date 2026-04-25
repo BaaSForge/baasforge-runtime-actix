@@ -502,6 +502,20 @@ pub async fn load_unit_for_path_stage(
     .await
 }
 
+pub async fn load_unit_for_path_scoped(
+    pool: &DbPool,
+    redis: &SharedRedisConn,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+    unit_type: ProjectUnitType,
+    unit_path: &str,
+) -> Result<Option<ProjectUnitRow>, ServiceError> {
+    match stage_runtime_id {
+        Some(rid) => load_unit_for_path_stage(pool, redis, project_id, rid, unit_type, unit_path).await,
+        None => load_unit_for_path_production(pool, redis, project_id, unit_type, unit_path).await,
+    }
+}
+
 /// Loads a release row by primary key, scoped to project and stage flag (NATS deploy previous release).
 pub async fn load_project_release_by_id(
     pool: &DbPool,

@@ -51,11 +51,12 @@ pub async fn publish_actor_message(
     handler: &str,
     payload_json: &str,
     reply_to: Option<&str>,
+    stage_runtime_id: Option<&str>,
 ) -> Result<String, String> {
     let encoded_unit_path = encode_nats_component(unit_path);
     let subject = format!("actor.{project_id}.{encoded_unit_path}.{actor_id}.{handler}.msg");
     let msg_id = crate::libs::ids::new_uuid().to_string();
-    let msg_payload = serde_json::json!({
+    let mut msg_payload = serde_json::json!({
         "msgId": msg_id,
         "projectId": project_id,
         "unitPath": unit_path,
@@ -64,6 +65,9 @@ pub async fn publish_actor_message(
         "payload": payload_json,
         "replyTo": reply_to,
     });
+    if let Some(s) = stage_runtime_id {
+        msg_payload["stageRuntimeId"] = serde_json::json!(s);
+    }
     js.publish(subject, bytes::Bytes::from(msg_payload.to_string()))
         .await
         .map_err(|e| format!("actor mailbox publish failed: {e}"))?;

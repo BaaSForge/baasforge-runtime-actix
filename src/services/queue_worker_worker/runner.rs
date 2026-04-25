@@ -4,6 +4,7 @@ use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
+use uuid::Uuid;
 
 use crate::database::DbPool;
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
@@ -12,7 +13,7 @@ use crate::libs::unit_js::queue_worker_runner::{
     extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler,
 };
 use crate::models::projects::ProjectUnitType;
-use crate::services::project_release::load_unit_for_path_production;
+use crate::services::project_release::load_unit_for_path_scoped;
 use crate::services::queue_worker_engine::{
     QueueWorkerRunMeta, QueueWorkerRedis, WQ_NATS_WORK_SUBJECT_PER_PROJECT,
     WQ_NATS_WORK_STREAM_SUBJECTS, publish_qw_event,
@@ -166,6 +167,7 @@ async fn handle_work_message(
 
     let attempt = meta.attempt;
     let enqueued_at = meta.enqueued_at;
+    let wq_stage = meta.stage_runtime_id;
     let nats_opt = Some(nats.clone());
 
     let project_uuid = match uuid::Uuid::parse_str(&project_id) {
@@ -177,10 +179,11 @@ async fn handle_work_message(
         }
     };
 
-    let unit_result = load_unit_for_path_production(
+    let unit_result = load_unit_for_path_scoped(
         &pool,
         &redis_conn,
         project_uuid,
+        wq_stage,
         ProjectUnitType::QueueWorker,
         &unit_path,
     )
@@ -193,7 +196,7 @@ async fn handle_work_message(
                 error!(run_id = %run_id, "[queue_worker_consumer] unit has no compiled code");
                 move_to_dead_letter(
                     &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
-                    &unit_path, "unit has no compiled code",
+                    &unit_path, "unit has no compiled code", wq_stage,
                 )
                 .await;
                 let _ = msg.ack().await;
@@ -204,7 +207,7 @@ async fn handle_work_message(
             error!(run_id = %run_id, unit_path = %unit_path, "[queue_worker_consumer] unit not found");
             move_to_dead_letter(
                 &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
-                &unit_path, "queue_worker unit not found",
+                &unit_path, "queue_worker unit not found", wq_stage,
             )
             .await;
             let _ = msg.ack().await;
@@ -241,6 +244,7 @@ async fn handle_work_message(
             project_id: project_id.clone(),
             source_unit_path: unit_path.clone(),
             source_instance_id: None,
+            stage_runtime_id: wq_stage,
         });
         handle_batch_item(
             wq_redis, nats_opt, project_id, unit_path,
@@ -276,6 +280,7 @@ async fn handle_work_message(
             enqueued_at,
             name: unit_path.clone(),
             run_id: run_id.clone(),
+            stage_runtime_id: wq_stage,
         };
         if let Ok(json) = serde_json::to_string(&updated) {
             let mut conn = wq_redis.lock().await;
@@ -317,6 +322,7 @@ async fn handle_work_message(
         project_id: project_id.clone(),
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
+        stage_runtime_id: wq_stage,
     });
 
     let run_future = tokio::task::spawn_blocking(move || run_worker_handler(&source, &run_ctx, comm));
@@ -340,6 +346,7 @@ async fn handle_work_message(
                         enqueued_at,
                         name: unit_path.clone(),
                         run_id: run_id.clone(),
+                        stage_runtime_id: wq_stage,
                     };
                     if let Ok(json) = serde_json::to_string(&retry_meta) {
                         let mut conn = wq_redis.lock().await;
@@ -357,7 +364,7 @@ async fn handle_work_message(
                 } else {
                     move_to_dead_letter(
                         &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
-                        &unit_path, "execution timed out",
+                        &unit_path, "execution timed out", wq_stage,
                     ).await;
                     release_exec_lock(&wq_redis, &lock_key).await;
                     let _ = msg.ack().await;
@@ -390,6 +397,7 @@ async fn handle_work_message(
                         enqueued_at,
                         name: unit_path.clone(),
                         run_id: run_id.clone(),
+                        stage_runtime_id: wq_stage,
                     };
                     if let Ok(json) = serde_json::to_string(&completed_meta) {
                         let mut conn = wq_redis.lock().await;
@@ -413,13 +421,14 @@ async fn handle_work_message(
                         &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
                         &unit_path, &lock_key, &error_msg, &result.retry_policy,
                         Some(&msg),
+                        wq_stage,
                     )
                     .await;
                 }
                 QueueWorkerRunOutcome::TerminalError(error_msg) => {
                     move_to_dead_letter(
                         &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
-                        &unit_path, &error_msg,
+                        &unit_path, &error_msg, wq_stage,
                     )
                     .await;
                     release_exec_lock(&wq_redis, &lock_key).await;
@@ -431,7 +440,7 @@ async fn handle_work_message(
             error!(error = %js_error, run_id = %run_id, "[queue_worker_consumer] JS execution error");
             move_to_dead_letter(
                 &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
-                &unit_path, &js_error,
+                &unit_path, &js_error, wq_stage,
             )
             .await;
             release_exec_lock(&wq_redis, &lock_key).await;
@@ -441,7 +450,7 @@ async fn handle_work_message(
             error!(error = %join_error, run_id = %run_id, "[queue_worker_consumer] spawn_blocking panicked");
             move_to_dead_letter(
                 &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
-                &unit_path, "internal execution error",
+                &unit_path, "internal execution error", wq_stage,
             )
             .await;
             release_exec_lock(&wq_redis, &lock_key).await;
@@ -471,6 +480,7 @@ async fn process_failed_outcome(
     error_msg: &str,
     policy: &crate::libs::unit_js::queue_worker_runner::QueueWorkerRetryPolicy,
     msg: Option<&async_nats::jetstream::Message>,
+    stage_runtime_id: Option<Uuid>,
 ) {
     let meta_key = format!("wq:{project_id}:{run_id}:meta");
 
@@ -491,6 +501,7 @@ async fn process_failed_outcome(
             enqueued_at,
             name: unit_path.to_string(),
             run_id: run_id.to_string(),
+            stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&retry_meta) {
             let mut conn = wq_redis.lock().await;
@@ -515,7 +526,7 @@ async fn process_failed_outcome(
             }
         }
     } else {
-        move_to_dead_letter(wq_redis, nats, project_id, run_id, attempt, enqueued_at, unit_path, error_msg).await;
+        move_to_dead_letter(wq_redis, nats, project_id, run_id, attempt, enqueued_at, unit_path, error_msg, stage_runtime_id).await;
         release_exec_lock(wq_redis, lock_key).await;
         if let Some(m) = msg {
             let _ = m.ack().await;
@@ -541,6 +552,7 @@ async fn move_to_dead_letter(
     enqueued_at: i64,
     unit_path: &str,
     error_msg: &str,
+    stage_runtime_id: Option<Uuid>,
 ) {
     let meta_key = format!("wq:{project_id}:{run_id}:meta");
     let dl_meta = QueueWorkerRunMeta {
@@ -549,6 +561,7 @@ async fn move_to_dead_letter(
         enqueued_at,
         name: unit_path.to_string(),
         run_id: run_id.to_string(),
+        stage_runtime_id,
     };
     if let Ok(json) = serde_json::to_string(&dl_meta) {
         let mut conn = wq_redis.lock().await;
@@ -677,6 +690,8 @@ async fn dispatch_batch(
         return;
     }
 
+    let wq_stage = comm.stage_runtime_id;
+
     let primary_run_id = items[0].run_id.clone();
     let enqueued_at = items[0].enqueued_at;
     let nats_opt = nats;
@@ -689,7 +704,7 @@ async fn dispatch_batch(
     let batch_data_json = serde_json::to_string(&batch_data).unwrap_or_else(|_| "[]".to_string());
 
     let max_attempts = {
-        batch_mark_processing(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at).await;
+        batch_mark_processing(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, wq_stage).await;
 
         let run_ctx = QueueWorkerRunContext {
             run_id: primary_run_id.clone(),
@@ -705,19 +720,19 @@ async fn dispatch_batch(
                 let max = r.retry_policy.max_attempts;
                 match r.outcome {
                     QueueWorkerRunOutcome::Completed(value_json) => {
-                        batch_complete(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &value_json).await;
+                        batch_complete(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &value_json, wq_stage).await;
                         return;
                     }
                     QueueWorkerRunOutcome::TerminalError(msg) => {
-                        batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &msg).await;
+                        batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &msg, wq_stage).await;
                         return;
                     }
                     QueueWorkerRunOutcome::Failed(msg) => {
                         if initial_attempt >= max {
-                            batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &msg).await;
+                            batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &msg, wq_stage).await;
                             return;
                         }
-                        batch_mark_retrying(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt + 1, enqueued_at).await;
+                        batch_mark_retrying(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt + 1, enqueued_at, wq_stage).await;
                         let delay = crate::libs::unit_js::queue_worker_runner::QueueWorkerRetryPolicy::default();
                         tokio::time::sleep(queue_worker_backoff_delay(&delay, initial_attempt)).await;
                         max
@@ -726,12 +741,12 @@ async fn dispatch_batch(
             }
             Ok(Err(js_error)) => {
                 error!(error = %js_error, "[batch] JS execution error");
-                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &js_error).await;
+                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &js_error, wq_stage).await;
                 return;
             }
             Err(join_error) => {
                 error!(error = %join_error, "[batch] spawn_blocking panicked");
-                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, "internal batch execution error").await;
+                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, "internal batch execution error", wq_stage).await;
                 return;
             }
         }
@@ -748,26 +763,26 @@ async fn dispatch_batch(
         let src = source.clone();
         let comm_retry = comm.clone();
 
-        batch_mark_processing(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at).await;
+        batch_mark_processing(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, wq_stage).await;
 
         let run_result = tokio::task::spawn_blocking(move || run_worker_handler(&src, &run_ctx, comm_retry)).await;
 
         match run_result {
             Ok(Ok(r)) => match r.outcome {
                 QueueWorkerRunOutcome::Completed(value_json) => {
-                    batch_complete(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &value_json).await;
+                    batch_complete(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &value_json, wq_stage).await;
                     return;
                 }
                 QueueWorkerRunOutcome::TerminalError(msg) => {
-                    batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &msg).await;
+                    batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &msg, wq_stage).await;
                     return;
                 }
                 QueueWorkerRunOutcome::Failed(msg) => {
                     if attempt >= max_attempts {
-                        batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &msg).await;
+                        batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &msg, wq_stage).await;
                         return;
                     }
-                    batch_mark_retrying(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt + 1, enqueued_at).await;
+                    batch_mark_retrying(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt + 1, enqueued_at, wq_stage).await;
                     let default_policy = crate::libs::unit_js::queue_worker_runner::QueueWorkerRetryPolicy::default();
                     tokio::time::sleep(queue_worker_backoff_delay(&default_policy, attempt)).await;
                     attempt += 1;
@@ -775,12 +790,12 @@ async fn dispatch_batch(
             },
             Ok(Err(js_error)) => {
                 error!(error = %js_error, "[batch] JS execution error");
-                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &js_error).await;
+                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &js_error, wq_stage).await;
                 return;
             }
             Err(join_error) => {
                 error!(error = %join_error, "[batch] spawn_blocking panicked");
-                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, "internal batch execution error").await;
+                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, "internal batch execution error", wq_stage).await;
                 return;
             }
         }
@@ -795,6 +810,7 @@ async fn batch_mark_processing(
     run_ids: &[String],
     attempt: u32,
     enqueued_at: i64,
+    stage_runtime_id: Option<Uuid>,
 ) {
     for run_id in run_ids {
         let meta_key = format!("wq:{project_id}:{run_id}:meta");
@@ -804,6 +820,7 @@ async fn batch_mark_processing(
             enqueued_at,
             name: unit_path.to_string(),
             run_id: run_id.clone(),
+            stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&meta) {
             let mut conn = wq_redis.lock().await;
@@ -821,6 +838,7 @@ async fn batch_mark_retrying(
     run_ids: &[String],
     next_attempt: u32,
     enqueued_at: i64,
+    stage_runtime_id: Option<Uuid>,
 ) {
     for run_id in run_ids {
         let meta_key = format!("wq:{project_id}:{run_id}:meta");
@@ -830,6 +848,7 @@ async fn batch_mark_retrying(
             enqueued_at,
             name: unit_path.to_string(),
             run_id: run_id.clone(),
+            stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&meta) {
             let mut conn = wq_redis.lock().await;
@@ -848,6 +867,7 @@ async fn batch_complete(
     attempt: u32,
     enqueued_at: i64,
     value_json: &str,
+    stage_runtime_id: Option<Uuid>,
 ) {
     for run_id in run_ids {
         let result_key = format!("wq:{project_id}:{run_id}:result");
@@ -862,6 +882,7 @@ async fn batch_complete(
             enqueued_at,
             name: unit_path.to_string(),
             run_id: run_id.clone(),
+            stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&meta) {
             let mut conn = wq_redis.lock().await;
@@ -882,8 +903,9 @@ async fn batch_dead_letter(
     attempt: u32,
     enqueued_at: i64,
     error_msg: &str,
+    stage_runtime_id: Option<Uuid>,
 ) {
     for run_id in run_ids {
-        move_to_dead_letter(wq_redis, nats, project_id, run_id, attempt, enqueued_at, unit_path, error_msg).await;
+        move_to_dead_letter(wq_redis, nats, project_id, run_id, attempt, enqueued_at, unit_path, error_msg, stage_runtime_id).await;
     }
 }

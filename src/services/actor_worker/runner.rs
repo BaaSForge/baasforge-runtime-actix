@@ -141,6 +141,11 @@ async fn handle_actor_message(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let stage_runtime_id = payload
+        .get("stageRuntimeId")
+        .and_then(|v| v.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+
     let (Some(project_id), Some(unit_path), Some(actor_id), Some(handler)) =
         (project_id, unit_path, actor_id, handler)
     else {
@@ -176,6 +181,7 @@ async fn handle_actor_message(
         project_id: project_id.clone(),
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
+        stage_runtime_id,
     });
 
     let result = run_actor_with_lock(input, comm).await;

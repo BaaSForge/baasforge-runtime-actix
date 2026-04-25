@@ -4,7 +4,7 @@ use crate::database::establish_pool;
 use crate::init_tracing;
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::models::projects::ProjectUnitType;
-use crate::services::project_release::load_unit_for_path_production;
+use crate::services::project_release::load_unit_for_path_scoped;
 use crate::services::workflow_engine;
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -294,27 +294,32 @@ async fn handle_start(
     redis_conn: &crate::database::SharedRedisConn,
     project_id: &str,
     instance_id: &str,
-    payload: Option<&serde_json::Value>,
+    _payload: Option<&serde_json::Value>,
 ) -> Result<(), String> {
-    let unit_path = payload
-        .and_then(|p| p.get("unitPath"))
-        .and_then(|v| v.as_str())
-        .ok_or("handle_start: missing unitPath in payload")?
-        .to_string();
-
-    let input_json = payload
-        .and_then(|p| p.get("input"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("{}")
-        .to_string();
+    let meta_key = format!("wf:{project_id}:{instance_id}:meta");
+    let meta_json: String = {
+        let mut conn = wf_redis.lock().await;
+        let raw: Option<String> = redis::cmd("GET")
+            .arg(&meta_key)
+            .query_async(&mut *conn)
+            .await
+            .map_err(|e| format!("handle_start: redis GET meta: {e}"))?;
+        raw.ok_or_else(|| "handle_start: meta not found".to_string())?
+    };
+    let wf_meta: workflow_engine::WorkflowMeta =
+        serde_json::from_str(&meta_json).map_err(|e| format!("handle_start: parse meta: {e}"))?;
+    let unit_path = wf_meta.name.clone();
+    let input_json = wf_meta.input.clone();
+    let stage_runtime_id = wf_meta.stage_runtime_id;
 
     let project_uuid = uuid::Uuid::parse_str(project_id)
         .map_err(|e| format!("invalid project_id: {e}"))?;
 
-    let unit = load_unit_for_path_production(
+    let unit = load_unit_for_path_scoped(
         pool,
         redis_conn,
         project_uuid,
+        stage_runtime_id,
         ProjectUnitType::Workflow,
         &unit_path,
     )
@@ -366,6 +371,7 @@ async fn handle_start(
         project_id: project_id.to_string(),
         source_unit_path: unit_path.clone(),
         source_instance_id: Some(instance_id.to_string()),
+        stage_runtime_id,
     });
 
     let result = workflow_engine::launch_callee_workflow(
@@ -415,6 +421,7 @@ async fn handle_wake(
 
     let meta: workflow_engine::WorkflowMeta =
         serde_json::from_str(&meta_json).map_err(|e| format!("parse meta: {e}"))?;
+    let stage_runtime_id = meta.stage_runtime_id;
 
     if meta.status == "completed" || meta.status == "failed" || meta.status == "cancelled" {
         return Ok(());
@@ -478,10 +485,11 @@ async fn handle_wake(
     let project_uuid = uuid::Uuid::parse_str(project_id)
         .map_err(|e| format!("invalid project_id: {e}"))?;
 
-    let unit = load_unit_for_path_production(
+    let unit = load_unit_for_path_scoped(
         pool,
         redis_conn,
         project_uuid,
+        stage_runtime_id,
         ProjectUnitType::Workflow,
         unit_path,
     )
@@ -533,6 +541,7 @@ async fn handle_wake(
         project_id: project_id.to_string(),
         source_unit_path: unit_path.to_string(),
         source_instance_id: Some(instance_id.to_string()),
+        stage_runtime_id,
     });
 
     let result =

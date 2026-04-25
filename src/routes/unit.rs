@@ -90,7 +90,7 @@ pub async fn handle_trigger_api_unit_production(
         Ok(Some(unit)) => {
             let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
             let project_id_str = params.project_id.to_string();
-            respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path).await
+            respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path, None).await
         }
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
@@ -132,7 +132,7 @@ pub async fn handle_trigger_api_unit_stage(
         Ok(Some(unit)) => {
             let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
             let project_id_str = params.project_id.to_string();
-            respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path).await
+            respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path, Some(params.runtime_id)).await
         }
         Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
         Err(e) => map_service_err(e),
@@ -175,6 +175,7 @@ async fn respond_trigger_unit(
     ctx: &AppContext,
     project_id_str: &str,
     unit_path: &str,
+    stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
     let code = match unit.compiled_code.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(c) => c.to_string(),
@@ -203,6 +204,7 @@ async fn respond_trigger_unit(
         project_id: project_id_str.to_string(),
         source_unit_path: unit_path.to_string(),
         source_instance_id: None,
+        stage_runtime_id,
     });
     let unit_id = unit.id.clone();
     let revision = unit.revision;

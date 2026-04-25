@@ -4,6 +4,7 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 pub type QueueWorkerRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
 
 fn wq_redis_key(project_id: &str, run_id: &str, suffix: &str) -> String {
@@ -24,6 +25,8 @@ pub struct QueueWorkerRunMeta {
     pub name: String,
     #[serde(rename = "runId")]
     pub run_id: String,
+    #[serde(rename = "stageRuntimeId", default, skip_serializing_if = "Option::is_none")]
+    pub stage_runtime_id: Option<Uuid>,
 }
 
 pub async fn ensure_wq_work_stream(
@@ -54,6 +57,7 @@ pub async fn enqueue_queue_worker_run(
     project_id: &str,
     unit_path: &str,
     data_json: &str,
+    stage_runtime_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
     let run_id = crate::libs::ids::new_uuid().to_string();
     let enqueued_at = chrono::Utc::now().timestamp_millis();
@@ -64,6 +68,7 @@ pub async fn enqueue_queue_worker_run(
         enqueued_at,
         name: unit_path.to_string(),
         run_id: run_id.clone(),
+        stage_runtime_id,
     };
     let meta_json = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
     let meta_key = wq_redis_key(project_id, &run_id, "meta");
@@ -229,6 +234,7 @@ pub fn set_queue_worker_run_meta_sync<'a>(
     attempt: u32,
     enqueued_at: i64,
     unit_path: &'a str,
+    stage_runtime_id: Option<Uuid>,
 ) -> impl std::future::Future<Output = Result<(), String>> + 'a {
     let meta = QueueWorkerRunMeta {
         status: status.to_string(),
@@ -236,6 +242,7 @@ pub fn set_queue_worker_run_meta_sync<'a>(
         enqueued_at,
         name: unit_path.to_string(),
         run_id: run_id.to_string(),
+        stage_runtime_id,
     };
     let meta_key = wq_redis_key(project_id, run_id, "meta");
     async move {

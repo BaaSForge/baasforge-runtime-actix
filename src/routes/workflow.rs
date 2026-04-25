@@ -114,6 +114,7 @@ async fn do_start_workflow(
     unit_path: &str,
     source: &str,
     body: &[u8],
+    stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
     let wf_redis = match require_wf_redis(ctx) {
         Ok(r) => r,
@@ -140,6 +141,7 @@ async fn do_start_workflow(
         project_id: project_id_str.clone(),
         source_unit_path: unit_path.to_string(),
         source_instance_id: Some(instance_id.clone()),
+        stage_runtime_id,
     });
 
     match workflow_engine::start_workflow(
@@ -173,6 +175,7 @@ async fn do_call_handler(
     handler_name: &str,
     source: &str,
     body: &[u8],
+    stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
     if !is_valid_handler_name(handler_name) {
         return HttpResponse::BadRequest().json(api_error("invalid handler name", json!({})));
@@ -202,6 +205,7 @@ async fn do_call_handler(
         project_id: project_id_str.clone(),
         source_unit_path: String::new(),
         source_instance_id: Some(instance_id.to_string()),
+        stage_runtime_id,
     });
 
     match workflow_engine::call_handler(
@@ -400,7 +404,7 @@ pub async fn start_workflow_production(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    do_start_workflow(&ctx, p.project_id, &unit_path, &source, &body).await
+    do_start_workflow(&ctx, p.project_id, &unit_path, &source, &body, None).await
 }
 
 pub async fn call_shared_handler_production(
@@ -417,7 +421,7 @@ pub async fn call_shared_handler_production(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    do_call_handler(&ctx, p.project_id, &p.instance_id, &p.handler_name, &source, &body).await
+    do_call_handler(&ctx, p.project_id, &p.instance_id, &p.handler_name, &source, &body, None).await
 }
 
 pub async fn get_workflow_status_production(
@@ -462,7 +466,7 @@ pub async fn start_workflow_stage(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    do_start_workflow(&ctx, p.project_id, &unit_path, &source, &body).await
+    do_start_workflow(&ctx, p.project_id, &unit_path, &source, &body, Some(p.runtime_id)).await
 }
 
 pub async fn call_shared_handler_stage(
@@ -479,7 +483,7 @@ pub async fn call_shared_handler_stage(
         Ok(s) => s,
         Err(resp) => return resp,
     };
-    do_call_handler(&ctx, p.project_id, &p.instance_id, &p.handler_name, &source, &body).await
+    do_call_handler(&ctx, p.project_id, &p.instance_id, &p.handler_name, &source, &body, Some(p.runtime_id)).await
 }
 
 pub async fn get_workflow_status_stage(

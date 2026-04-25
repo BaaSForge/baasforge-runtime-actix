@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_js::workflow_runner::{
@@ -55,6 +56,8 @@ pub struct WorkflowMeta {
     /// Format: "sdk_call_N" where N is the call index.
     #[serde(rename = "callerPromiseName", default)]
     pub caller_promise_name: Option<String>,
+    #[serde(rename = "stageRuntimeId", default, skip_serializing_if = "Option::is_none")]
+    pub stage_runtime_id: Option<Uuid>,
 }
 
 /// Start a new workflow instance.
@@ -133,6 +136,7 @@ pub async fn start_workflow(
         caller_triggered: false,
         caller_instance_id: None,
         caller_promise_name: None,
+        stage_runtime_id: comm.stage_runtime_id,
     };
     let meta_json = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
 

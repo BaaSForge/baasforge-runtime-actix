@@ -149,6 +149,7 @@ pub async fn handle_queue_worker_post(
                 &project_id_str,
                 &unit_path,
                 &data_json,
+                None,
             )
             .await
             {

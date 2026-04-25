@@ -149,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         project_id: String::new(),
         source_unit_path: String::new(),
         source_instance_id: None,
+        stage_runtime_id: None,
     });
     tokio::spawn(async move {
         run_alarm_sweeper(alarm_comm).await;

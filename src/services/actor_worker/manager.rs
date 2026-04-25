@@ -8,7 +8,7 @@ use crate::services::actor_engine::{
     ActorRedis, cancel_alarm, commit_state, delete_actor_state, load_hot_state,
     publish_actor_event, set_alarm,
 };
-use crate::services::project_release::load_unit_for_path_production;
+use crate::services::project_release::load_unit_for_path_scoped;
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::{error, warn};
@@ -67,10 +67,11 @@ async fn run_actor_inner(
     let project_uuid = Uuid::parse_str(&input.project_id)
         .map_err(|e| format!("invalid project_id: {e}"))?;
 
-    let unit_result = load_unit_for_path_production(
+    let unit_result = load_unit_for_path_scoped(
         &comm.pool,
         &comm.redis_conn,
         project_uuid,
+        comm.stage_runtime_id,
         ProjectUnitType::Actor,
         &input.unit_path,
     )

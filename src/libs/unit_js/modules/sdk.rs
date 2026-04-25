@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::database::{DbPool, SharedRedisConn};
+use uuid::Uuid;
 
 pub type SharedRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
 pub type SdkActorLocks =
@@ -34,6 +35,7 @@ pub struct SdkCommCtx {
     pub project_id: String,
     pub source_unit_path: String,
     pub source_instance_id: Option<String>,
+    pub stage_runtime_id: Option<Uuid>,
 }
 
 impl SdkCommCtx {
@@ -253,6 +255,7 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
     with_host_ctx(|hctx| {
         let project_id = hctx.project_id.clone();
         let caller_instance_id = hctx.instance_id.clone();
+        let stage_runtime_id = COMM_CTX.with(|c| c.borrow().as_ref().and_then(|co| co.stage_runtime_id));
         block_async(async {
             let parts: Vec<&str> = unit_path.split('.').collect();
             if parts.len() != 4 {
@@ -265,7 +268,7 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
 
             let callee_instance_id = crate::libs::ids::new_uuid().to_string();
             let meta_key = redis_key(&project_id, &callee_instance_id, "meta");
-            let meta = serde_json::json!({
+            let mut meta_val = serde_json::json!({
                 "name": unit_path,
                 "status": "pending",
                 "input": data_json,
@@ -273,8 +276,11 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
                 "callerTriggered": true,
                 "callerInstanceId": caller_instance_id,
                 "callerPromiseName": promise_name,
-            })
-            .to_string();
+            });
+            if let Some(rid) = stage_runtime_id {
+                meta_val["stageRuntimeId"] = serde_json::json!(rid);
+            }
+            let meta = meta_val.to_string();
             {
                 let mut conn = hctx.redis.lock().await;
                 redis::cmd("SET").arg(&meta_key).arg(&meta).query_async::<()>(&mut *conn).await
@@ -372,8 +378,19 @@ fn host_call_actor_async(
         let actor_js = comm.actor_js.clone()
             .ok_or_else(|| "sdk.callActor (fire-forget): actor NATS JetStream not configured".to_string())?;
         let project_id = comm.project_id.clone();
+        let stage_s: Option<String> = comm.stage_runtime_id.map(|u| u.to_string());
         block_async(async move {
-            publish_actor_message(&actor_js, &project_id, &unit_path, &actor_id, &handler, &payload_json, None).await?;
+            publish_actor_message(
+                &actor_js,
+                &project_id,
+                &unit_path,
+                &actor_id,
+                &handler,
+                &payload_json,
+                None,
+                stage_s.as_deref(),
+            )
+            .await?;
             Ok(serde_json::json!({ "delivered": true }).to_string())
         })
     });
@@ -402,8 +419,18 @@ fn host_enqueue_worker(
             return Err(format!("sdk.enqueueWorker: unit type '{}' is not 'queue_worker'", parts[2]));
         }
 
+        let stage = comm.stage_runtime_id;
         block_async(async move {
-            let result = enqueue_queue_worker_run(&wq_redis, &wq_nats, &wq_js, &project_id, &unit_path, &data_json).await?;
+            let result = enqueue_queue_worker_run(
+                &wq_redis,
+                &wq_nats,
+                &wq_js,
+                &project_id,
+                &unit_path,
+                &data_json,
+                stage,
+            )
+            .await?;
             serde_json::to_string(&result).map_err(|e| e.to_string())
         })
     });
@@ -417,7 +444,7 @@ fn host_call_workflow_sync(
     timeout_ms: f64,
 ) -> rquickjs::Result<String> {
     use crate::models::projects::ProjectUnitType;
-    use crate::services::project_release::load_unit_for_path_production;
+    use crate::services::project_release::load_unit_for_path_scoped;
     use crate::services::workflow_engine::start_workflow;
 
     let res: Result<String, String> = with_comm_ctx(|comm| {
@@ -440,11 +467,13 @@ fn host_call_workflow_sync(
             return Err(format!("sdk.callWorkflow: target is an {label}, not a workflow unit"));
         }
 
+        let comm_arc = comm.clone();
+        let stage = comm_arc.stage_runtime_id;
         block_async(async move {
             let project_uuid = uuid::Uuid::parse_str(&project_id)
                 .map_err(|e| format!("invalid project_id: {e}"))?;
 
-            let unit = load_unit_for_path_production(&pool, &redis_conn, project_uuid, ProjectUnitType::Workflow, &unit_path)
+            let unit = load_unit_for_path_scoped(&pool, &redis_conn, project_uuid, stage, ProjectUnitType::Workflow, &unit_path)
                 .await
                 .map_err(|e| format!("sdk.callWorkflow: load unit error: {e}"))?
                 .ok_or_else(|| format!("sdk.callWorkflow: workflow unit not found: {unit_path}"))?;
@@ -460,7 +489,7 @@ fn host_call_workflow_sync(
             let mut sub = wf_nats.subscribe(wildcard_subject).await
                 .map_err(|e| format!("sdk.callWorkflow: NATS subscribe failed: {e}"))?;
 
-            let callee_comm = comm.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
+            let callee_comm = comm_arc.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
             let wf_nats_for_start = Some(wf_nats.clone());
             start_workflow(&wf_redis, &wf_nats_for_start, &wf_js, &project_id, &unit_path, &instance_id, &input_json, &source, callee_comm).await?;
 
@@ -506,7 +535,7 @@ fn host_start_workflow_fire_forget(
     input_json: String,
 ) -> rquickjs::Result<String> {
     use crate::models::projects::ProjectUnitType;
-    use crate::services::project_release::load_unit_for_path_production;
+    use crate::services::project_release::load_unit_for_path_scoped;
     use crate::services::workflow_engine::start_workflow;
 
     let res: Result<String, String> = with_comm_ctx(|comm| {
@@ -527,11 +556,13 @@ fn host_start_workflow_fire_forget(
             return Err(format!("sdk.callWorkflow: target is an {label}, not a workflow unit"));
         }
 
+        let comm_arc = comm.clone();
+        let stage = comm_arc.stage_runtime_id;
         block_async(async move {
             let project_uuid = uuid::Uuid::parse_str(&project_id)
                 .map_err(|e| format!("invalid project_id: {e}"))?;
 
-            let unit = load_unit_for_path_production(&pool, &redis_conn, project_uuid, ProjectUnitType::Workflow, &unit_path)
+            let unit = load_unit_for_path_scoped(&pool, &redis_conn, project_uuid, stage, ProjectUnitType::Workflow, &unit_path)
                 .await
                 .map_err(|e| format!("sdk.callWorkflow: load unit error: {e}"))?
                 .ok_or_else(|| format!("sdk.callWorkflow: workflow unit not found: {unit_path}"))?;
@@ -542,7 +573,7 @@ fn host_start_workflow_fire_forget(
                 .to_string();
 
             let instance_id = crate::libs::ids::new_uuid().to_string();
-            let callee_comm = comm.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
+            let callee_comm = comm_arc.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
 
             let wf_redis_bg = wf_redis.clone();
             let wf_nats_bg = wf_nats.clone();
@@ -585,7 +616,7 @@ fn host_call_workflow_handler_sync(
     timeout_ms: f64,
 ) -> rquickjs::Result<String> {
     use crate::models::projects::ProjectUnitType;
-    use crate::services::project_release::load_unit_for_path_production;
+    use crate::services::project_release::load_unit_for_path_scoped;
     use crate::services::workflow_engine::call_handler;
 
     let res: Result<String, String> = with_comm_ctx(|comm| {
@@ -613,11 +644,13 @@ fn host_call_workflow_handler_sync(
             return Err("sdk.callWorkflowHandler: instanceId is required".to_string());
         }
 
+        let comm_arc = comm.clone();
+        let stage = comm_arc.stage_runtime_id;
         block_async(async move {
             let project_uuid = uuid::Uuid::parse_str(&project_id)
                 .map_err(|e| format!("invalid project_id: {e}"))?;
 
-            let unit = load_unit_for_path_production(&pool, &redis_conn, project_uuid, ProjectUnitType::Workflow, &unit_path)
+            let unit = load_unit_for_path_scoped(&pool, &redis_conn, project_uuid, stage, ProjectUnitType::Workflow, &unit_path)
                 .await
                 .map_err(|e| format!("sdk.callWorkflowHandler: load unit error: {e}"))?
                 .ok_or_else(|| format!("sdk.callWorkflowHandler: workflow unit not found: {unit_path}"))?;
@@ -627,7 +660,7 @@ fn host_call_workflow_handler_sync(
                 .ok_or("sdk.callWorkflowHandler: workflow unit has no compiled code")?
                 .to_string();
 
-            let callee_comm = comm.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
+            let callee_comm = comm_arc.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
 
             match tokio::time::timeout(
                 timeout,
@@ -669,8 +702,20 @@ fn host_start_actor_call(
 
         let reply_subject = format!("wf.promise.{project_id}.{caller_instance_id}.{promise_name}");
 
+        let stage_s: Option<String> =
+            COMM_CTX.with(|c| c.borrow().as_ref().and_then(|co| co.stage_runtime_id.map(|u| u.to_string())));
+
         block_async(async move {
-            publish_actor_message(&actor_js, &project_id, &unit_path, &actor_id, &handler, &payload_json, Some(&reply_subject))
+            publish_actor_message(
+                &actor_js,
+                &project_id,
+                &unit_path,
+                &actor_id,
+                &handler,
+                &payload_json,
+                Some(&reply_subject),
+                stage_s.as_deref(),
+            )
                 .await
                 .map_err(|e| format!("__baal_start_actor_call: publish failed: {e}"))?;
 
