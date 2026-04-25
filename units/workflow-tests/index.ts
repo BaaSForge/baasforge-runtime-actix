@@ -2548,6 +2548,42 @@ function allEndpointTests(): EndpointTestDef[] {
         assertChain("stage-b", rb.body?.result, "stage-b", "stage-b", "b");
       },
     },
+    {
+      name: "cancel-completed-400",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(epWfStageUrl(baseUrl, "echo-input"), { x: 1 });
+        if (resp.status !== 200 || !resp.body?.instanceId)
+          throw new Error(`stage start failed: ${resp.status}`);
+        const base = `${epWfStageUrl(baseUrl, "echo-input")}/${resp.body.instanceId as string}`;
+        await epPollStatus(base, "completed");
+        const cancelResp = await httpPostFull(`${base}/cancel`);
+        if (cancelResp.status !== 400)
+          throw new Error(`expected 400 cancelling completed stage workflow, got ${cancelResp.status}`);
+      },
+    },
+    {
+      name: "result-nonexistent-instance-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const fakeId = "00000000-dead-beef-0000-444444444444";
+        const url = `${epWfStageUrl(baseUrl, "echo-input")}/${fakeId}/result`;
+        const r = await httpGetFull(url);
+        if (r.status !== 404)
+          throw new Error(`expected 404 for stage result path with fake instance, got ${r.status}`);
+      },
+    },
+    {
+      name: "handler-nonexistent-instance-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const fakeId = "00000000-dead-beef-0000-555555555555";
+        const url = `${epWfStageUrl(baseUrl, "suspend-for-signal")}/${fakeId}/handlers/signal`;
+        const r = await httpPostFull(url, {});
+        if (r.status !== 404)
+          throw new Error(`expected 404 for stage handler on fake instance, got ${r.status}`);
+      },
+    },
 
   ];
   // Note: WebSocket tests (endpoint_ws) are intentionally absent here.

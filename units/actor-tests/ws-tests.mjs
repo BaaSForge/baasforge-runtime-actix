@@ -32,7 +32,9 @@ if (nodeMajor < 22) {
 const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3335";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
+const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const ACTOR_BASE = `${BASE_URL}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests`;
+const ACTOR_STAGE_BASE = `${BASE_URL}/api/v1/trigger/actor/${PROJECT_ID}/stage/${STAGE_RUNTIME_ID}/test/actor-tests`;
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -74,8 +76,17 @@ function actorUrl(unit, actorId, handler) {
   return `${ACTOR_BASE}/${unit}/${actorId}/${handler}`;
 }
 
+function actorStageUrl(unit, actorId, handler) {
+  return `${ACTOR_STAGE_BASE}/${unit}/${actorId}/${handler}`;
+}
+
 async function callActor(unit, actorId, handler, payload = {}) {
   const resp = await httpPost(`${actorUrl(unit, actorId, handler)}?await=true`, payload);
+  return resp;
+}
+
+async function callActorStage(unit, actorId, handler, payload = {}) {
+  const resp = await httpPost(`${actorStageUrl(unit, actorId, handler)}?await=true`, payload);
   return resp;
 }
 
@@ -93,6 +104,10 @@ function uid() {
 
 function toWsUrl(projectId) {
   return BASE_URL.replace(/^http/, "ws") + `/api/v1/ws/${projectId}`;
+}
+
+function toWsStageUrl(projectId, runtimeId) {
+  return BASE_URL.replace(/^http/, "ws") + `/api/v1/ws/${projectId}/stage/${runtimeId}`;
 }
 
 function wsOpen(url) {
@@ -474,6 +489,66 @@ const WS_EDGE_CASES = [
   },
 ];
 
+const WS_STAGE_RUNTIME = [
+  {
+    name: "ws-stage-connects",
+    run: async () => {
+      const ws = await wsOpen(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID));
+      ws.close();
+    },
+  },
+  {
+    name: "ws-stage-receives-activated-for-stage-actor",
+    run: async () => {
+      const actorId = `ws-stg-act-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 5_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(200);
+        await callActorStage("lifecycle-events-broadcast", actorId, "increment");
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      const events = wsEvents(forActor);
+      if (!events.includes("activated")) {
+        throw new Error(`expected activated on stage socket; got ${JSON.stringify(events)}`);
+      }
+      const act = forActor.find((m) => m.parsed?.type === "activated");
+      const sid = act?.parsed?.stageRuntimeId;
+      const want = STAGE_RUNTIME_ID.replace(/-/g, "").toLowerCase();
+      if (!sid || String(sid).replace(/-/g, "").toLowerCase() !== want) {
+        throw new Error(`expected stageRuntimeId on actor event, got ${JSON.stringify(sid)}`);
+      }
+    },
+  },
+  {
+    name: "ws-stage-socket-excludes-production-actor-events",
+    run: async () => {
+      const actorId = `ws-stg-excl-prod-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
+        await callActor("lifecycle-events-broadcast", actorId, "increment");
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`stage socket must not show prod actor ${actorId}; got ${forActor.length} frames`);
+      }
+    },
+  },
+  {
+    name: "ws-production-socket-excludes-stage-actor-events",
+    run: async () => {
+      const actorId = `ws-prod-excl-stg-${uid()}`;
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(150);
+        await callActorStage("lifecycle-events-broadcast", actorId, "increment");
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`prod socket must not show stage actor ${actorId}; got ${forActor.length} frames`);
+      }
+    },
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -484,6 +559,7 @@ async function main() {
     { label: "ws_actor_filtering", tests: WS_FILTERING },
     { label: "ws_actor_isolation", tests: WS_ISOLATION },
     { label: "ws_actor_edge_cases", tests: WS_EDGE_CASES },
+    { label: "ws_actor_stage_runtime", tests: WS_STAGE_RUNTIME },
   ];
 
   const allResults = [];

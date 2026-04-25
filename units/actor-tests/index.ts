@@ -66,6 +66,47 @@ function actorDeleteUrl(baseUrl: string, unit: string, actorId: string, projectI
   return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}`;
 }
 
+function actorStageUrl(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  handler: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/${handler}`;
+}
+
+function actorStageStateUrl(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/state`;
+}
+
+function actorStagePassivateUrl(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/passivate`;
+}
+
+function actorStageDeleteUrl(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}`;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1877,6 +1918,86 @@ function allEndpointTests(): ActorInlineTestDef[] {
         });
         if (resp.status !== 413)
           throw new Error(`expected 413 for oversized payload, got ${resp.status}`);
+      },
+    },
+
+    {
+      name: "stage-call-await-true",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const id = `st-ep-await-${uid()}`;
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "state-init", id));
+        const resp = await httpPostFull(`${actorStageUrl(baseUrl, "state-init", id, "getState")}?await=true`, {});
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if (!("result" in (resp.body as Record<string, unknown>)))
+          throw new Error(`missing result: ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "stage-state-not-visible-on-production-url",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const id = `st-iso-${uid()}`;
+        await deleteActor(baseUrl, "state-mutation", id);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "state-mutation", id));
+        const inc = await httpPostFull(`${actorStageUrl(baseUrl, "state-mutation", id, "increment")}?await=true`, {});
+        if (inc.status !== 200)
+          throw new Error(`stage increment failed: ${inc.status}`);
+        const prodState = await httpGetFull(actorStateUrl(baseUrl, "state-mutation", id));
+        if (prodState.status === 200 && (prodState.body?.state?.count ?? 0) !== 0) {
+          throw new Error(`prod URL should not see stage actor state: ${JSON.stringify(prodState.body)}`);
+        }
+        const stState = await httpGetFull(actorStageStateUrl(baseUrl, "state-mutation", id));
+        if (stState.status !== 200)
+          throw new Error(`stage state GET failed: ${stState.status}`);
+        if ((stState.body?.state?.count ?? 0) !== 1)
+          throw new Error(`stage state count expected 1: ${JSON.stringify(stState.body)}`);
+      },
+    },
+    {
+      name: "stage-unknown-runtime-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const unknown = "00000000-dead-0000-0000-999999999999";
+        const id = `st-badrt-${uid()}`;
+        const url = `${actorStageUrl(baseUrl, "state-init", id, "getState", unknown)}?await=true`;
+        const resp = await httpPostFull(url, {});
+        if (resp.status !== 404)
+          throw new Error(`expected 404 for unknown stage runtime, got ${resp.status}`);
+      },
+    },
+    {
+      name: "stage-passivate-and-delete",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const id = `st-pd-${uid()}`;
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "state-init", id));
+        await httpPostFull(`${actorStageUrl(baseUrl, "state-init", id, "getState")}?await=true`, {});
+        const pv = await httpPostFull(actorStagePassivateUrl(baseUrl, "state-init", id));
+        if (pv.status !== 200)
+          throw new Error(`stage passivate expected 200, got ${pv.status}`);
+        const del = await httpDeleteFull(actorStageDeleteUrl(baseUrl, "state-init", id));
+        if (del.status !== 200)
+          throw new Error(`stage delete expected 200, got ${del.status}`);
+      },
+    },
+    {
+      name: "stage-and-prod-same-actor-id-isolated-counts",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const id = `st-dual-${uid()}`;
+        await deleteActor(baseUrl, "state-mutation", id);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "state-mutation", id));
+        await httpPostFull(`${actorUrl(baseUrl, "state-mutation", id, "increment")}?await=true`, {});
+        await httpPostFull(`${actorUrl(baseUrl, "state-mutation", id, "increment")}?await=true`, {});
+        await httpPostFull(`${actorStageUrl(baseUrl, "state-mutation", id, "increment")}?await=true`, {});
+        const prod = await getState(baseUrl, "state-mutation", id);
+        const stage = await httpGet(actorStageStateUrl(baseUrl, "state-mutation", id));
+        if ((prod?.state?.count ?? 0) !== 2)
+          throw new Error(`prod count expected 2, got ${JSON.stringify(prod)}`);
+        if ((stage?.state?.count ?? 0) !== 1)
+          throw new Error(`stage count expected 1, got ${JSON.stringify(stage)}`);
       },
     },
   ];

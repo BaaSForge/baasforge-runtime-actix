@@ -40,6 +40,26 @@ function wfStageUrl(baseUrl: string, slug: string, runtimeId = STAGE_RUNTIME_ID)
   return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/wf/${slug}`;
 }
 
+function workerStageUrl(
+  baseUrl: string,
+  slug: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${baseUrl}/api/v1/trigger/workerQueue/${projectId}/stage/${runtimeId}/test/queue-worker/${slug}`;
+}
+
+function workerStageRunUrl(
+  baseUrl: string,
+  slug: string,
+  runId: string,
+  suffix: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${workerStageUrl(baseUrl, slug, runtimeId, projectId)}/${runId}/${suffix}`;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -1207,6 +1227,94 @@ function allInlineTests(): WorkerInlineTestDef[] {
         );
         if (resp.status !== 404)
           throw new Error(`expected 404, got ${resp.status}`);
+      },
+    },
+
+    {
+      name: "enqueue-stage-url-returns-run-id",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(workerStageUrl(baseUrl, "echo-worker"), { v: "stage-enqueue" });
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if (!resp.body?.runId)
+          throw new Error("missing runId");
+        if (!UUID_RX.test(resp.body.runId as string))
+          throw new Error(`runId not a UUID: ${resp.body.runId}`);
+        if (resp.body?.status !== "queued")
+          throw new Error(`expected queued, got ${resp.body?.status}`);
+      },
+    },
+    {
+      name: "enqueue-stage-completes-with-stage-runtime-scope",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const resp = await httpPostFull(workerStageUrl(baseUrl, "runtime-scope-worker-target"), {
+          marker: "direct-http",
+        });
+        if (resp.status !== 200 || !resp.body?.runId)
+          throw new Error(`stage enqueue failed: ${resp.status} ${JSON.stringify(resp.body)}`);
+        const runId = resp.body.runId as string;
+        const { status, result } = await pollWorker(baseUrl, "runtime-scope-worker-target", runId, 120);
+        if (status !== "completed")
+          throw new Error(`expected completed, got ${status}`);
+        if (result?.runtimeScope !== "stage-a" || result?.marker !== "direct-http") {
+          throw new Error(`unexpected result: ${JSON.stringify(result)}`);
+        }
+      },
+    },
+    {
+      name: "enqueue-unknown-stage-runtime-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const unknown = "00000000-dead-0000-0000-999999999999";
+        const resp = await httpPostFull(workerStageUrl(baseUrl, "echo-worker", unknown), {});
+        if (resp.status !== 404)
+          throw new Error(`expected 404 for unknown runtime, got ${resp.status}`);
+      },
+    },
+    {
+      name: "status-via-stage-get-url-ignores-wrong-runtime-prefix",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const enq = await httpPostFull(workerStageUrl(baseUrl, "echo-worker", STAGE_RUNTIME_ID), { probe: 1 });
+        if (enq.status !== 200 || !enq.body?.runId)
+          throw new Error("stage enqueue failed");
+        const runId = enq.body.runId as string;
+        const wrongPrefix = workerStageRunUrl(
+          baseUrl,
+          "echo-worker",
+          runId,
+          "status",
+          STAGE_B_RUNTIME_ID,
+        );
+        const r = await httpGetFull(wrongPrefix);
+        if (r.status !== 200)
+          throw new Error(`GET status with mismatched stage prefix in URL expected 200, got ${r.status}`);
+        const st = r.body?.status ?? r.body?.meta?.status;
+        if (st !== "completed" && st !== "queued" && st !== "processing")
+          throw new Error(`unexpected status body: ${JSON.stringify(r.body)}`);
+        await pollWorker(baseUrl, "echo-worker", runId, 80);
+      },
+    },
+    {
+      name: "prod-and-stage-direct-enqueue-distinct-run-ids",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const [prodR, stageR] = await Promise.all([
+          httpPostFull(workerUrl(baseUrl, "echo-worker"), { lane: "p" }),
+          httpPostFull(workerStageUrl(baseUrl, "echo-worker"), { lane: "s" }),
+        ]);
+        if (prodR.status !== 200 || stageR.status !== 200)
+          throw new Error(`enqueue failed prod=${prodR.status} stage=${stageR.status}`);
+        const pId = prodR.body?.runId as string | undefined;
+        const sId = stageR.body?.runId as string | undefined;
+        if (!pId || !sId) throw new Error("missing runId");
+        if (pId === sId) throw new Error("prod and stage returned same runId");
+        await Promise.all([
+          pollWorker(baseUrl, "echo-worker", pId, 100),
+          pollWorker(baseUrl, "echo-worker", sId, 100),
+        ]);
       },
     },
 

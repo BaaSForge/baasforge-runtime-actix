@@ -32,8 +32,10 @@ if (nodeMajor < 22) {
 const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3335";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
+const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 
 const QW_BASE = `${BASE_URL}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/queue-worker`;
+const QW_STAGE_BASE = `${BASE_URL}/api/v1/trigger/workerQueue/${PROJECT_ID}/stage/${STAGE_RUNTIME_ID}/test/queue-worker`;
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -79,10 +81,22 @@ function qwRunUrl(slug, runId, suffix) {
   return `${qwUrl(slug)}/${runId}/${suffix}`;
 }
 
+function qwStageUrl(slug) {
+  return `${QW_STAGE_BASE}/${slug}`;
+}
+
 async function enqueueWorker(slug, data = {}) {
   const resp = await httpPost(qwUrl(slug), data);
   if (resp.status !== 200 || !resp.body?.runId) {
     throw new Error(`enqueue ${slug} failed: ${resp.status} ${JSON.stringify(resp.body)}`);
+  }
+  return { runId: resp.body.runId, status: resp.body.status };
+}
+
+async function enqueueStageWorker(slug, data = {}) {
+  const resp = await httpPost(qwStageUrl(slug), data);
+  if (resp.status !== 200 || !resp.body?.runId) {
+    throw new Error(`stage enqueue ${slug} failed: ${resp.status} ${JSON.stringify(resp.body)}`);
   }
   return { runId: resp.body.runId, status: resp.body.status };
 }
@@ -131,6 +145,10 @@ async function pollUntilTerminal(slug, runId, maxIter = 200) {
 
 function toWsUrl(projectId) {
   return BASE_URL.replace(/^http/, "ws") + `/api/v1/ws/${projectId}`;
+}
+
+function toWsStageUrl(projectId, runtimeId) {
+  return BASE_URL.replace(/^http/, "ws") + `/api/v1/ws/${projectId}/stage/${runtimeId}`;
 }
 
 function wsOpen(url) {
@@ -681,6 +699,76 @@ const WS_EDGE_CASES = [
   },
 ];
 
+const WS_STAGE_RUNTIME = [
+  {
+    name: "ws-stage-connects",
+    run: async () => {
+      const ws = await wsOpen(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID));
+      ws.close();
+    },
+  },
+  {
+    name: "ws-stage-receives-stage-enqueued-event",
+    run: async () => {
+      let runId;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 5_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
+        await sleep(100);
+        const enqueued = await enqueueStageWorker("echo-worker", { wsQwStage: 1 });
+        runId = enqueued.runId;
+      });
+      const forRun = msgs.filter((m) => m.parsed?.runId === runId);
+      if (!wsEvents(forRun).includes("queueWorker.queued")) {
+        throw new Error(`missing queueWorker.queued for stage run; got ${JSON.stringify(wsEvents(forRun))}`);
+      }
+      const qu = forRun.find((m) => m.parsed?.event === "queueWorker.queued");
+      const sid = qu?.parsed?.stageRuntimeId;
+      const want = STAGE_RUNTIME_ID.replace(/-/g, "").toLowerCase();
+      if (!sid || String(sid).replace(/-/g, "").toLowerCase() !== want) {
+        throw new Error(`expected stageRuntimeId ${STAGE_RUNTIME_ID}, got ${JSON.stringify(sid)}`);
+      }
+    },
+  },
+  {
+    name: "ws-stage-socket-excludes-prod-queue-worker-events",
+    run: async () => {
+      let runId;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
+        const enqueued = await enqueueWorker("echo-worker", { wsQwExcludeStage: 1 });
+        runId = enqueued.runId;
+      });
+      const qw = msgs.filter(
+        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("queueWorker."),
+      );
+      const forRun = qw.filter((m) => m.parsed?.runId === runId);
+      if (forRun.length > 0) {
+        throw new Error(`stage socket must not show prod run ${runId}; got ${forRun.length} qw events`);
+      }
+    },
+  },
+  {
+    name: "ws-production-socket-excludes-stage-queue-worker-events",
+    run: async () => {
+      let runId;
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
+        await sleep(100);
+        const enqueued = await enqueueStageWorker("echo-worker", { wsProdExcludeQw: 1 });
+        runId = enqueued.runId;
+      });
+      const forRun = msgs.filter(
+        (m) =>
+          m.parsed?.runId === runId &&
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("queueWorker."),
+      );
+      if (forRun.length > 0) {
+        throw new Error(`prod socket must not show stage run ${runId}; got ${forRun.length} events`);
+      }
+    },
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -690,6 +778,7 @@ async function main() {
     { label: "ws_lifecycle", tests: WS_LIFECYCLE },
     { label: "ws_filtering", tests: WS_FILTERING },
     { label: "ws_edge_cases", tests: WS_EDGE_CASES },
+    { label: "ws_stage_runtime", tests: WS_STAGE_RUNTIME },
   ];
 
   const allResults = [];

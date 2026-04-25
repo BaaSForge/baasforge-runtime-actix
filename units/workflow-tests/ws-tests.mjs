@@ -185,12 +185,16 @@ function toWsUrl(projectId) {
   return BASE_URL.replace(/^http/, "ws") + `/api/v1/ws/${projectId}`;
 }
 
+function toWsStageUrl(projectId, runtimeId) {
+  return BASE_URL.replace(/^http/, "ws") + `/api/v1/ws/${projectId}/stage/${runtimeId}`;
+}
+
 // ---------------------------------------------------------------------------
 // Test runner
 // ---------------------------------------------------------------------------
 
-async function runTest(test) {
-  const label = `endpoint_ws: ${test.name}`;
+async function runTest(test, labelPrefix = "endpoint_ws") {
+  const label = `${labelPrefix}: ${test.name}`;
   try {
     await test.run();
     return { name: label, pass: true };
@@ -519,23 +523,87 @@ const TESTS = [
   },
 ];
 
+const STAGE_WS_TESTS = [
+  {
+    name: "ws-stage-url-connects",
+    run: async () => {
+      const ws = await wsOpen(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID));
+      ws.close();
+    },
+  },
+  {
+    name: "ws-stage-receives-stage-workflow-lifecycle",
+    run: async () => {
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 5_000, async () => {
+        await epStageStart("echo-input", { wsStage: true });
+      });
+      const wfEv = wsEvents(msgs).filter((e) => e.startsWith("workflow."));
+      if (!wfEv.includes("workflow.started") && !wfEv.includes("workflow.completed")) {
+        throw new Error(`expected workflow lifecycle on stage socket; got ${JSON.stringify(wfEv)}`);
+      }
+    },
+  },
+  {
+    name: "ws-stage-socket-excludes-production-workflow-events",
+    run: async () => {
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
+        await epStart("echo-input", { wsStageExcludeProd: true });
+      });
+      const wf = msgs.filter(
+        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      );
+      if (wf.length > 0) {
+        throw new Error(`stage socket must not deliver prod workflow frames; got ${wf.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-production-socket-excludes-stage-workflow-events",
+    run: async () => {
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async () => {
+        await epStageStart("echo-input", { wsProdExcludeStage: true });
+      });
+      const wf = msgs.filter(
+        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      );
+      if (wf.length > 0) {
+        throw new Error(`prod socket must not deliver stage workflow frames; got ${wf.length}`);
+      }
+    },
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const results = [];
+  const prodResults = [];
   for (const test of TESTS) {
     process.stderr.write(`  ws: ${test.name} … `);
-    const result = await runTest(test);
-    results.push(result);
+    const result = await runTest(test, "endpoint_ws");
+    prodResults.push(result);
     process.stderr.write(result.pass ? "PASS\n" : `FAIL: ${result.error}\n`);
   }
 
+  const stageResults = [];
+  for (const test of STAGE_WS_TESTS) {
+    process.stderr.write(`  ws-stage: ${test.name} … `);
+    const result = await runTest(test, "endpoint_ws_stage");
+    stageResults.push(result);
+    process.stderr.write(result.pass ? "PASS\n" : `FAIL: ${result.error}\n`);
+  }
+
+  const results = prodResults.concat(stageResults);
   const passed = results.filter((r) => r.pass).length;
   const failed = results.filter((r) => !r.pass).length;
-  const total  = results.length;
+  const total = results.length;
   const healthy = failed === 0;
+
+  const prodPassed = prodResults.filter((r) => r.pass).length;
+  const prodFailed = prodResults.filter((r) => !r.pass).length;
+  const stagePassed = stageResults.filter((r) => r.pass).length;
+  const stageFailed = stageResults.filter((r) => !r.pass).length;
 
   const report = {
     summary: {
@@ -544,14 +612,33 @@ async function main() {
       total_passed: passed,
       total_failed: failed,
       sections: {
-        endpoint_ws: { pass: healthy, passed, failed, total },
+        endpoint_ws: {
+          pass: prodFailed === 0,
+          passed: prodPassed,
+          failed: prodFailed,
+          total: prodResults.length,
+        },
+        endpoint_ws_stage: {
+          pass: stageFailed === 0,
+          passed: stagePassed,
+          failed: stageFailed,
+          total: stageResults.length,
+        },
       },
     },
     sections: {
       endpoint_ws: {
-        pass: healthy,
-        tests: results.map((r) => ({
+        pass: prodFailed === 0,
+        tests: prodResults.map((r) => ({
           name: r.name.replace(/^endpoint_ws: /, ""),
+          pass: r.pass,
+          ...(r.error ? { error: r.error } : {}),
+        })),
+      },
+      endpoint_ws_stage: {
+        pass: stageFailed === 0,
+        tests: stageResults.map((r) => ({
+          name: r.name.replace(/^endpoint_ws_stage: /, ""),
           pass: r.pass,
           ...(r.error ? { error: r.error } : {}),
         })),
