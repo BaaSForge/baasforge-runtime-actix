@@ -33,9 +33,9 @@ const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3335";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
+const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
 const QW_BASE = `${BASE_URL}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/queue-worker`;
-const QW_STAGE_BASE = `${BASE_URL}/api/v1/trigger/workerQueue/${PROJECT_ID}/stage/${STAGE_RUNTIME_ID}/test/queue-worker`;
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -81,8 +81,8 @@ function qwRunUrl(slug, runId, suffix) {
   return `${qwUrl(slug)}/${runId}/${suffix}`;
 }
 
-function qwStageUrl(slug) {
-  return `${QW_STAGE_BASE}/${slug}`;
+function qwStageUrl(slug, runtimeId = STAGE_RUNTIME_ID) {
+  return `${BASE_URL}/api/v1/trigger/workerQueue/${PROJECT_ID}/stage/${runtimeId}/test/queue-worker/${slug}`;
 }
 
 async function enqueueWorker(slug, data = {}) {
@@ -93,8 +93,8 @@ async function enqueueWorker(slug, data = {}) {
   return { runId: resp.body.runId, status: resp.body.status };
 }
 
-async function enqueueStageWorker(slug, data = {}) {
-  const resp = await httpPost(qwStageUrl(slug), data);
+async function enqueueStageWorker(slug, data = {}, runtimeId = STAGE_RUNTIME_ID) {
+  const resp = await httpPost(qwStageUrl(slug, runtimeId), data);
   if (resp.status !== 200 || !resp.body?.runId) {
     throw new Error(`stage enqueue ${slug} failed: ${resp.status} ${JSON.stringify(resp.body)}`);
   }
@@ -764,6 +764,27 @@ const WS_STAGE_RUNTIME = [
       );
       if (forRun.length > 0) {
         throw new Error(`prod socket must not show stage run ${runId}; got ${forRun.length} events`);
+      }
+    },
+  },
+  {
+    name: "ws-stage-b-socket-excludes-stage-a-queue-worker-events",
+    run: async () => {
+      let runId;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_B_RUNTIME_ID), 4_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
+        await sleep(100);
+        const enq = await enqueueStageWorker("echo-worker", { wsQwCrossStg: 1 }, STAGE_RUNTIME_ID);
+        runId = enq.runId;
+      });
+      const hit = msgs.filter(
+        (m) =>
+          m.parsed?.runId === runId &&
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("queueWorker."),
+      );
+      if (hit.length > 0) {
+        throw new Error(`stage-b ws must not show stage-a qw run ${runId}`);
       }
     },
   },

@@ -33,6 +33,7 @@ const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3335";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
+const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 const ACTOR_BASE = `${BASE_URL}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests`;
 const ACTOR_STAGE_BASE = `${BASE_URL}/api/v1/trigger/actor/${PROJECT_ID}/stage/${STAGE_RUNTIME_ID}/test/actor-tests`;
 
@@ -76,8 +77,12 @@ function actorUrl(unit, actorId, handler) {
   return `${ACTOR_BASE}/${unit}/${actorId}/${handler}`;
 }
 
-function actorStageUrl(unit, actorId, handler) {
-  return `${ACTOR_STAGE_BASE}/${unit}/${actorId}/${handler}`;
+function actorStageUrl(unit, actorId, handler, runtimeId = STAGE_RUNTIME_ID) {
+  const base =
+    runtimeId === STAGE_RUNTIME_ID
+      ? ACTOR_STAGE_BASE
+      : `${BASE_URL}/api/v1/trigger/actor/${PROJECT_ID}/stage/${runtimeId}/test/actor-tests`;
+  return `${base}/${unit}/${actorId}/${handler}`;
 }
 
 async function callActor(unit, actorId, handler, payload = {}) {
@@ -85,8 +90,8 @@ async function callActor(unit, actorId, handler, payload = {}) {
   return resp;
 }
 
-async function callActorStage(unit, actorId, handler, payload = {}) {
-  const resp = await httpPost(`${actorStageUrl(unit, actorId, handler)}?await=true`, payload);
+async function callActorStage(unit, actorId, handler, payload = {}, runtimeId = STAGE_RUNTIME_ID) {
+  const resp = await httpPost(`${actorStageUrl(unit, actorId, handler, runtimeId)}?await=true`, payload);
   return resp;
 }
 
@@ -544,6 +549,36 @@ const WS_STAGE_RUNTIME = [
       const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
       if (forActor.length > 0) {
         throw new Error(`prod socket must not show stage actor ${actorId}; got ${forActor.length} frames`);
+      }
+    },
+  },
+  {
+    name: "ws-stage-b-socket-excludes-stage-a-actor-same-id",
+    run: async () => {
+      const actorId = `ws-stg-ab-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_B_RUNTIME_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(150);
+        await callActorStage("lifecycle-events-broadcast", actorId, "increment", {}, STAGE_RUNTIME_ID);
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`stage-b socket must not show stage-a actor ${actorId}; got ${forActor.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-stage-a-socket-excludes-stage-b-actor-same-id",
+    run: async () => {
+      const actorId = `ws-stg-ba-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(150);
+        await callActorStage("lifecycle-events-broadcast", actorId, "increment", {}, STAGE_B_RUNTIME_ID);
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`stage-a socket must not show stage-b actor ${actorId}; got ${forActor.length}`);
       }
     },
   },

@@ -40,9 +40,9 @@ if (nodeMajor < 22) {
 const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3334";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
+const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
 const WF_BASE = `${BASE_URL}/api/v1/trigger/wf/${PROJECT_ID}/test/wf`;
-const WF_STAGE_BASE = `${BASE_URL}/api/v1/trigger/wf/${PROJECT_ID}/stage/${STAGE_RUNTIME_ID}/test/wf`;
 
 // ---------------------------------------------------------------------------
 // Helpers — HTTP
@@ -88,14 +88,16 @@ async function epStart(slug, input = {}) {
   };
 }
 
-async function epStageStart(slug, input = {}) {
-  const resp = await httpPost(`${WF_STAGE_BASE}/${slug}`, input);
+async function epStageStart(slug, input = {}, runtimeId = STAGE_RUNTIME_ID) {
+  const root = `${BASE_URL}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/wf`;
+  const resp = await httpPost(`${root}/${slug}`, input);
   if (resp.status !== 200 || !resp.body?.instanceId) {
     throw new Error(`stage start ${slug} failed: ${resp.status} ${JSON.stringify(resp.body)}`);
   }
+  const id = resp.body.instanceId;
   return {
-    instanceId: resp.body.instanceId,
-    base: `${WF_STAGE_BASE}/${slug}/${resp.body.instanceId}`,
+    instanceId: id,
+    base: `${root}/${slug}/${id}`,
   };
 }
 
@@ -568,6 +570,32 @@ const STAGE_WS_TESTS = [
       );
       if (wf.length > 0) {
         throw new Error(`prod socket must not deliver stage workflow frames; got ${wf.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-stage-b-socket-excludes-stage-a-workflow-subscribed-by-instance-id",
+    run: async () => {
+      const { instanceId, base } = await epStageStart("suspend-for-signal", { wsStgAb: 1 }, STAGE_RUNTIME_ID);
+      await epPollStatus(base, "suspended");
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_B_RUNTIME_ID), 5_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "workflow", instanceId }));
+        await sleep(200);
+        await httpPost(`${base}/handlers/signal`, {});
+        await epStageStart("echo-input", { wsStgAbNoise: 1 }, STAGE_B_RUNTIME_ID);
+      });
+      const leak = msgs.filter(
+        (m) =>
+          m.parsed &&
+          typeof m.parsed === "object" &&
+          m.parsed.instanceId === instanceId &&
+          typeof m.parsed.event === "string" &&
+          String(m.parsed.event).startsWith("workflow."),
+      );
+      if (leak.length > 0) {
+        throw new Error(
+          `stage-b ws must not deliver stage-a workflow frames for ${instanceId}; got ${leak.length}`,
+        );
       }
     },
   },

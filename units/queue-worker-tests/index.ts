@@ -217,13 +217,18 @@ async function pollWorker(
   runId: string,
   maxIter = 100,
   projectId = PROJECT_ID,
+  stageRuntimeForUrl?: string | null,
 ): Promise<{ status: string; result?: any }> {
+  const statusPath = (suffix: string) =>
+    stageRuntimeForUrl != null && stageRuntimeForUrl !== ""
+      ? workerStageRunUrl(baseUrl, slug, runId, suffix, stageRuntimeForUrl, projectId)
+      : workerRunUrl(baseUrl, slug, runId, suffix, projectId);
   for (let i = 0; i < maxIter; i++) {
     await sleep(150);
-    const statusResp = await httpGet(workerRunUrl(baseUrl, slug, runId, "status", projectId));
+    const statusResp = await httpGet(statusPath("status"));
     const status: string = statusResp?.status ?? "unknown";
     if (status === "completed") {
-      const resultResp = await httpGet(workerRunUrl(baseUrl, slug, runId, "result", projectId));
+      const resultResp = await httpGet(statusPath("result"));
       return { status, result: resultResp?.result };
     }
     if (status === "dead_letter" || status === "failed" || status === "cancelled") {
@@ -900,8 +905,8 @@ function allInlineTests(): WorkerInlineTestDef[] {
             if (!prodRunId || !stageARunId || !stageBRunId) throw new Error("missing worker runId from workflow result");
             const [prodWorker, stageAWorker, stageBWorker] = await Promise.all([
               pollWorker(baseUrl, "runtime-scope-worker-target", prodRunId, 100),
-              pollWorker(baseUrl, "runtime-scope-worker-target", stageARunId, 100),
-              pollWorker(baseUrl, "runtime-scope-worker-target", stageBRunId, 100),
+              pollWorker(baseUrl, "runtime-scope-worker-target", stageARunId, 100, PROJECT_ID, STAGE_RUNTIME_ID),
+              pollWorker(baseUrl, "runtime-scope-worker-target", stageBRunId, 100, PROJECT_ID, STAGE_B_RUNTIME_ID),
             ]);
             if (prodWorker.result?.runtimeScope !== "prod") {
               throw new Error(`prod worker scope mismatch: ${JSON.stringify(prodWorker.result)}`);
@@ -947,7 +952,16 @@ function allInlineTests(): WorkerInlineTestDef[] {
               const wr = await httpGetFull(`${base}/result`);
               const runId = wr.body?.result?.workerRunId as string | undefined;
               if (!runId) throw new Error("missing workerRunId");
-              const w = await pollWorker(baseUrl, "runtime-scope-worker-target", runId, 100);
+              const stageRt =
+                which === "a" ? STAGE_RUNTIME_ID : which === "b" ? STAGE_B_RUNTIME_ID : undefined;
+              const w = await pollWorker(
+                baseUrl,
+                "runtime-scope-worker-target",
+                runId,
+                100,
+                PROJECT_ID,
+                stageRt,
+              );
               return w.result;
             }
           }
@@ -971,7 +985,20 @@ function allInlineTests(): WorkerInlineTestDef[] {
           expScope: "prod" | "stage-a" | "stage-b",
           rootRunId: string,
         ) => {
-          const root = await pollWorker(baseUrl, "runtime-isolation-qw-chain-root", rootRunId, 120);
+          const stageRt =
+            expScope === "stage-a"
+              ? STAGE_RUNTIME_ID
+              : expScope === "stage-b"
+                ? STAGE_B_RUNTIME_ID
+                : undefined;
+          const root = await pollWorker(
+            baseUrl,
+            "runtime-isolation-qw-chain-root",
+            rootRunId,
+            120,
+            PROJECT_ID,
+            stageRt,
+          );
           if (root.status !== "completed") throw new Error(`${label} root worker: ${root.status}`);
           const rr = root.result;
           if (rr?.wfDoubled !== 14 || rr?.marker !== marker || !rr?.nestedRunId) {
@@ -982,6 +1009,8 @@ function allInlineTests(): WorkerInlineTestDef[] {
             "runtime-isolation-qw-nested",
             rr.nestedRunId as string,
             120,
+            PROJECT_ID,
+            stageRt,
           );
           if (nested.status !== "completed") throw new Error(`${label} nested worker: ${nested.status}`);
           const ns = nested.result;
@@ -1255,7 +1284,14 @@ function allInlineTests(): WorkerInlineTestDef[] {
         if (resp.status !== 200 || !resp.body?.runId)
           throw new Error(`stage enqueue failed: ${resp.status} ${JSON.stringify(resp.body)}`);
         const runId = resp.body.runId as string;
-        const { status, result } = await pollWorker(baseUrl, "runtime-scope-worker-target", runId, 120);
+        const { status, result } = await pollWorker(
+          baseUrl,
+          "runtime-scope-worker-target",
+          runId,
+          120,
+          PROJECT_ID,
+          STAGE_RUNTIME_ID,
+        );
         if (status !== "completed")
           throw new Error(`expected completed, got ${status}`);
         if (result?.runtimeScope !== "stage-a" || result?.marker !== "direct-http") {
@@ -1274,27 +1310,51 @@ function allInlineTests(): WorkerInlineTestDef[] {
       },
     },
     {
-      name: "status-via-stage-get-url-ignores-wrong-runtime-prefix",
+      name: "stage-queue-worker-status-wrong-runtime-in-url-404",
       category: "endpoint_stage",
       run: async (baseUrl) => {
         const enq = await httpPostFull(workerStageUrl(baseUrl, "echo-worker", STAGE_RUNTIME_ID), { probe: 1 });
         if (enq.status !== 200 || !enq.body?.runId)
           throw new Error("stage enqueue failed");
         const runId = enq.body.runId as string;
-        const wrongPrefix = workerStageRunUrl(
-          baseUrl,
-          "echo-worker",
-          runId,
-          "status",
-          STAGE_B_RUNTIME_ID,
-        );
-        const r = await httpGetFull(wrongPrefix);
-        if (r.status !== 200)
-          throw new Error(`GET status with mismatched stage prefix in URL expected 200, got ${r.status}`);
-        const st = r.body?.status ?? r.body?.meta?.status;
-        if (st !== "completed" && st !== "queued" && st !== "processing")
-          throw new Error(`unexpected status body: ${JSON.stringify(r.body)}`);
-        await pollWorker(baseUrl, "echo-worker", runId, 80);
+        const wrong = workerStageRunUrl(baseUrl, "echo-worker", runId, "status", STAGE_B_RUNTIME_ID);
+        const r = await httpGetFull(wrong);
+        if (r.status !== 404)
+          throw new Error(`GET status for stage-a run via stage-b URL expected 404, got ${r.status}`);
+        await pollWorker(baseUrl, "echo-worker", runId, 80, PROJECT_ID, STAGE_RUNTIME_ID);
+      },
+    },
+    {
+      name: "prod-queue-worker-status-for-stage-run-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const enq = await httpPostFull(workerStageUrl(baseUrl, "echo-worker", STAGE_RUNTIME_ID), { tag: "prod404" });
+        if (enq.status !== 200 || !enq.body?.runId)
+          throw new Error("stage enqueue failed");
+        const runId = enq.body.runId as string;
+        const prodUrl = workerRunUrl(baseUrl, "echo-worker", runId, "status");
+        const r = await httpGetFull(prodUrl);
+        if (r.status !== 404)
+          throw new Error(`GET prod status for stage-only run expected 404, got ${r.status}`);
+        await pollWorker(baseUrl, "echo-worker", runId, 80, PROJECT_ID, STAGE_RUNTIME_ID);
+      },
+    },
+    {
+      name: "stage-queue-worker-cancel-wrong-runtime-404",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const enq = await httpPostFull(workerStageUrl(baseUrl, "slow-worker", STAGE_RUNTIME_ID), {});
+        if (enq.status !== 200 || !enq.body?.runId)
+          throw new Error("stage enqueue slow-worker failed");
+        const runId = enq.body.runId as string;
+        const badCancel = `${workerStageUrl(baseUrl, "slow-worker", STAGE_B_RUNTIME_ID)}/${runId}/cancel`;
+        const bad = await httpPostFull(badCancel, {});
+        if (bad.status !== 404)
+          throw new Error(`cancel via wrong stage runtime expected 404, got ${bad.status}`);
+        const goodCancel = `${workerStageUrl(baseUrl, "slow-worker", STAGE_RUNTIME_ID)}/${runId}/cancel`;
+        const ok = await httpPostFull(goodCancel, {});
+        if (ok.status !== 200)
+          throw new Error(`cancel via correct stage URL expected 200, got ${ok.status}`);
       },
     },
     {
@@ -1313,7 +1373,7 @@ function allInlineTests(): WorkerInlineTestDef[] {
         if (pId === sId) throw new Error("prod and stage returned same runId");
         await Promise.all([
           pollWorker(baseUrl, "echo-worker", pId, 100),
-          pollWorker(baseUrl, "echo-worker", sId, 100),
+          pollWorker(baseUrl, "echo-worker", sId, 100, PROJECT_ID, STAGE_RUNTIME_ID),
         ]);
       },
     },

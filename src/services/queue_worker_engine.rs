@@ -116,19 +116,34 @@ pub async fn enqueue_queue_worker_run(
     }))
 }
 
-pub async fn get_queue_worker_run_status(
+pub fn queue_worker_url_stage_matches_meta(url_stage: Option<Uuid>, meta_stage: Option<Uuid>) -> bool {
+    match (url_stage, meta_stage) {
+        (None, None) => true,
+        (Some(u), Some(m)) => u == m,
+        _ => false,
+    }
+}
+
+pub async fn load_queue_worker_run_meta(
     redis: &QueueWorkerRedis,
     project_id: &str,
     run_id: &str,
-) -> Result<serde_json::Value, String> {
+) -> Result<QueueWorkerRunMeta, String> {
     let meta_key = wq_redis_key(project_id, run_id, "meta");
     let mut conn = redis.lock().await;
     let meta_json: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
     let Some(raw) = meta_json else {
         return Err("queue_worker run not found".to_string());
     };
-    let meta: QueueWorkerRunMeta =
-        serde_json::from_str(&raw).map_err(|e| format!("invalid run meta: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("invalid run meta: {e}"))
+}
+
+pub async fn get_queue_worker_run_status(
+    redis: &QueueWorkerRedis,
+    project_id: &str,
+    run_id: &str,
+) -> Result<serde_json::Value, String> {
+    let meta = load_queue_worker_run_meta(redis, project_id, run_id).await?;
     Ok(serde_json::json!({
         "status": meta.status,
         "attempt": meta.attempt,
@@ -142,16 +157,9 @@ pub async fn get_queue_worker_run_result(
     project_id: &str,
     run_id: &str,
 ) -> Result<serde_json::Value, String> {
-    let meta_key = wq_redis_key(project_id, run_id, "meta");
+    let meta = load_queue_worker_run_meta(redis, project_id, run_id).await?;
     let result_key = wq_redis_key(project_id, run_id, "result");
     let mut conn = redis.lock().await;
-    let meta_json: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
-    let Some(raw_meta) = meta_json else {
-        return Err("queue_worker run not found".to_string());
-    };
-    let meta: QueueWorkerRunMeta =
-        serde_json::from_str(&raw_meta).map_err(|e| format!("invalid run meta: {e}"))?;
-
     let result_json: Option<String> = conn.get(&result_key).await.map_err(|e| e.to_string())?;
     let result_val = result_json
         .as_deref()
@@ -169,6 +177,7 @@ pub async fn cancel_queue_worker_run(
     nats: &Option<async_nats::Client>,
     project_id: &str,
     run_id: &str,
+    url_stage_runtime_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
     let meta_key = wq_redis_key(project_id, run_id, "meta");
     let mut conn = redis.lock().await;
@@ -178,6 +187,10 @@ pub async fn cancel_queue_worker_run(
     };
     let mut meta: QueueWorkerRunMeta =
         serde_json::from_str(&raw).map_err(|e| format!("invalid run meta: {e}"))?;
+
+    if !queue_worker_url_stage_matches_meta(url_stage_runtime_id, meta.stage_runtime_id) {
+        return Err("queue_worker run not found".to_string());
+    }
 
     if meta.status == "cancelled" {
         return Ok(serde_json::json!({ "status": "cancelled" }));

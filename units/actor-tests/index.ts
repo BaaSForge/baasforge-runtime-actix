@@ -2000,6 +2000,38 @@ function allEndpointTests(): ActorInlineTestDef[] {
           throw new Error(`stage count expected 1, got ${JSON.stringify(stage)}`);
       },
     },
+    {
+      name: "stage-a-and-stage-b-same-actor-id-isolated",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const id = `st-ab-${uid()}`;
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "state-mutation", id));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "state-mutation", id, STAGE_B_RUNTIME_ID));
+        await httpPostFull(
+          `${actorStageUrl(baseUrl, "state-mutation", id, "increment", STAGE_RUNTIME_ID)}?await=true`,
+          {},
+        );
+        await httpPostFull(
+          `${actorStageUrl(baseUrl, "state-mutation", id, "increment", STAGE_RUNTIME_ID)}?await=true`,
+          {},
+        );
+        const bOnlyA = await httpGetFull(actorStageStateUrl(baseUrl, "state-mutation", id, STAGE_B_RUNTIME_ID));
+        if (bOnlyA.status !== 404)
+          throw new Error(`stage-b GET with only stage-a mutations expected 404, got ${bOnlyA.status}`);
+        await httpPostFull(
+          `${actorStageUrl(baseUrl, "state-mutation", id, "increment", STAGE_B_RUNTIME_ID)}?await=true`,
+          {},
+        );
+        const sa = await httpGetFull(actorStageStateUrl(baseUrl, "state-mutation", id, STAGE_RUNTIME_ID));
+        const sb = await httpGetFull(actorStageStateUrl(baseUrl, "state-mutation", id, STAGE_B_RUNTIME_ID));
+        if (sa.status !== 200 || sb.status !== 200)
+          throw new Error(`state GET failed sa=${sa.status} sb=${sb.status}`);
+        if ((sa.body?.state?.count ?? 0) !== 2)
+          throw new Error(`stage-a count expected 2: ${JSON.stringify(sa.body)}`);
+        if ((sb.body?.state?.count ?? 0) !== 1)
+          throw new Error(`stage-b count expected 1: ${JSON.stringify(sb.body)}`);
+      },
+    },
   ];
 }
 

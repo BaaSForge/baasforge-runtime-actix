@@ -4,8 +4,8 @@ use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
 use crate::services::project_release::load_unit_for_path_scoped;
 use crate::services::queue_worker_engine::{
-    QueueWorkerRedis, cancel_queue_worker_run, enqueue_queue_worker_run,
-    get_queue_worker_run_result, get_queue_worker_run_status,
+    QueueWorkerRedis, cancel_queue_worker_run, enqueue_queue_worker_run, get_queue_worker_run_result,
+    load_queue_worker_run_meta, queue_worker_url_stage_matches_meta,
 };
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::json;
@@ -189,8 +189,14 @@ async fn queue_worker_post_inner(
                 }
             };
             let project_id_str = project_id.to_string();
-            match cancel_queue_worker_run(&wq_redis, &ctx.wq_nats_client, &project_id_str, &run_id)
-                .await
+            match cancel_queue_worker_run(
+                &wq_redis,
+                &ctx.wq_nats_client,
+                &project_id_str,
+                &run_id,
+                stage_runtime_id,
+            )
+            .await
             {
                 Ok(result) => HttpResponse::Ok().json(result),
                 Err(e) => {
@@ -214,21 +220,22 @@ pub async fn handle_queue_worker_get(
     path: web::Path<(Uuid, String)>,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
-    queue_worker_get_inner(ctx, project_id, tail).await
+    queue_worker_get_inner(ctx, project_id, tail, None).await
 }
 
 pub async fn handle_queue_worker_get_stage(
     ctx: web::Data<AppContext>,
     path: web::Path<(Uuid, Uuid, String)>,
 ) -> HttpResponse {
-    let (project_id, _runtime_id, tail) = path.into_inner();
-    queue_worker_get_inner(ctx, project_id, tail).await
+    let (project_id, runtime_id, tail) = path.into_inner();
+    queue_worker_get_inner(ctx, project_id, tail, Some(runtime_id)).await
 }
 
 async fn queue_worker_get_inner(
     ctx: web::Data<AppContext>,
     project_id: Uuid,
     tail: String,
+    url_stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
     let parsed = match parse_queue_worker_tail(&tail, false) {
         Some(p) => p,
@@ -252,20 +259,29 @@ async fn queue_worker_get_inner(
 
     let project_id_str = project_id.to_string();
 
-    match parsed.operation {
-        QueueWorkerOperation::GetStatus => {
-            match get_queue_worker_run_status(&wq_redis, &project_id_str, &run_id).await {
-                Ok(status) => HttpResponse::Ok().json(status),
-                Err(e) => {
-                    if e.contains("not found") {
-                        HttpResponse::NotFound().json(api_error(&e, json!({})))
-                    } else {
-                        tracing::error!(error = %e, "queue_worker get_status error");
-                        HttpResponse::InternalServerError().json(api_error(&e, json!({})))
-                    }
-                }
+    let meta = match load_queue_worker_run_meta(&wq_redis, &project_id_str, &run_id).await {
+        Ok(m) => m,
+        Err(e) => {
+            if e.contains("not found") {
+                return HttpResponse::NotFound().json(api_error(&e, json!({})));
             }
+            tracing::error!(error = %e, "queue_worker load meta error");
+            return HttpResponse::InternalServerError().json(api_error(&e, json!({})));
         }
+    };
+
+    if !queue_worker_url_stage_matches_meta(url_stage_runtime_id, meta.stage_runtime_id) {
+        let msg = "queue_worker run not found";
+        return HttpResponse::NotFound().json(api_error(msg, json!({})));
+    }
+
+    match parsed.operation {
+        QueueWorkerOperation::GetStatus => HttpResponse::Ok().json(json!({
+            "status": meta.status,
+            "attempt": meta.attempt,
+            "enqueuedAt": meta.enqueued_at,
+            "runId": run_id,
+        })),
         QueueWorkerOperation::GetResult => {
             match get_queue_worker_run_result(&wq_redis, &project_id_str, &run_id).await {
                 Ok(result) => HttpResponse::Ok().json(result),
