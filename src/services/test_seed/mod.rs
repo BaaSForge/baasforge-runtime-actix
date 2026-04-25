@@ -106,16 +106,10 @@ fn merge_stage_overrides(base_units: &[UnitSpec], stage_overrides: Vec<UnitSpec>
 }
 
 pub(super) fn stem_without_runtime_suffix(stem: &str) -> (String, RuntimeTarget) {
-    if let Some(base) = stem
-        .strip_suffix("-runtime-stage-a")
-        .or_else(|| stem.strip_suffix("-baal-stage-a"))
-    {
+    if let Some(base) = stem.strip_suffix("-runtime-stage-a") {
         return (base.to_string(), RuntimeTarget::StageAOnly);
     }
-    if let Some(base) = stem
-        .strip_suffix("-runtime-stage-b")
-        .or_else(|| stem.strip_suffix("-baal-stage-b"))
-    {
+    if let Some(base) = stem.strip_suffix("-runtime-stage-b") {
         return (base.to_string(), RuntimeTarget::StageBOnly);
     }
     (stem.to_string(), RuntimeTarget::All)

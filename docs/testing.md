@@ -22,3 +22,19 @@ In `TEST_MODE`, the HTTP server **spawns all three consumers in-process**:
 
 No separate worker binaries are needed when running tests.
 
+## Stage A / stage B variants of the same unit (test seed)
+
+`TEST_MODE` seeds **production** plus **two** stage test runtimes (stage A and stage B). Some integration tests need the *same* unit path (`test.*.*.<name>.1`) to run different compiled code on stage A vs stage B (runtime isolation, WebSocket routing, etc.).
+
+That is already wired in the **test seeder**, not something to reinvent:
+
+- Workflow, queue-worker, and actor test units are discovered from their trees as today.
+- If the **filename stem** (the part before `.ts` / `.js`) ends with one of these suffixes, the seeder attaches that file only to the matching stage release and merges it over the default unit for that path:
+  - **Stage A only:** `-runtime-stage-a`
+  - **Stage B only:** `-runtime-stage-b`
+- The suffix is stripped when building the unit slug, so e.g. `my-case-runtime-stage-b.ts` is the stage-B override for the same logical unit as `my-case.ts`.
+
+Authoritative logic: `stem_without_runtime_suffix` in [`src/services/test_seed/mod.rs`](../src/services/test_seed/mod.rs).
+
+**Do not** add a second mechanism (extra env vars, duplicate seed paths, or ad-hoc DB inserts) for “this file only on stage B”—extend the existing suffix convention and seeder if a new case is missing.
+
