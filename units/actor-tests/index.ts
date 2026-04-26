@@ -1410,6 +1410,107 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
     {
+      name: "http-same-unit-path-actor-endpoint-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const aid = `http-path-${uid()}`;
+        await deleteActor(baseUrl, slug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_B_RUNTIME_ID));
+        const [rp, ra, rb] = await Promise.all([
+          httpPostFull(`${actorUrl(baseUrl, slug, aid, "probe")}?await=true`, {}),
+          httpPostFull(`${actorStageUrl(baseUrl, slug, aid, "probe", STAGE_RUNTIME_ID)}?await=true`, {}),
+          httpPostFull(`${actorStageUrl(baseUrl, slug, aid, "probe", STAGE_B_RUNTIME_ID)}?await=true`, {}),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (rp.status !== 200 || pr?.runtimeScope !== "prod" || pr?.unitPath !== expectedPath) {
+          throw new Error(`prod actor homonymous path: ${JSON.stringify(rp.body)}`);
+        }
+        if (ra.status !== 200 || ar?.runtimeScope !== "stage-a" || ar?.unitPath !== expectedPath) {
+          throw new Error(`stage-a actor homonymous path: ${JSON.stringify(ra.body)}`);
+        }
+        if (rb.status !== 200 || br?.runtimeScope !== "stage-b" || br?.unitPath !== expectedPath) {
+          throw new Error(`stage-b actor homonymous path: ${JSON.stringify(rb.body)}`);
+        }
+      },
+    },
+    {
+      name: "http-same-unit-path-actor-state-isolated-by-runtime-url",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const slug = "http-same-unit-path-runtime-isolation";
+        const aid = `http-path-state-${uid()}`;
+        await deleteActor(baseUrl, slug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_B_RUNTIME_ID));
+        const wA = await httpPostFull(
+          `${actorStageUrl(baseUrl, slug, aid, "writeTag", STAGE_RUNTIME_ID)}?await=true`,
+          { tag: "STAGE_A_ONLY" },
+        );
+        if (wA.status !== 200) throw new Error(`stage-a writeTag: ${wA.status}`);
+        const prodState = await httpGetFull(actorStateUrl(baseUrl, slug, aid));
+        if (prodState.status !== 200) throw new Error(`prod state GET: ${prodState.status}`);
+        if ((prodState.body?.state?.tag as string | undefined) === "STAGE_A_ONLY") {
+          throw new Error("prod actor state leaked stage-a tag for same unit path and actor id");
+        }
+        const wP = await httpPostFull(`${actorUrl(baseUrl, slug, aid, "writeTag")}?await=true`, { tag: "PROD_ONLY" });
+        if (wP.status !== 200) throw new Error(`prod writeTag: ${wP.status}`);
+        const stageAState = await httpGetFull(actorStageStateUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        if (stageAState.status !== 200) throw new Error(`stage-a state GET: ${stageAState.status}`);
+        if ((stageAState.body?.state?.tag as string | undefined) === "PROD_ONLY") {
+          throw new Error("stage-a actor state leaked prod tag for same unit path and actor id");
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-callActor-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const aid = `sdk-same-path-${uid()}`;
+        await deleteActor(baseUrl, slug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_B_RUNTIME_ID));
+        const caller = "sdk-http-same-path-runtime-isolation-actor-caller";
+        const prodStart = await httpPostFull(wfUrl(baseUrl, caller), { actorId: aid });
+        const stageAStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { actorId: aid });
+        const stageBStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { actorId: aid });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error("prod caller start failed");
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error("stage-a caller start failed");
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error("stage-b caller start failed");
+        const prodBase = `${wfUrl(baseUrl, caller)}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          pollWorkflowStatus(prodBase, "completed"),
+          pollWorkflowStatus(stageABase, "completed"),
+          pollWorkflowStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (pr?.runtimeScope !== "prod" || pr?.unitPath !== expectedPath) {
+          throw new Error(`sdk prod→actor same path: ${JSON.stringify(pr)}`);
+        }
+        if (ar?.runtimeScope !== "stage-a" || ar?.unitPath !== expectedPath) {
+          throw new Error(`sdk stage-a→actor same path: ${JSON.stringify(ar)}`);
+        }
+        if (br?.runtimeScope !== "stage-b" || br?.unitPath !== expectedPath) {
+          throw new Error(`sdk stage-b→actor same path: ${JSON.stringify(br)}`);
+        }
+      },
+    },
+    {
       name: "redis-key-namespace",
       category: "isolation",
       skip: "requires test-only Redis key introspection endpoint",

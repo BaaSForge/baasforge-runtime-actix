@@ -788,6 +788,94 @@ const WS_STAGE_RUNTIME = [
       }
     },
   },
+  {
+    name: "ws-http-same-unit-path-stage-receives-homonymous-queued-event",
+    run: async () => {
+      const slug = "http-same-unit-path-runtime-isolation";
+      let runId;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 5_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
+        await sleep(100);
+        const enqueued = await enqueueStageWorker(slug, { marker: "ws-qw-stg", wsHttpSamePathQw: 1 });
+        runId = enqueued.runId;
+      });
+      const forRun = msgs.filter((m) => m.parsed?.runId === runId);
+      if (!wsEvents(forRun).includes("queueWorker.queued")) {
+        throw new Error(`missing queueWorker.queued for homonymous stage worker; got ${JSON.stringify(wsEvents(forRun))}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-stage-excludes-prod-homonymous-qw",
+    run: async () => {
+      const slug = "http-same-unit-path-runtime-isolation";
+      let runId;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
+        const enqueued = await httpPost(qwUrl(slug), { marker: "ws-qw-prod-leak", wsHttpSamePathQwProd: 1 });
+        if (enqueued.status !== 200 || !enqueued.body?.runId) {
+          throw new Error(`prod enqueue homonymous qw: ${enqueued.status}`);
+        }
+        runId = enqueued.body.runId;
+      });
+      const qw = msgs.filter(
+        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("queueWorker."),
+      );
+      const forRun = qw.filter((m) => m.parsed?.runId === runId);
+      if (forRun.length > 0) {
+        throw new Error(`stage ws must not show prod homonymous qw ${runId}; got ${forRun.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-prod-excludes-stage-homonymous-qw",
+    run: async () => {
+      const slug = "http-same-unit-path-runtime-isolation";
+      let runId;
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
+        await sleep(100);
+        const enqueued = await httpPost(qwStageUrl(slug, STAGE_RUNTIME_ID), {
+          marker: "ws-qw-stg-leak",
+          wsHttpSamePathQwStg: 1,
+        });
+        if (enqueued.status !== 200 || !enqueued.body?.runId) {
+          throw new Error(`stage enqueue homonymous qw: ${enqueued.status}`);
+        }
+        runId = enqueued.body.runId;
+      });
+      const forRun = msgs.filter(
+        (m) =>
+          m.parsed?.runId === runId &&
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("queueWorker."),
+      );
+      if (forRun.length > 0) {
+        throw new Error(`prod ws must not show stage homonymous qw ${runId}; got ${forRun.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-stage-b-excludes-stage-a-homonymous-qw-same-slug",
+    run: async () => {
+      const slug = "http-same-unit-path-runtime-isolation";
+      let runId;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_B_RUNTIME_ID), 4_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
+        await sleep(100);
+        const enq = await enqueueStageWorker(slug, { marker: "ws-qw-cross-a", wsHttpSamePathQwAb: 1 }, STAGE_RUNTIME_ID);
+        runId = enq.runId;
+      });
+      const hit = msgs.filter(
+        (m) =>
+          m.parsed?.runId === runId &&
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("queueWorker."),
+      );
+      if (hit.length > 0) {
+        throw new Error(`stage-b ws must not show stage-a homonymous qw run ${runId}`);
+      }
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -582,6 +582,85 @@ const WS_STAGE_RUNTIME = [
       }
     },
   },
+  {
+    name: "ws-http-same-unit-path-stage-receives-homonymous-actor-probe",
+    run: async () => {
+      const unit = "http-same-unit-path-runtime-isolation";
+      const actorId = `ws-http-path-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 5_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(200);
+        await callActorStage(unit, actorId, "probe", {}, STAGE_RUNTIME_ID);
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      const events = wsEvents(forActor);
+      if (!events.includes("activated")) {
+        throw new Error(`expected activated for homonymous stage actor; got ${JSON.stringify(events)}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-stage-excludes-prod-homonymous-actor",
+    run: async () => {
+      const unit = "http-same-unit-path-runtime-isolation";
+      const actorId = `ws-http-path-prod-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
+        await callActor(unit, actorId, "probe", {});
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`stage ws must not show prod homonymous actor ${actorId}; got ${forActor.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-prod-excludes-stage-homonymous-actor",
+    run: async () => {
+      const unit = "http-same-unit-path-runtime-isolation";
+      const actorId = `ws-http-path-stg-${uid()}`;
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(150);
+        await callActorStage(unit, actorId, "probe", {}, STAGE_RUNTIME_ID);
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`prod ws must not show stage homonymous actor ${actorId}; got ${forActor.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-stage-b-excludes-stage-a-homonymous-actor-same-id",
+    run: async () => {
+      const unit = "http-same-unit-path-runtime-isolation";
+      const actorId = `ws-http-path-ab-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_B_RUNTIME_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(150);
+        await callActorStage(unit, actorId, "probe", {}, STAGE_RUNTIME_ID);
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`stage-b ws must not show stage-a homonymous actor ${actorId}; got ${forActor.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-stage-a-excludes-stage-b-homonymous-actor-same-id",
+    run: async () => {
+      const unit = "http-same-unit-path-runtime-isolation";
+      const actorId = `ws-http-path-ba-${uid()}`;
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_500, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(150);
+        await callActorStage(unit, actorId, "probe", {}, STAGE_B_RUNTIME_ID);
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      if (forActor.length > 0) {
+        throw new Error(`stage-a ws must not show stage-b homonymous actor ${actorId}; got ${forActor.length}`);
+      }
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------

@@ -2504,6 +2504,114 @@ function allEndpointTests(): EndpointTestDef[] {
       },
     },
     {
+      name: "http-same-unit-path-wf-endpoint-triple",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const expectedPath = "test.wf.workflow.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const prodStart = await httpPostFull(epWfUrl(baseUrl, slug), { marker: "p" });
+        const stageAStart = await httpPostFull(
+          epWfStageUrl(baseUrl, slug, STAGE_RUNTIME_ID),
+          { marker: "a" },
+        );
+        const stageBStart = await httpPostFull(
+          epWfStageUrl(baseUrl, slug, STAGE_B_RUNTIME_ID),
+          { marker: "b" },
+        );
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) {
+          throw new Error(`prod start failed: ${prodStart.status}`);
+        }
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) {
+          throw new Error(`stage-a start failed: ${stageAStart.status}`);
+        }
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) {
+          throw new Error(`stage-b start failed: ${stageBStart.status}`);
+        }
+        const prodBase = `${epWfUrl(baseUrl, slug)}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${epWfStageUrl(baseUrl, slug, STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${epWfStageUrl(baseUrl, slug, STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          epPollStatus(prodBase, "completed"),
+          epPollStatus(stageABase, "completed"),
+          epPollStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const pr = rp.body?.result;
+        const sar = ra.body?.result;
+        const sbr = rb.body?.result;
+        if (pr?.unitPath !== expectedPath || pr?.runtimeScope !== "prod" || pr?.marker !== "p") {
+          throw new Error(`prod homonymous workflow path/scope wrong: ${JSON.stringify(pr)}`);
+        }
+        if (sar?.unitPath !== expectedPath || sar?.runtimeScope !== "stage-a" || sar?.marker !== "a") {
+          throw new Error(`stage-a homonymous workflow path/scope wrong: ${JSON.stringify(sar)}`);
+        }
+        if (sbr?.unitPath !== expectedPath || sbr?.runtimeScope !== "stage-b" || sbr?.marker !== "b") {
+          throw new Error(`stage-b homonymous workflow path/scope wrong: ${JSON.stringify(sbr)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-callWorkflow-triple",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const expectedChildPath = "test.wf.workflow.http-same-unit-path-runtime-isolation";
+        const caller = "sdk-http-same-path-runtime-isolation-wf-caller";
+        const prodStart = await httpPostFull(epWfUrl(baseUrl, caller), { marker: "p" });
+        const stageAStart = await httpPostFull(epWfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { marker: "a" });
+        const stageBStart = await httpPostFull(epWfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { marker: "b" });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) {
+          throw new Error(`prod start failed: ${prodStart.status}`);
+        }
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) {
+          throw new Error(`stage-a start failed: ${stageAStart.status}`);
+        }
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) {
+          throw new Error(`stage-b start failed: ${stageBStart.status}`);
+        }
+        const prodBase = `${epWfUrl(baseUrl, caller)}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${epWfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${epWfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          epPollStatus(prodBase, "completed"),
+          epPollStatus(stageABase, "completed"),
+          epPollStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const pr = rp.body?.result;
+        const sar = ra.body?.result;
+        const sbr = rb.body?.result;
+        if (
+          pr?.childRuntimeScope !== "prod" ||
+          pr?.childUnitPath !== expectedChildPath ||
+          pr?.childMarker !== "p"
+        ) {
+          throw new Error(`sdk prod→child wf same path: ${JSON.stringify(pr)}`);
+        }
+        if (
+          sar?.childRuntimeScope !== "stage-a" ||
+          sar?.childUnitPath !== expectedChildPath ||
+          sar?.childMarker !== "a"
+        ) {
+          throw new Error(`sdk stage-a→child wf same path: ${JSON.stringify(sar)}`);
+        }
+        if (
+          sbr?.childRuntimeScope !== "stage-b" ||
+          sbr?.childUnitPath !== expectedChildPath ||
+          sbr?.childMarker !== "b"
+        ) {
+          throw new Error(`sdk stage-b→child wf same path: ${JSON.stringify(sbr)}`);
+        }
+      },
+    },
+    {
       name: "runtime-isolation-sdk-chain-triple",
       category: "endpoint_stage",
       run: async (baseUrl) => {

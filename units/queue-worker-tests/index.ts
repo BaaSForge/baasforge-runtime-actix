@@ -1065,6 +1065,138 @@ function allInlineTests(): WorkerInlineTestDef[] {
         throw new Error("runtime-isolation-qw-chain-caller workflows did not complete");
       },
     },
+    {
+      name: "http-same-unit-path-worker-endpoint-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.queue-worker.queue_worker.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const enqP = await httpPostFull(workerUrl(baseUrl, slug), { marker: "mp" });
+        const enqA = await httpPostFull(workerStageUrl(baseUrl, slug, STAGE_RUNTIME_ID), { marker: "ma" });
+        const enqB = await httpPostFull(workerStageUrl(baseUrl, slug, STAGE_B_RUNTIME_ID), { marker: "mb" });
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod enqueue: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a enqueue: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b enqueue: ${enqB.status}`);
+        const [p, a, b] = await Promise.all([
+          pollWorker(baseUrl, slug, enqP.body.runId as string, 120, PROJECT_ID, undefined),
+          pollWorker(baseUrl, slug, enqA.body.runId as string, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, slug, enqB.body.runId as string, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        if (p.status !== "completed" || p.result?.runtimeScope !== "prod" || p.result?.marker !== "mp") {
+          throw new Error(`prod worker homonymous path: ${JSON.stringify(p)}`);
+        }
+        if (
+          a.status !== "completed" ||
+          a.result?.runtimeScope !== "stage-a" ||
+          a.result?.marker !== "ma" ||
+          a.result?.unitPath !== expectedPath
+        ) {
+          throw new Error(`stage-a worker homonymous path: ${JSON.stringify(a)}`);
+        }
+        if (
+          b.status !== "completed" ||
+          b.result?.runtimeScope !== "stage-b" ||
+          b.result?.marker !== "mb" ||
+          b.result?.unitPath !== expectedPath
+        ) {
+          throw new Error(`stage-b worker homonymous path: ${JSON.stringify(b)}`);
+        }
+        if (p.result?.unitPath !== expectedPath) {
+          throw new Error(`prod worker missing unitPath: ${JSON.stringify(p.result)}`);
+        }
+      },
+    },
+    {
+      name: "http-same-unit-path-worker-stage-run-not-on-prod-url",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const slug = "http-same-unit-path-runtime-isolation";
+        const enq = await httpPostFull(workerStageUrl(baseUrl, slug, STAGE_RUNTIME_ID), { marker: "x" });
+        if (enq.status !== 200 || !enq.body?.runId) throw new Error(`stage enqueue: ${enq.status}`);
+        const runId = enq.body.runId as string;
+        const wrong = await httpGetFull(workerRunUrl(baseUrl, slug, runId, "status"));
+        if (wrong.status !== 404) {
+          throw new Error(
+            `expected 404 polling stage-a run via prod workerQueue URL (same slug), got ${wrong.status}: ${JSON.stringify(wrong.body)}`,
+          );
+        }
+        const ok = await pollWorker(baseUrl, slug, runId, 120, PROJECT_ID, STAGE_RUNTIME_ID);
+        if (ok.status !== "completed" || ok.result?.runtimeScope !== "stage-a") {
+          throw new Error(`stage-a run should complete via stage URL: ${JSON.stringify(ok)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-enqueueWorker-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.queue-worker.queue_worker.http-same-unit-path-runtime-isolation";
+        const workerSlug = "http-same-unit-path-runtime-isolation";
+        const caller = "sdk-http-same-path-runtime-isolation-qw-caller";
+        const prodStart = await httpPostFull(wfUrl(baseUrl, caller), { marker: "mp" });
+        const stageAStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { marker: "ma" });
+        const stageBStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { marker: "mb" });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error("prod start failed");
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error("stage-a start failed");
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error("stage-b start failed");
+        const prodBase = `${wfUrl(baseUrl, caller)}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        for (let i = 0; i < 120; i++) {
+          await sleep(150);
+          const [prodSt, stageASt, stageBSt] = await Promise.all([
+            httpGetFull(`${prodBase}/status`),
+            httpGetFull(`${stageABase}/status`),
+            httpGetFull(`${stageBBase}/status`),
+          ]);
+          if (
+            prodSt.body?.meta?.status === "completed" &&
+            stageASt.body?.meta?.status === "completed" &&
+            stageBSt.body?.meta?.status === "completed"
+          ) {
+            const [prodWfRes, stageAWfRes, stageBWfRes] = await Promise.all([
+              httpGetFull(`${prodBase}/result`),
+              httpGetFull(`${stageABase}/result`),
+              httpGetFull(`${stageBBase}/result`),
+            ]);
+            const prodRunId = prodWfRes.body?.result?.enqueuedRunId as string | undefined;
+            const stageARunId = stageAWfRes.body?.result?.enqueuedRunId as string | undefined;
+            const stageBRunId = stageBWfRes.body?.result?.enqueuedRunId as string | undefined;
+            if (!prodRunId || !stageARunId || !stageBRunId) {
+              throw new Error("missing enqueuedRunId from sdk homonymous-queue caller workflows");
+            }
+            const [prodWorker, stageAWorker, stageBWorker] = await Promise.all([
+              pollWorker(baseUrl, workerSlug, prodRunId, 120),
+              pollWorker(baseUrl, workerSlug, stageARunId, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+              pollWorker(baseUrl, workerSlug, stageBRunId, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+            ]);
+            if (
+              prodWorker.result?.runtimeScope !== "prod" ||
+              prodWorker.result?.marker !== "mp" ||
+              prodWorker.result?.unitPath !== expectedPath
+            ) {
+              throw new Error(`sdk prod→worker same path: ${JSON.stringify(prodWorker.result)}`);
+            }
+            if (
+              stageAWorker.result?.runtimeScope !== "stage-a" ||
+              stageAWorker.result?.marker !== "ma" ||
+              stageAWorker.result?.unitPath !== expectedPath
+            ) {
+              throw new Error(`sdk stage-a→worker same path: ${JSON.stringify(stageAWorker.result)}`);
+            }
+            if (
+              stageBWorker.result?.runtimeScope !== "stage-b" ||
+              stageBWorker.result?.marker !== "mb" ||
+              stageBWorker.result?.unitPath !== expectedPath
+            ) {
+              throw new Error(`sdk stage-b→worker same path: ${JSON.stringify(stageBWorker.result)}`);
+            }
+            return;
+          }
+        }
+        throw new Error("sdk-http-same-path-runtime-isolation-qw-caller workflows did not complete");
+      },
+    },
 
     // ---- endpoint (7) ----
     {

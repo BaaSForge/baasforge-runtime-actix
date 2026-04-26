@@ -599,6 +599,49 @@ const STAGE_WS_TESTS = [
       }
     },
   },
+  {
+    name: "ws-http-same-unit-path-stage-receives-homonymous-workflow-lifecycle",
+    run: async () => {
+      const slug = "http-same-unit-path-runtime-isolation";
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 5_000, async () => {
+        await epStageStart(slug, { marker: "ws-stg", wsHttpSamePathWf: true }, STAGE_RUNTIME_ID);
+      });
+      const wfEv = wsEvents(msgs).filter((e) => e.startsWith("workflow."));
+      if (!wfEv.includes("workflow.started") && !wfEv.includes("workflow.completed")) {
+        throw new Error(`expected lifecycle for homonymous stage wf; got ${JSON.stringify(wfEv)}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-stage-excludes-prod-homonymous-workflow",
+    run: async () => {
+      const slug = "http-same-unit-path-runtime-isolation";
+      const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
+        await epStart(slug, { marker: "ws-prod-leak", wsHttpSamePathWfProd: true });
+      });
+      const wf = msgs.filter(
+        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      );
+      if (wf.length > 0) {
+        throw new Error(`stage ws must not deliver prod homonymous wf frames; got ${wf.length}`);
+      }
+    },
+  },
+  {
+    name: "ws-http-same-unit-path-prod-excludes-stage-homonymous-workflow",
+    run: async () => {
+      const slug = "http-same-unit-path-runtime-isolation";
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async () => {
+        await epStageStart(slug, { marker: "ws-stg-leak", wsHttpSamePathWfStg: true }, STAGE_RUNTIME_ID);
+      });
+      const wf = msgs.filter(
+        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      );
+      if (wf.length > 0) {
+        throw new Error(`prod ws must not deliver stage homonymous wf frames; got ${wf.length}`);
+      }
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
