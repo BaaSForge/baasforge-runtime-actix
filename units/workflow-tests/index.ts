@@ -2943,11 +2943,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const results: TestResult[] = [];
 
   for (const test of tests) {
+    console.log(`  workflow: ${test.category}: ${test.name} …`);
     const result = await runTest(baseUrl, test);
     results.push(result);
   }
 
   for (const et of allEndpointTests()) {
+    console.log(`  workflow: ${et.category}: ${et.name} …`);
     const result = await runEndpointTest(baseUrl, et);
     results.push(result);
   }

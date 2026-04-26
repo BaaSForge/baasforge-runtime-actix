@@ -390,6 +390,14 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             });
         }
 
+        if let Err(e) =
+            crate::services::test_seed::clear_test_project_runtime_redis_cache(&redis_conn).await
+        {
+            tracing::warn!(
+                error = %e,
+                "[test_mode] could not clear project-runtime Redis cache (stale unit rows may persist)"
+            );
+        }
         tracing::info!("[test_mode] seeding test entities into database");
         crate::services::test_seed::seed_test_entities(&pool, &settings);
         crate::services::test_seed::print_trigger_urls(&settings);

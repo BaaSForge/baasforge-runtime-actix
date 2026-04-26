@@ -2194,11 +2194,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const results: TestResult[] = [];
 
   for (const test of allWorkerTests()) {
+    console.log(`  queue-worker: ${test.category}: ${test.name} …`);
     const result = await runWorkerTest(baseUrl, test);
     results.push(result);
   }
 
   for (const test of allInlineTests()) {
+    console.log(`  queue-worker: ${test.category}: ${test.name} …`);
     const result = await runInlineTest(baseUrl, test);
     results.push(result);
   }

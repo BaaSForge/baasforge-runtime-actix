@@ -14,12 +14,12 @@ mod queue_worker_units;
 mod workflow_units;
 
 use crate::configs::Settings;
-use crate::database::DbPool;
+use crate::database::{DbPool, SharedRedisConn};
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::Text;
+use redis::AsyncCommands;
 use std::path::Path;
-use uuid::Uuid;
 
 pub(crate) const TEST_USER_ID: &str = "00000000-aaaa-bbbb-cccc-000000000001";
 pub(crate) const TEST_PROJECT_ID: &str = "00000000-aaaa-bbbb-cccc-000000000010";
@@ -516,6 +516,26 @@ pub fn teardown_test_entities(pool: &DbPool) {
         .bind::<Text, _>(TEST_USER_ID)
         .execute(&mut conn)
         .ok();
+}
+
+pub async fn clear_test_project_runtime_redis_cache(redis: &SharedRedisConn) -> Result<(), redis::RedisError> {
+    let Some(rc) = redis else {
+        return Ok(());
+    };
+    let mut conn = rc.lock().await;
+    for prefix in [
+        format!("{TEST_PROJECT_ID}:prod:"),
+        format!("{TEST_ALT_PROJECT_ID}:prod:"),
+        format!("{TEST_STAGE_RUNTIME_ID}:"),
+        format!("{TEST_STAGE_B_RUNTIME_ID}:"),
+    ] {
+        let pattern = format!("{prefix}*");
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        for key in keys {
+            let _: () = conn.del(key).await?;
+        }
+    }
+    Ok(())
 }
 
 pub fn print_trigger_urls(settings: &Settings) {

@@ -25,8 +25,7 @@ pub async fn run_actor_consumer(
     locks: ActorLocks,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(js) = actor_js else {
-        info!("[actor_consumer] no JetStream context; fire-and-forget messages disabled");
-        std::future::pending::<()>().await;
+        info!("[actor_consumer] no JetStream context; mailbox consumer exiting");
         return Ok(());
     };
 
@@ -88,7 +87,8 @@ pub async fn run_actor_consumer(
                 });
             }
             Err(e) => {
-                error!(error = %e, "[actor_consumer] consumer stream error");
+                error!(error = %e, "[actor_consumer] consumer stream error; stopping");
+                return Err(format!("JetStream actor mailbox pull stream error: {e}").into());
             }
         }
     }

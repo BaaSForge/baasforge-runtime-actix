@@ -108,7 +108,8 @@ pub async fn run_work_consumer(
                 });
             }
             Err(e) => {
-                error!(error = %e, "[queue_worker_consumer] consumer stream error");
+                error!(error = %e, "[queue_worker_consumer] consumer stream error; stopping");
+                return Err(format!("JetStream queue worker pull stream error: {e}").into());
             }
         }
     }

@@ -709,6 +709,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-actix-web",
+ "tracing-log",
  "tracing-subscriber",
  "ureq",
  "url",

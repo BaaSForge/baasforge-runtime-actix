@@ -2698,16 +2698,19 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const results: TestResult[] = [];
 
   for (const test of allActorTests()) {
+    console.log(`  actor: ${test.category}: ${test.name} …`);
     const result = await runActorTest(baseUrl, test);
     results.push(result);
   }
 
   for (const test of [...allInlineTests(), stateLimitAtLimitTest()]) {
+    console.log(`  actor: ${test.category}: ${test.name} …`);
     const result = await runInlineTest(baseUrl, test);
     results.push(result);
   }
 
   for (const test of allEndpointTests()) {
+    console.log(`  actor: ${test.category}: ${test.name} …`);
     const result = await runInlineTest(baseUrl, test);
     results.push(result);
   }

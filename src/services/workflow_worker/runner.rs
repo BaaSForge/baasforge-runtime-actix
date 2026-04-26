@@ -421,7 +421,8 @@ pub async fn run_wake_consumer(
                 }
             }
             Err(e) => {
-                error!(error = %e, "[workflow_wake] consumer stream error");
+                error!(error = %e, "[workflow_wake] consumer stream error; stopping");
+                return Err(format!("JetStream workflow wake pull stream error: {e}").into());
             }
         }
     }
