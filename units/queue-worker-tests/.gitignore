@@ -1,6 +1,7 @@
 node_modules
 dist
 .output.log
+test.terminal.log
 
 .qw-output.tmp.json
 .ws-output.tmp.json

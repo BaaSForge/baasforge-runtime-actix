@@ -24,6 +24,9 @@ QUEUE_WORKER_TESTS_DIR="$PROJECT_ROOT/units/queue-worker-tests"
 PORT="${TEST_PORT:-3334}"
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
 TEST_TIMEOUT="${TEST_TIMEOUT:-300}"
+TERMINAL_LOG="$SCRIPT_DIR/test.terminal.log"
+: > "$TERMINAL_LOG"
+exec > >(tee -a "$TERMINAL_LOG") 2>&1
 
 # ------------------------------------------------------------------
 # Node.js version check — ws-tests.mjs requires Node 22 (global WebSocket).
