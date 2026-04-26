@@ -14,5 +14,8 @@ export default actor<St>({
       ctx.state.tag = input.tag;
       return { ok: true };
     },
+    readTag(ctx): { tag: string } {
+      return { tag: ctx.state.tag };
+    },
   },
 });

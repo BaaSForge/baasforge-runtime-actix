@@ -1197,6 +1197,234 @@ function allInlineTests(): WorkerInlineTestDef[] {
         throw new Error("sdk-http-same-path-runtime-isolation-qw-caller workflows did not complete");
       },
     },
+    {
+      name: "sdk-same-unit-path-qw-calls-homonymous-wf-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.wf.workflow.http-same-unit-path-runtime-isolation";
+        const caller = "sdk-qw-calls-homonymous-wf-isolation";
+        const enqP = await httpPostFull(workerUrl(baseUrl, caller), { marker: "mp" });
+        const enqA = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { marker: "ma" });
+        const enqB = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { marker: "mb" });
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod enqueue ${caller}: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a enqueue: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b enqueue: ${enqB.status}`);
+        const [p, a, b] = await Promise.all([
+          pollWorker(baseUrl, caller, enqP.body.runId as string, 120),
+          pollWorker(baseUrl, caller, enqA.body.runId as string, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, caller, enqB.body.runId as string, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        if (p.status !== "completed" || p.result?.runtimeScope !== "prod" || p.result?.unitPath !== expectedPath || p.result?.marker !== "mp") {
+          throw new Error(`qw prod→homonymous wf: ${JSON.stringify(p)}`);
+        }
+        if (
+          a.status !== "completed" ||
+          a.result?.runtimeScope !== "stage-a" ||
+          a.result?.unitPath !== expectedPath ||
+          a.result?.marker !== "ma"
+        ) {
+          throw new Error(`qw stage-a→homonymous wf: ${JSON.stringify(a)}`);
+        }
+        if (
+          b.status !== "completed" ||
+          b.result?.runtimeScope !== "stage-b" ||
+          b.result?.unitPath !== expectedPath ||
+          b.result?.marker !== "mb"
+        ) {
+          throw new Error(`qw stage-b→homonymous wf: ${JSON.stringify(b)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-qw-enqueues-homonymous-qw-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.queue-worker.queue_worker.http-same-unit-path-runtime-isolation";
+        const outer = "sdk-qw-calls-homonymous-qw-isolation";
+        const innerSlug = "http-same-unit-path-runtime-isolation";
+        const enqP = await httpPostFull(workerUrl(baseUrl, outer), { marker: "mp" });
+        const enqA = await httpPostFull(workerStageUrl(baseUrl, outer, STAGE_RUNTIME_ID), { marker: "ma" });
+        const enqB = await httpPostFull(workerStageUrl(baseUrl, outer, STAGE_B_RUNTIME_ID), { marker: "mb" });
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod outer qw: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a outer qw: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b outer qw: ${enqB.status}`);
+        const [op, oa, ob] = await Promise.all([
+          pollWorker(baseUrl, outer, enqP.body.runId as string, 120),
+          pollWorker(baseUrl, outer, enqA.body.runId as string, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, outer, enqB.body.runId as string, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        const nestedP = op.result?.nestedRunId as string | undefined;
+        const nestedA = oa.result?.nestedRunId as string | undefined;
+        const nestedB = ob.result?.nestedRunId as string | undefined;
+        if (!nestedP || !nestedA || !nestedB) throw new Error(`missing nested run ids: ${JSON.stringify({ op, oa, ob })}`);
+        const [ip, ia, ib] = await Promise.all([
+          pollWorker(baseUrl, innerSlug, nestedP, 120),
+          pollWorker(baseUrl, innerSlug, nestedA, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, innerSlug, nestedB, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        if (ip.status !== "completed" || ip.result?.runtimeScope !== "prod" || ip.result?.unitPath !== expectedPath || ip.result?.marker !== "mp") {
+          throw new Error(`nested qw prod: ${JSON.stringify(ip)}`);
+        }
+        if (
+          ia.status !== "completed" ||
+          ia.result?.runtimeScope !== "stage-a" ||
+          ia.result?.unitPath !== expectedPath ||
+          ia.result?.marker !== "ma"
+        ) {
+          throw new Error(`nested qw stage-a: ${JSON.stringify(ia)}`);
+        }
+        if (
+          ib.status !== "completed" ||
+          ib.result?.runtimeScope !== "stage-b" ||
+          ib.result?.unitPath !== expectedPath ||
+          ib.result?.marker !== "mb"
+        ) {
+          throw new Error(`nested qw stage-b: ${JSON.stringify(ib)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-qw-start-handler-homonymous-wf-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.wf.workflow.http-same-path-wf-handler-isolation";
+        const caller = "sdk-qw-calls-homonymous-wf-handler-isolation";
+        const enqP = await httpPostFull(workerUrl(baseUrl, caller), {});
+        const enqA = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), {});
+        const enqB = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), {});
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod ${caller}: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a ${caller}: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b ${caller}: ${enqB.status}`);
+        const [p, a, b] = await Promise.all([
+          pollWorker(baseUrl, caller, enqP.body.runId as string, 120),
+          pollWorker(baseUrl, caller, enqA.body.runId as string, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, caller, enqB.body.runId as string, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        if (p.status !== "completed" || p.result?.scopeFromHandler !== "prod" || p.result?.unitPathFromHandler !== expectedPath) {
+          throw new Error(`qw prod start+handler homonymous wf: ${JSON.stringify(p)}`);
+        }
+        if (a.status !== "completed" || a.result?.scopeFromHandler !== "stage-a" || a.result?.unitPathFromHandler !== expectedPath) {
+          throw new Error(`qw stage-a start+handler: ${JSON.stringify(a)}`);
+        }
+        if (b.status !== "completed" || b.result?.scopeFromHandler !== "stage-b" || b.result?.unitPathFromHandler !== expectedPath) {
+          throw new Error(`qw stage-b start+handler: ${JSON.stringify(b)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-qw-starts-homonymous-wf-child-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedChildPath = "test.wf.workflow.http-same-unit-path-runtime-isolation";
+        const childSlug = "http-same-unit-path-runtime-isolation";
+        const caller = "sdk-qw-starts-homonymous-wf-isolation";
+        const wfChildBase = (instanceId: string, stageId?: string) =>
+          stageId
+            ? `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${stageId}/test/wf/${childSlug}/${instanceId}`
+            : `${wfUrl(baseUrl, childSlug)}/${instanceId}`;
+        const pollWfDone = async (instanceBase: string) => {
+          for (let i = 0; i < 120; i++) {
+            await sleep(150);
+            const r = await httpGetFull(`${instanceBase}/status`);
+            const st = r.body?.meta?.status;
+            if (st === "completed") return;
+            if (st === "failed") throw new Error(`child wf failed: ${JSON.stringify(r.body)}`);
+          }
+          throw new Error(`wf did not complete: ${instanceBase}`);
+        };
+        const enqP = await httpPostFull(workerUrl(baseUrl, caller), { marker: "mp" });
+        const enqA = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { marker: "ma" });
+        const enqB = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { marker: "mb" });
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod ${caller}: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a ${caller}: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b ${caller}: ${enqB.status}`);
+        const [p, a, b] = await Promise.all([
+          pollWorker(baseUrl, caller, enqP.body.runId as string, 120),
+          pollWorker(baseUrl, caller, enqA.body.runId as string, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, caller, enqB.body.runId as string, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        const cidP = p.result?.childInstanceId as string | undefined;
+        const cidA = a.result?.childInstanceId as string | undefined;
+        const cidB = b.result?.childInstanceId as string | undefined;
+        if (p.status !== "completed" || !cidP) throw new Error(`prod qw start child: ${JSON.stringify(p)}`);
+        if (a.status !== "completed" || !cidA) throw new Error(`stage-a qw start child: ${JSON.stringify(a)}`);
+        if (b.status !== "completed" || !cidB) throw new Error(`stage-b qw start child: ${JSON.stringify(b)}`);
+        await Promise.all([
+          pollWfDone(wfChildBase(cidP)),
+          pollWfDone(wfChildBase(cidA, STAGE_RUNTIME_ID)),
+          pollWfDone(wfChildBase(cidB, STAGE_B_RUNTIME_ID)),
+        ]);
+        const [crp, cra, crb] = await Promise.all([
+          httpGetFull(`${wfChildBase(cidP)}/result`),
+          httpGetFull(`${wfChildBase(cidA, STAGE_RUNTIME_ID)}/result`),
+          httpGetFull(`${wfChildBase(cidB, STAGE_B_RUNTIME_ID)}/result`),
+        ]);
+        const cpr = crp.body?.result;
+        const car = cra.body?.result;
+        const cbr = crb.body?.result;
+        if (cpr?.unitPath !== expectedChildPath || cpr?.runtimeScope !== "prod" || cpr?.marker !== "mp") {
+          throw new Error(`qw prod start→child wf: ${JSON.stringify(cpr)}`);
+        }
+        if (car?.unitPath !== expectedChildPath || car?.runtimeScope !== "stage-a" || car?.marker !== "ma") {
+          throw new Error(`qw stage-a start→child wf: ${JSON.stringify(car)}`);
+        }
+        if (cbr?.unitPath !== expectedChildPath || cbr?.runtimeScope !== "stage-b" || cbr?.marker !== "mb") {
+          throw new Error(`qw stage-b start→child wf: ${JSON.stringify(cbr)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-qw-send-read-homonymous-actor-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const isoSlug = "http-same-unit-path-runtime-isolation";
+        const caller = "sdk-qw-send-homonymous-actor-isolation";
+        const aid = `qw-send-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+        const del = async (stage?: string) => {
+          const path = stage
+            ? `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/stage/${stage}/test/actor-tests/${isoSlug}/${aid}`
+            : `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests/${isoSlug}/${aid}`;
+          await fetch(path, { method: "DELETE" });
+        };
+        await del();
+        await del(STAGE_RUNTIME_ID);
+        await del(STAGE_B_RUNTIME_ID);
+        const tagP = `QWP-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        const tagA = `QWA-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        const tagB = `QWB-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        const enqP = await httpPostFull(workerUrl(baseUrl, caller), { actorId: aid, tag: tagP });
+        const enqA = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { actorId: aid, tag: tagA });
+        const enqB = await httpPostFull(workerStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { actorId: aid, tag: tagB });
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod ${caller}: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a ${caller}: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b ${caller}: ${enqB.status}`);
+        const [p, a, b] = await Promise.all([
+          pollWorker(baseUrl, caller, enqP.body.runId as string, 120),
+          pollWorker(baseUrl, caller, enqA.body.runId as string, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, caller, enqB.body.runId as string, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        if (p.status !== "completed" || p.result?.tag !== tagP || p.result?.runtimeScope !== "prod" || p.result?.unitPath !== expectedPath) {
+          throw new Error(`qw prod send+read homonymous actor: ${JSON.stringify(p)}`);
+        }
+        if (
+          a.status !== "completed" ||
+          a.result?.tag !== tagA ||
+          a.result?.runtimeScope !== "stage-a" ||
+          a.result?.unitPath !== expectedPath
+        ) {
+          throw new Error(`qw stage-a send+read: ${JSON.stringify(a)}`);
+        }
+        if (
+          b.status !== "completed" ||
+          b.result?.tag !== tagB ||
+          b.result?.runtimeScope !== "stage-b" ||
+          b.result?.unitPath !== expectedPath
+        ) {
+          throw new Error(`qw stage-b send+read: ${JSON.stringify(b)}`);
+        }
+      },
+    },
 
     // ---- endpoint (7) ----
     {

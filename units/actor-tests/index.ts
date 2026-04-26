@@ -263,6 +263,49 @@ function wfStageUrl(baseUrl: string, slug: string, runtimeId = STAGE_RUNTIME_ID)
   return `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${runtimeId}/test/actor-tests/${slug}`;
 }
 
+function atWorkerUrl(baseUrl: string, slug: string): string {
+  return `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/actor-tests/${slug}`;
+}
+
+function atWorkerStageUrl(baseUrl: string, slug: string, runtimeId: string): string {
+  return `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/stage/${runtimeId}/test/actor-tests/${slug}`;
+}
+
+function atWorkerRunPath(
+  baseUrl: string,
+  slug: string,
+  runId: string,
+  suffix: string,
+  stageRuntimeId?: string,
+): string {
+  const base =
+    stageRuntimeId != null && stageRuntimeId !== ""
+      ? atWorkerStageUrl(baseUrl, slug, stageRuntimeId)
+      : atWorkerUrl(baseUrl, slug);
+  return `${base}/${runId}/${suffix}`;
+}
+
+async function pollAtWorker(
+  baseUrl: string,
+  slug: string,
+  runId: string,
+  stageRuntimeId?: string,
+): Promise<{ status: string; result?: any }> {
+  for (let i = 0; i < 120; i++) {
+    await sleep(150);
+    const st = await httpGetFull(atWorkerRunPath(baseUrl, slug, runId, "status", stageRuntimeId));
+    const status: string = st.body?.status ?? "unknown";
+    if (status === "completed") {
+      const res = await httpGetFull(atWorkerRunPath(baseUrl, slug, runId, "result", stageRuntimeId));
+      return { status, result: res.body?.result };
+    }
+    if (status === "dead_letter" || status === "failed" || status === "cancelled") {
+      return { status };
+    }
+  }
+  return { status: "timeout" };
+}
+
 async function startWorkflow(
   baseUrl: string,
   slug: string,
@@ -1507,6 +1550,402 @@ function allInlineTests(): ActorInlineTestDef[] {
         }
         if (br?.runtimeScope !== "stage-b" || br?.unitPath !== expectedPath) {
           throw new Error(`sdk stage-b→actor same path: ${JSON.stringify(br)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-sendActorMessage-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const aid = `sdk-send-${uid()}`;
+        await deleteActor(baseUrl, slug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_B_RUNTIME_ID));
+        const caller = "sdk-http-same-path-send-actor-msg-caller";
+        const tagP = `TAG-P-${uid()}`;
+        const tagA = `TAG-A-${uid()}`;
+        const tagB = `TAG-B-${uid()}`;
+        const prodStart = await httpPostFull(wfUrl(baseUrl, caller), { actorId: aid, tag: tagP });
+        const stageAStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { actorId: aid, tag: tagA });
+        const stageBStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { actorId: aid, tag: tagB });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error("prod send-msg caller start failed");
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error("stage-a send-msg caller start failed");
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error("stage-b send-msg caller start failed");
+        const prodBase = `${wfUrl(baseUrl, caller)}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          pollWorkflowStatus(prodBase, "completed"),
+          pollWorkflowStatus(stageABase, "completed"),
+          pollWorkflowStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (pr?.tag !== tagP || pr?.runtimeScope !== "prod" || pr?.unitPath !== expectedPath) {
+          throw new Error(`sdk send+read prod: ${JSON.stringify(pr)}`);
+        }
+        if (ar?.tag !== tagA || ar?.runtimeScope !== "stage-a" || ar?.unitPath !== expectedPath) {
+          throw new Error(`sdk send+read stage-a: ${JSON.stringify(ar)}`);
+        }
+        if (br?.tag !== tagB || br?.runtimeScope !== "stage-b" || br?.unitPath !== expectedPath) {
+          throw new Error(`sdk send+read stage-b: ${JSON.stringify(br)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-durable-callActor-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const aid = `sdk-durable-${uid()}`;
+        await deleteActor(baseUrl, slug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_B_RUNTIME_ID));
+        const caller = "sdk-http-same-path-durable-actor-caller";
+        const prodStart = await httpPostFull(wfUrl(baseUrl, caller), { actorId: aid });
+        const stageAStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID), { actorId: aid });
+        const stageBStart = await httpPostFull(wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID), { actorId: aid });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error("prod durable caller start failed");
+        if (stageAStart.status !== 200 || !stageAStart.body?.instanceId) throw new Error("stage-a durable caller start failed");
+        if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) throw new Error("stage-b durable caller start failed");
+        const prodBase = `${wfUrl(baseUrl, caller)}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${wfStageUrl(baseUrl, caller, STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
+        const stageBBase = `${wfStageUrl(baseUrl, caller, STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        await Promise.all([
+          pollWorkflowStatus(prodBase, "completed"),
+          pollWorkflowStatus(stageABase, "completed"),
+          pollWorkflowStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (pr?.runtimeScope !== "prod" || pr?.unitPath !== expectedPath) {
+          throw new Error(`durable prod→actor: ${JSON.stringify(pr)}`);
+        }
+        if (ar?.runtimeScope !== "stage-a" || ar?.unitPath !== expectedPath) {
+          throw new Error(`durable stage-a→actor: ${JSON.stringify(ar)}`);
+        }
+        if (br?.runtimeScope !== "stage-b" || br?.unitPath !== expectedPath) {
+          throw new Error(`durable stage-b→actor: ${JSON.stringify(br)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-actor-handler-calls-homonymous-actor-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const bridge = "sdk-actor-calls-homonymous-path";
+        const aid = `sdk-bridge-${uid()}`;
+        await deleteActor(baseUrl, slug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_B_RUNTIME_ID));
+        const [rp, ra, rb] = await Promise.all([
+          httpPostFull(`${actorUrl(baseUrl, bridge, aid, "probeHomonymous")}?await=true`, { childActorId: aid }),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, aid, "probeHomonymous", STAGE_RUNTIME_ID)}?await=true`,
+            { childActorId: aid },
+          ),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, aid, "probeHomonymous", STAGE_B_RUNTIME_ID)}?await=true`,
+            { childActorId: aid },
+          ),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (rp.status !== 200 || pr?.runtimeScope !== "prod" || pr?.unitPath !== expectedPath) {
+          throw new Error(`actor sdk prod→homonymous: ${JSON.stringify(rp.body)}`);
+        }
+        if (ra.status !== 200 || ar?.runtimeScope !== "stage-a" || ar?.unitPath !== expectedPath) {
+          throw new Error(`actor sdk stage-a→homonymous: ${JSON.stringify(ra.body)}`);
+        }
+        if (rb.status !== 200 || br?.runtimeScope !== "stage-b" || br?.unitPath !== expectedPath) {
+          throw new Error(`actor sdk stage-b→homonymous: ${JSON.stringify(rb.body)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-qw-calls-homonymous-actor-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const isoSlug = "http-same-unit-path-runtime-isolation";
+        const qwSlug = "sdk-qw-homonymous-actor-isolation";
+        const aid = `sdk-qw-${uid()}`;
+        await deleteActor(baseUrl, isoSlug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, isoSlug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, isoSlug, aid, STAGE_B_RUNTIME_ID));
+        const enqP = await httpPostFull(atWorkerUrl(baseUrl, qwSlug), { actorId: aid });
+        const enqA = await httpPostFull(atWorkerStageUrl(baseUrl, qwSlug, STAGE_RUNTIME_ID), { actorId: aid });
+        const enqB = await httpPostFull(atWorkerStageUrl(baseUrl, qwSlug, STAGE_B_RUNTIME_ID), { actorId: aid });
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod qw enqueue: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a qw enqueue: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b qw enqueue: ${enqB.status}`);
+        const [p, a, b] = await Promise.all([
+          pollAtWorker(baseUrl, qwSlug, enqP.body.runId as string),
+          pollAtWorker(baseUrl, qwSlug, enqA.body.runId as string, STAGE_RUNTIME_ID),
+          pollAtWorker(baseUrl, qwSlug, enqB.body.runId as string, STAGE_B_RUNTIME_ID),
+        ]);
+        if (p.status !== "completed" || p.result?.runtimeScope !== "prod" || p.result?.unitPath !== expectedPath) {
+          throw new Error(`qw prod→actor: ${JSON.stringify(p)}`);
+        }
+        if (a.status !== "completed" || a.result?.runtimeScope !== "stage-a" || a.result?.unitPath !== expectedPath) {
+          throw new Error(`qw stage-a→actor: ${JSON.stringify(a)}`);
+        }
+        if (b.status !== "completed" || b.result?.runtimeScope !== "stage-b" || b.result?.unitPath !== expectedPath) {
+          throw new Error(`qw stage-b→actor: ${JSON.stringify(b)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-actor-calls-homonymous-wf-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedWfPath = "test.wf.workflow.http-same-unit-path-runtime-isolation";
+        const bridge = "sdk-actor-calls-homonymous-wf-isolation";
+        const markerP = `m-p-${uid()}`;
+        const markerA = `m-a-${uid()}`;
+        const markerB = `m-b-${uid()}`;
+        const [rp, ra, rb] = await Promise.all([
+          httpPostFull(`${actorUrl(baseUrl, bridge, `wf-${uid()}`, "probeHomonymousWf")}?await=true`, { marker: markerP }),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `wf-${uid()}`, "probeHomonymousWf", STAGE_RUNTIME_ID)}?await=true`,
+            { marker: markerA },
+          ),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `wf-${uid()}`, "probeHomonymousWf", STAGE_B_RUNTIME_ID)}?await=true`,
+            { marker: markerB },
+          ),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (
+          rp.status !== 200 ||
+          pr?.runtimeScope !== "prod" ||
+          pr?.unitPath !== expectedWfPath ||
+          pr?.marker !== markerP
+        ) {
+          throw new Error(`actor sdk prod→homonymous wf: ${JSON.stringify(rp.body)}`);
+        }
+        if (
+          ra.status !== 200 ||
+          ar?.runtimeScope !== "stage-a" ||
+          ar?.unitPath !== expectedWfPath ||
+          ar?.marker !== markerA
+        ) {
+          throw new Error(`actor sdk stage-a→homonymous wf: ${JSON.stringify(ra.body)}`);
+        }
+        if (
+          rb.status !== 200 ||
+          br?.runtimeScope !== "stage-b" ||
+          br?.unitPath !== expectedWfPath ||
+          br?.marker !== markerB
+        ) {
+          throw new Error(`actor sdk stage-b→homonymous wf: ${JSON.stringify(rb.body)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-actor-enqueues-homonymous-qw-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedQwPath = "test.queue-worker.queue_worker.http-same-unit-path-runtime-isolation";
+        const isoSlug = "http-same-unit-path-runtime-isolation";
+        const bridge = "sdk-actor-calls-homonymous-qw-isolation";
+        const qwPollBase = (stageId?: string) =>
+          stageId
+            ? `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/stage/${stageId}/test/queue-worker/${isoSlug}`
+            : `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/queue-worker/${isoSlug}`;
+        const pollQw = async (runId: string, stageId?: string) => {
+          for (let i = 0; i < 120; i++) {
+            await sleep(150);
+            const st = await httpGetFull(`${qwPollBase(stageId)}/${runId}/status`);
+            const status: string = st.body?.status ?? "unknown";
+            if (status === "completed") {
+              const res = await httpGetFull(`${qwPollBase(stageId)}/${runId}/result`);
+              return res.body?.result;
+            }
+            if (status === "dead_letter" || status === "failed" || status === "cancelled") {
+              throw new Error(`qw run ${status}: ${JSON.stringify(st.body)}`);
+            }
+          }
+          throw new Error("qw poll timeout");
+        };
+        const markerP = `qwp-${uid()}`;
+        const markerA = `qwa-${uid()}`;
+        const markerB = `qwb-${uid()}`;
+        const [ep, ea, eb] = await Promise.all([
+          httpPostFull(`${actorUrl(baseUrl, bridge, `qw-${uid()}`, "probeHomonymousQw")}?await=true`, { marker: markerP }),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `qw-${uid()}`, "probeHomonymousQw", STAGE_RUNTIME_ID)}?await=true`,
+            { marker: markerA },
+          ),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `qw-${uid()}`, "probeHomonymousQw", STAGE_B_RUNTIME_ID)}?await=true`,
+            { marker: markerB },
+          ),
+        ]);
+        if (ep.status !== 200 || !ep.body?.result?.enqueuedRunId) throw new Error(`prod actor→qw: ${JSON.stringify(ep.body)}`);
+        if (ea.status !== 200 || !ea.body?.result?.enqueuedRunId) throw new Error(`stage-a actor→qw: ${JSON.stringify(ea.body)}`);
+        if (eb.status !== 200 || !eb.body?.result?.enqueuedRunId) throw new Error(`stage-b actor→qw: ${JSON.stringify(eb.body)}`);
+        const [rp, ra, rb] = await Promise.all([
+          pollQw(ep.body.result.enqueuedRunId as string),
+          pollQw(ea.body.result.enqueuedRunId as string, STAGE_RUNTIME_ID),
+          pollQw(eb.body.result.enqueuedRunId as string, STAGE_B_RUNTIME_ID),
+        ]);
+        if (rp?.runtimeScope !== "prod" || rp?.unitPath !== expectedQwPath || rp?.marker !== markerP) {
+          throw new Error(`actor prod→homonymous qw wrong: ${JSON.stringify(rp)}`);
+        }
+        if (ra?.runtimeScope !== "stage-a" || ra?.unitPath !== expectedQwPath || ra?.marker !== markerA) {
+          throw new Error(`actor stage-a→homonymous qw wrong: ${JSON.stringify(ra)}`);
+        }
+        if (rb?.runtimeScope !== "stage-b" || rb?.unitPath !== expectedQwPath || rb?.marker !== markerB) {
+          throw new Error(`actor stage-b→homonymous qw wrong: ${JSON.stringify(rb)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-actor-starts-homonymous-wf-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedChildPath = "test.wf.workflow.http-same-unit-path-runtime-isolation";
+        const childSlug = "http-same-unit-path-runtime-isolation";
+        const bridge = "sdk-actor-calls-homonymous-start-wf-isolation";
+        const wfChildBase = (instanceId: string, stageId?: string) =>
+          stageId
+            ? `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/stage/${stageId}/test/wf/${childSlug}/${instanceId}`
+            : `${baseUrl}/api/v1/trigger/wf/${PROJECT_ID}/test/wf/${childSlug}/${instanceId}`;
+        const markerP = `sp-${uid()}`;
+        const markerA = `sa-${uid()}`;
+        const markerB = `sb-${uid()}`;
+        const [sp, sa, sb] = await Promise.all([
+          httpPostFull(`${actorUrl(baseUrl, bridge, `st-${uid()}`, "startHomonymousWf")}?await=true`, { marker: markerP }),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `st-${uid()}`, "startHomonymousWf", STAGE_RUNTIME_ID)}?await=true`,
+            { marker: markerA },
+          ),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `st-${uid()}`, "startHomonymousWf", STAGE_B_RUNTIME_ID)}?await=true`,
+            { marker: markerB },
+          ),
+        ]);
+        const cidP = sp.body?.result?.childInstanceId as string | undefined;
+        const cidA = sa.body?.result?.childInstanceId as string | undefined;
+        const cidB = sb.body?.result?.childInstanceId as string | undefined;
+        if (sp.status !== 200 || !cidP) throw new Error(`prod start child wf: ${JSON.stringify(sp.body)}`);
+        if (sa.status !== 200 || !cidA) throw new Error(`stage-a start child wf: ${JSON.stringify(sa.body)}`);
+        if (sb.status !== 200 || !cidB) throw new Error(`stage-b start child wf: ${JSON.stringify(sb.body)}`);
+        await Promise.all([
+          pollWorkflowStatus(wfChildBase(cidP), "completed"),
+          pollWorkflowStatus(wfChildBase(cidA, STAGE_RUNTIME_ID), "completed"),
+          pollWorkflowStatus(wfChildBase(cidB, STAGE_B_RUNTIME_ID), "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${wfChildBase(cidP)}/result`),
+          httpGetFull(`${wfChildBase(cidA, STAGE_RUNTIME_ID)}/result`),
+          httpGetFull(`${wfChildBase(cidB, STAGE_B_RUNTIME_ID)}/result`),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (pr?.unitPath !== expectedChildPath || pr?.runtimeScope !== "prod" || pr?.marker !== markerP) {
+          throw new Error(`actor prod start→child wf: ${JSON.stringify(pr)}`);
+        }
+        if (ar?.unitPath !== expectedChildPath || ar?.runtimeScope !== "stage-a" || ar?.marker !== markerA) {
+          throw new Error(`actor stage-a start→child wf: ${JSON.stringify(ar)}`);
+        }
+        if (br?.unitPath !== expectedChildPath || br?.runtimeScope !== "stage-b" || br?.marker !== markerB) {
+          throw new Error(`actor stage-b start→child wf: ${JSON.stringify(br)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-actor-send-homonymous-actor-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
+        const slug = "http-same-unit-path-runtime-isolation";
+        const bridge = "sdk-actor-send-homonymous-actor-isolation";
+        const aid = `actor-send-${uid()}`;
+        await deleteActor(baseUrl, slug, aid);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, slug, aid, STAGE_B_RUNTIME_ID));
+        const tagP = `TAG-P-${uid()}`;
+        const tagA = `TAG-A-${uid()}`;
+        const tagB = `TAG-B-${uid()}`;
+        const [rp, ra, rb] = await Promise.all([
+          httpPostFull(`${actorUrl(baseUrl, bridge, `br-${uid()}`, "probeSend")}?await=true`, {
+            childActorId: aid,
+            tag: tagP,
+          }),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `br-${uid()}`, "probeSend", STAGE_RUNTIME_ID)}?await=true`,
+            { childActorId: aid, tag: tagA },
+          ),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `br-${uid()}`, "probeSend", STAGE_B_RUNTIME_ID)}?await=true`,
+            { childActorId: aid, tag: tagB },
+          ),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (rp.status !== 200 || pr?.tag !== tagP || pr?.runtimeScope !== "prod" || pr?.unitPath !== expectedPath) {
+          throw new Error(`actor send+read prod→homonymous: ${JSON.stringify(rp.body)}`);
+        }
+        if (ra.status !== 200 || ar?.tag !== tagA || ar?.runtimeScope !== "stage-a" || ar?.unitPath !== expectedPath) {
+          throw new Error(`actor send+read stage-a→homonymous: ${JSON.stringify(ra.body)}`);
+        }
+        if (rb.status !== 200 || br?.tag !== tagB || br?.runtimeScope !== "stage-b" || br?.unitPath !== expectedPath) {
+          throw new Error(`actor send+read stage-b→homonymous: ${JSON.stringify(rb.body)}`);
+        }
+      },
+    },
+    {
+      name: "sdk-same-unit-path-actor-wf-handler-homonymous-triple",
+      category: "isolation",
+      run: async (baseUrl) => {
+        const expectedPath = "test.wf.workflow.http-same-path-wf-handler-isolation";
+        const bridge = "sdk-actor-calls-homonymous-wf-handler-isolation";
+        const [rp, ra, rb] = await Promise.all([
+          httpPostFull(`${actorUrl(baseUrl, bridge, `hf-${uid()}`, "runHandlerProbe")}?await=true`, {}),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `hf-${uid()}`, "runHandlerProbe", STAGE_RUNTIME_ID)}?await=true`,
+            {},
+          ),
+          httpPostFull(
+            `${actorStageUrl(baseUrl, bridge, `hf-${uid()}`, "runHandlerProbe", STAGE_B_RUNTIME_ID)}?await=true`,
+            {},
+          ),
+        ]);
+        const pr = rp.body?.result;
+        const ar = ra.body?.result;
+        const br = rb.body?.result;
+        if (rp.status !== 200 || pr?.scopeFromHandler !== "prod" || pr?.unitPathFromHandler !== expectedPath) {
+          throw new Error(`actor prod start+handler homonymous wf: ${JSON.stringify(rp.body)}`);
+        }
+        if (ra.status !== 200 || ar?.scopeFromHandler !== "stage-a" || ar?.unitPathFromHandler !== expectedPath) {
+          throw new Error(`actor stage-a start+handler homonymous wf: ${JSON.stringify(ra.body)}`);
+        }
+        if (rb.status !== 200 || br?.scopeFromHandler !== "stage-b" || br?.unitPathFromHandler !== expectedPath) {
+          throw new Error(`actor stage-b start+handler homonymous wf: ${JSON.stringify(rb.body)}`);
         }
       },
     },

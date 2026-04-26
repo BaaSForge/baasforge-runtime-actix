@@ -5,13 +5,19 @@ use std::path::Path;
 fn unit_type_for_stem(stem: &str) -> &'static str {
     match stem {
         "call-actor-from-api" => "api",
-        "call-actor-from-workflow" | "call-actor-from-queue-worker" | "echo-target" => "queue_worker",
+        "call-actor-from-workflow"
+        | "call-actor-from-queue-worker"
+        | "echo-target"
+        | "sdk-qw-homonymous-actor-isolation" => "queue_worker",
         "double-n"
         | "call-actor-durable-basic"
         | "call-actor-durable-unknown-handler"
         | "runtime-scope-actor-caller"
         | "runtime-isolation-chain-wf-leaf"
-        | "runtime-isolation-actor-chain-runner" => "workflow",
+        | "runtime-isolation-actor-chain-runner"
+        | "sdk-http-same-path-runtime-isolation-actor-caller"
+        | "sdk-http-same-path-send-actor-msg-caller"
+        | "sdk-http-same-path-durable-actor-caller" => "workflow",
         _ => "actor",
     }
 }
