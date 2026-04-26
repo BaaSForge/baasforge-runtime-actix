@@ -2,9 +2,9 @@
 # ---------------------------------------------------------------------------
 # Workflow integration tests (end-to-end)
 #
-# Builds the TypeScript workflow units + test runner, starts the **real**
-# application server in TEST_MODE, seeds all workflow units + the API test
-# runner into the database, hits the trigger URL, and prints the report.
+# Builds workflow + actor + queue-worker TypeScript (for homonymous-path
+# suites), starts the **real** application server in TEST_MODE, seeds those
+# units + the API test runner, hits the trigger URL, and prints the report.
 #
 # Requires:
 #   - docker compose up -d   (Redis, NATS, Postgres)
@@ -19,6 +19,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+ACTOR_TESTS_DIR="$PROJECT_ROOT/units/actor-tests"
+QUEUE_WORKER_TESTS_DIR="$PROJECT_ROOT/units/queue-worker-tests"
 PORT="${TEST_PORT:-3334}"
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
 TEST_TIMEOUT="${TEST_TIMEOUT:-300}"
@@ -59,6 +61,18 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
     --noUnusedLocals false --noUnusedParameters false
   echo "    dist/ ready ($(find dist -name '*.js' | wc -l | tr -d ' ') JS files)"
 
+  echo "==> Compiling actor-tests -> dist/ (seed for workflow cross-unit tests)…"
+  cd "$ACTOR_TESTS_DIR"
+  if [[ ! -f package-lock.json ]]; then npm install 2>&1; else npm ci --silent 2>&1; fi
+  npx tsc --noEmit false --outDir dist --sourceMap false --declaration false \
+    --noUnusedLocals false --noUnusedParameters false
+
+  echo "==> Compiling queue-worker-tests -> dist/ (seed for workflow cross-unit tests)…"
+  cd "$QUEUE_WORKER_TESTS_DIR"
+  if [[ ! -f package-lock.json ]]; then npm install 2>&1; else npm ci --silent 2>&1; fi
+  npx tsc --noEmit false --outDir dist --sourceMap false --declaration false \
+    --noUnusedLocals false --noUnusedParameters false
+
   echo "==> Building main server binary (release)…"
   cd "$PROJECT_ROOT"
   cargo build --release 2>&1
@@ -75,6 +89,8 @@ APP_ENV=production \
 PORT="$PORT" \
 TEST_UNIT_FILES="workflow-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_WORKFLOW_DIR="$SCRIPT_DIR/dist" \
+TEST_ACTOR_DIR="$ACTOR_TESTS_DIR/dist" \
+TEST_QUEUE_WORKER_DIR="$QUEUE_WORKER_TESTS_DIR/dist" \
   "$PROJECT_ROOT/target/release/baal-runtime-actix" &
 SERVER_PID=$!
 

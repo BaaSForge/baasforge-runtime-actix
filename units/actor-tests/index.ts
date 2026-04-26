@@ -1338,14 +1338,14 @@ function allInlineTests(): ActorInlineTestDef[] {
           httpGetFull(`${stageABase}/result`),
           httpGetFull(`${stageBBase}/result`),
         ]);
-        if (prodResultResp.body?.result?.actorScope !== "prod") {
-          throw new Error(`prod actor scope mismatch: ${JSON.stringify(prodResultResp.body?.result)}`);
+        if (prodResultResp.body?.result?.scopeSurface !== "prod") {
+          throw new Error(`prod scope surface mismatch: ${JSON.stringify(prodResultResp.body?.result)}`);
         }
-        if (stageAResultResp.body?.result?.actorScope !== "stage-a") {
-          throw new Error(`stage-a actor scope mismatch: ${JSON.stringify(stageAResultResp.body?.result)}`);
+        if (stageAResultResp.body?.result?.scopeSurface !== "stage-a") {
+          throw new Error(`stage-a scope surface mismatch: ${JSON.stringify(stageAResultResp.body?.result)}`);
         }
-        if (stageBResultResp.body?.result?.actorScope !== "stage-b") {
-          throw new Error(`stage-b actor scope mismatch: ${JSON.stringify(stageBResultResp.body?.result)}`);
+        if (stageBResultResp.body?.result?.scopeSurface !== "stage-b") {
+          throw new Error(`stage-b scope surface mismatch: ${JSON.stringify(stageBResultResp.body?.result)}`);
         }
       },
     },
@@ -1384,9 +1384,9 @@ function allInlineTests(): ActorInlineTestDef[] {
         const rB = await runOne("stage-b", "b");
         const rA = await runOne("stage-a", "a");
         const rP = await runOne("prod", "prod");
-        if (rB?.actorScope !== "stage-b") throw new Error(`serial stage-b: ${JSON.stringify(rB)}`);
-        if (rA?.actorScope !== "stage-a") throw new Error(`serial stage-a: ${JSON.stringify(rA)}`);
-        if (rP?.actorScope !== "prod") throw new Error(`serial prod: ${JSON.stringify(rP)}`);
+        if (rB?.scopeSurface !== "stage-b") throw new Error(`serial stage-b: ${JSON.stringify(rB)}`);
+        if (rA?.scopeSurface !== "stage-a") throw new Error(`serial stage-a: ${JSON.stringify(rA)}`);
+        if (rP?.scopeSurface !== "prod") throw new Error(`serial prod: ${JSON.stringify(rP)}`);
       },
     },
     {

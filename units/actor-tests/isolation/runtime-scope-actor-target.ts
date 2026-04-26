@@ -1,12 +1,12 @@
 import { actor } from "@sdk";
 
-export type State = { runtimeScope: "prod" };
+export type State = Record<string, never>;
 
 export default actor<State>({
-  state: { runtimeScope: "prod" },
+  state: {},
   handlers: {
-    readScope(ctx, _input: { marker?: string }) {
-      return { runtimeScope: ctx.state.runtimeScope };
+    readScope(_ctx, _input: { marker?: string }) {
+      return { scopeSurface: "prod" as const };
     },
   },
 });

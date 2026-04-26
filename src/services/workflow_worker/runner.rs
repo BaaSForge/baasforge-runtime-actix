@@ -117,6 +117,48 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .as_ref()
         .map(|nc| jetstream::new(nc.clone()));
 
+    let wq_redis: Option<SharedRedis> = if let Some(url) = &settings.wq_redis_url {
+        match redis::Client::open(url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    info!("[wq_redis] connected for workflow wake (sdk.enqueueWorker*)");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    warn!(error = %e, "[wq_redis] connection failed");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "[wq_redis] client open failed");
+                None
+            }
+        }
+    } else {
+        info!("[wq_redis] WQ_REDIS_URL unset; sdk.enqueueWorker* disabled in workflow wake");
+        None
+    };
+
+    let wq_nats: Option<async_nats::Client> = if let Some(url) = settings.wq_nats_url.as_deref() {
+        match crate::configs::connect_nats(url).await {
+            Ok(nc) => {
+                info!("[nats_wq] connected for workflow wake (sdk.enqueueWorker*)");
+                Some(nc)
+            }
+            Err(e) => {
+                warn!(error = %e, "[nats_wq] connect failed");
+                None
+            }
+        }
+    } else {
+        info!("[nats_wq] WQ_NATS_URL unset; sdk.enqueueWorker* may be limited in workflow wake");
+        None
+    };
+
+    let wq_js = wq_nats
+        .as_ref()
+        .map(|nc| jetstream::new(nc.clone()));
+
     // If both wf_redis and nats are available, start the workflow wake consumer
     if let (Some(wf_redis), Some(nats)) = (&wf_redis, &nats_client) {
         let wf_redis = wf_redis.clone();
@@ -137,6 +179,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let actor_nats = actor_nats.clone();
         let actor_js = actor_js.clone();
         let actor_locks = actor_locks.clone();
+        let wq_redis = wq_redis.clone();
+        let wq_nats = wq_nats.clone();
+        let wq_js = wq_js.clone();
 
         info!("[workflow_wake] starting JetStream pull consumer for wf.*.*.wake");
 
@@ -152,6 +197,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 actor_nats,
                 actor_js,
                 actor_locks,
+                wq_redis,
+                wq_nats,
+                wq_js,
             )
             .await
             {
@@ -179,6 +227,9 @@ pub async fn run_wake_consumer(
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_locks: SdkActorLocks,
+    wq_redis: Option<SharedRedis>,
+    wq_nats: Option<async_nats::Client>,
+    wq_js: Option<jetstream::Context>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
 
@@ -237,6 +288,9 @@ pub async fn run_wake_consumer(
                     let actor_nats = actor_nats.clone();
                     let actor_js = actor_js.clone();
                     let actor_locks = actor_locks.clone();
+                    let wq_redis = wq_redis.clone();
+                    let wq_nats = wq_nats.clone();
+                    let wq_js = wq_js.clone();
 
                     let heartbeat_msg = msg.clone();
                     let heartbeat = tokio::spawn(async move {
@@ -266,6 +320,9 @@ pub async fn run_wake_consumer(
                         actor_nats,
                         actor_js,
                         actor_locks,
+                        wq_redis,
+                        wq_nats,
+                        wq_js,
                     )
                     .await
                     {
@@ -312,6 +369,9 @@ pub async fn run_wake_consumer(
                 let actor_nats = actor_nats.clone();
                 let actor_js = actor_js.clone();
                 let actor_locks = actor_locks.clone();
+                let wq_redis = wq_redis.clone();
+                let wq_nats = wq_nats.clone();
+                let wq_js = wq_js.clone();
 
                 let heartbeat_msg = msg.clone();
                 let heartbeat = tokio::spawn(async move {
@@ -341,6 +401,9 @@ pub async fn run_wake_consumer(
                     actor_nats,
                     actor_js,
                     actor_locks,
+                    wq_redis,
+                    wq_nats,
+                    wq_js,
                 )
                 .await
                 {
@@ -378,6 +441,9 @@ async fn handle_start(
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_locks: SdkActorLocks,
+    wq_redis: Option<SharedRedis>,
+    wq_nats: Option<async_nats::Client>,
+    wq_js: Option<jetstream::Context>,
 ) -> Result<(), String> {
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
     let meta_json: String = {
@@ -444,9 +510,9 @@ async fn handle_start(
         wf_redis: Some(wf_redis.clone()),
         wf_nats: nats_client.clone(),
         wf_js: js.clone(),
-        wq_redis: None,
-        wq_nats: None,
-        wq_js: None,
+        wq_redis,
+        wq_nats,
+        wq_js,
         actor_redis,
         actor_nats,
         actor_js,
@@ -494,6 +560,9 @@ async fn handle_wake(
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_locks: SdkActorLocks,
+    wq_redis: Option<SharedRedis>,
+    wq_nats: Option<async_nats::Client>,
+    wq_js: Option<jetstream::Context>,
 ) -> Result<(), String> {
     // Load the workflow meta to get the unit path
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
@@ -618,9 +687,9 @@ async fn handle_wake(
         wf_redis: Some(wf_redis.clone()),
         wf_nats: nats_client.clone(),
         wf_js: js.clone(),
-        wq_redis: None,
-        wq_nats: None,
-        wq_js: None,
+        wq_redis,
+        wq_nats,
+        wq_js,
         actor_redis,
         actor_nats,
         actor_js,

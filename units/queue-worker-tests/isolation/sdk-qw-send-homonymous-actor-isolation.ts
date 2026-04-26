@@ -6,7 +6,12 @@ export default queueWorker<
   { actorId: string; tag: string },
   { tag: string; runtimeScope: string; unitPath: string }
 >(async (_ctx, data) => {
-  sdk.sendActorMessageSync<{ tag: string }>(ACTOR_PATH, data.actorId, "writeTag", { tag: data.tag });
+  sdk.callActorAndWaitForResultSync<{ tag: string }, Record<string, never>>(
+    ACTOR_PATH,
+    data.actorId,
+    "writeTag",
+    { tag: data.tag },
+  );
   const t = sdk.callActorAndWaitForResultSync<Record<string, never>, { tag: string }>(
     ACTOR_PATH,
     data.actorId,

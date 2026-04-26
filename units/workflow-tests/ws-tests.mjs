@@ -448,23 +448,26 @@ const TESTS = [
     run: async () => {
       let prodId;
       let stageId;
-      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 6_000, async () => {
-        const [p, s] = await Promise.all([
-          epStart("echo-input", { lane: "prod" }),
-          epStageStart("echo-input", { lane: "stage" }),
-        ]);
-        prodId = p.instanceId;
-        stageId = s.instanceId;
-      });
+      const [prodMsgs, stageMsgs] = await Promise.all([
+        wsCollect(toWsUrl(PROJECT_ID), 6_000, async () => {
+          const p = await epStart("echo-input", { lane: "prod" });
+          prodId = p.instanceId;
+        }),
+        wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 6_000, async () => {
+          const s = await epStageStart("echo-input", { lane: "stage" });
+          stageId = s.instanceId;
+        }),
+      ]);
       if (prodId === stageId) {
         throw new Error(`prod and stage returned identical instanceId: ${prodId}`);
       }
-      const ids = new Set(wsInstanceIds(msgs));
-      if (!ids.has(prodId)) {
-        throw new Error(`missing WS events for prod instance ${prodId}; saw ${[...ids].join(",")}`);
+      const prodIds = new Set(wsInstanceIds(prodMsgs));
+      const stageIds = new Set(wsInstanceIds(stageMsgs));
+      if (!prodIds.has(prodId)) {
+        throw new Error(`missing WS events for prod instance ${prodId}; saw ${[...prodIds].join(",")}`);
       }
-      if (!ids.has(stageId)) {
-        throw new Error(`missing WS events for stage instance ${stageId}; saw ${[...ids].join(",")}`);
+      if (!stageIds.has(stageId)) {
+        throw new Error(`missing WS events for stage instance ${stageId}; saw ${[...stageIds].join(",")}`);
       }
     },
   },
@@ -477,7 +480,7 @@ const TESTS = [
       await epPollStatus(baseStage, "suspended");
 
       const ws1 = await wsOpen(toWsUrl(PROJECT_ID));
-      const ws2 = await wsOpen(toWsUrl(PROJECT_ID));
+      const ws2 = await wsOpen(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID));
       const m1 = [];
       const m2 = [];
       ws1.addEventListener("message", (ev) => {

@@ -23,12 +23,10 @@ export default workflow<Input, Output>(async (ctx, input) => {
       {},
     ),
   );
-  const wf = await ctx.run("wf", () =>
-    sdk.callWorkflowAndWaitForOutputSync<
-      { marker?: string },
-      { runtimeScope: string; unitPath: string; marker: string | null }
-    >(WF, { marker: input.marker }),
-  );
+  const wf = sdk.callWorkflowAndWaitForOutputSync<
+    { marker?: string },
+    { runtimeScope: string; unitPath: string; marker: string | null }
+  >(WF, { marker: input.marker });
   const enq = await ctx.run("qw", () => sdk.enqueueWorkerSync<{ marker: string }>(QW, { marker: input.marker }));
   return {
     actorScope: ar.runtimeScope,

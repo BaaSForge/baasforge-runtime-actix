@@ -1499,7 +1499,11 @@ async function epPollStatus(instanceBase: string, target: string, maxIter = 120)
     const st: unknown = resp.body?.meta?.status;
     seen.add(`${String(st)}(http:${resp.status})`);
     if (st === target) return resp.body;
-    if (st === "failed") throw new Error(`workflow failed while waiting for '${target}'`);
+    if (st === "failed") {
+      throw new Error(
+        `workflow failed while waiting for '${target}': ${JSON.stringify(resp.body).slice(0, 2000)}`,
+      );
+    }
     if (resp.status >= 500) throw new Error(`status endpoint returned ${resp.status}: ${JSON.stringify(resp.body)}`);
   }
   throw new Error(`timed out waiting for '${target}' (saw: ${[...seen].join(", ")})`);

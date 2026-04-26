@@ -264,6 +264,9 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let actor_nats_wake = actor_nats_client.clone();
             let actor_js_wake = actor_jetstream.clone();
             let actor_locks_wake = actor_locks.clone();
+            let wq_redis_wake = wq_redis.clone();
+            let wq_nats_wake = wq_nats_client.clone();
+            let wq_js_wake = wq_jetstream.clone();
             tokio::spawn(async move {
                 if let Err(e) = crate::services::workflow_worker::runner::run_wake_consumer(
                     wr,
@@ -276,6 +279,9 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     actor_nats_wake,
                     actor_js_wake,
                     actor_locks_wake,
+                    wq_redis_wake,
+                    wq_nats_wake,
+                    wq_js_wake,
                 )
                 .await
                 {
