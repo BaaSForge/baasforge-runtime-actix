@@ -52,7 +52,7 @@ globalThis.__baalModules['node:stream/consumers'] = { text: __streamConsumersTex
 
 function __stripImports(source) {
   var modules = globalThis.__baalModules || {};
-  return source
+  var s = source
     .replace(
       /^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?\s*$/gm,
       function (_m, names, mod) {
@@ -65,6 +65,8 @@ function __stripImports(source) {
     )
     .replace(/^\s*import\s+.*\s+from\s+['"][^'"]*['"];?\s*$/gm, '')
     .replace(/^\s*import\s+['"][^'"]*['"];?\s*$/gm, '');
+  s = s.replace(/^\s*export\s+(?!default\b)/gm, '');
+  return s;
 }
 
 // --- sdk (inter-unit communication) ---

@@ -46,17 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
-    let actor_redis_url = settings
-        .actor_redis_url
-        .as_deref()
-        .or(settings.wq_redis_url.as_deref());
-    let actor_nats_url = settings
-        .actor_nats_url
-        .as_deref()
-        .or(settings.wq_nats_url.as_deref());
-
-    let (Some(actor_redis_url), Some(actor_nats_url)) = (actor_redis_url, actor_nats_url) else {
-        error!("ACTOR_REDIS_URL (or WQ_REDIS_URL) and ACTOR_NATS_URL (or WQ_NATS_URL) must be set");
+    let (Some(actor_redis_url), Some(actor_nats_url)) = (
+        settings.actor_redis_url.as_deref(),
+        settings.actor_nats_url.as_deref(),
+    ) else {
+        error!("ACTOR_REDIS_URL and ACTOR_NATS_URL must be set");
         std::process::exit(1);
     };
 
@@ -71,16 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("[nats_actor] connected for actor mailbox consumer");
     let actor_js = Some(async_nats::jetstream::new(actor_nats.clone()));
 
-    let wf_redis_url = settings
-        .wf_redis_url
-        .as_deref()
-        .or(settings.actor_redis_url.as_deref())
-        .or(settings.wq_redis_url.as_deref());
-    let wf_nats_url = settings
-        .wf_nats_url
-        .as_deref()
-        .or(settings.actor_nats_url.as_deref())
-        .or(settings.wq_nats_url.as_deref());
+    let wf_redis_url = settings.wf_redis_url.as_deref();
+    let wf_nats_url = settings.wf_nats_url.as_deref();
 
     let wf_redis = if let Some(url) = wf_redis_url {
         match redis::Client::open(url) {

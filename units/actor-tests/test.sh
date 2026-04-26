@@ -62,6 +62,19 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
     --noUnusedLocals false --noUnusedParameters false
   echo "    dist/ ready ($(find dist -name '*.js' | wc -l | tr -d ' ') JS files)"
 
+  WORKFLOW_TESTS_DIR="$PROJECT_ROOT/units/workflow-tests"
+  QUEUE_WORKER_TESTS_DIR="$PROJECT_ROOT/units/queue-worker-tests"
+  echo "==> Compiling workflow-tests -> dist/ (homonymous wf seed)…"
+  cd "$WORKFLOW_TESTS_DIR"
+  if [[ ! -f package-lock.json ]]; then npm install 2>&1; else npm ci --silent 2>&1; fi
+  npx tsc --noEmit false --outDir dist --sourceMap false --declaration false \
+    --noUnusedLocals false --noUnusedParameters false
+  echo "==> Compiling queue-worker-tests -> dist/ (homonymous qw seed)…"
+  cd "$QUEUE_WORKER_TESTS_DIR"
+  if [[ ! -f package-lock.json ]]; then npm install 2>&1; else npm ci --silent 2>&1; fi
+  npx tsc --noEmit false --outDir dist --sourceMap false --declaration false \
+    --noUnusedLocals false --noUnusedParameters false
+
   echo "==> Building main server binary (release)…"
   cd "$PROJECT_ROOT"
   cargo build --release 2>&1
@@ -79,6 +92,8 @@ APP_ENV=production \
 PORT="$PORT" \
 TEST_UNIT_FILES="actor-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_ACTOR_DIR="$SCRIPT_DIR/dist" \
+TEST_WORKFLOW_DIR="$PROJECT_ROOT/units/workflow-tests/dist" \
+TEST_QUEUE_WORKER_DIR="$PROJECT_ROOT/units/queue-worker-tests/dist" \
   "$PROJECT_ROOT/target/release/baal-runtime-actix" &
 SERVER_PID=$!
 

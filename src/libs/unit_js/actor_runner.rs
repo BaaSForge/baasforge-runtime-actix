@@ -7,7 +7,7 @@ use std::time::Instant;
 use super::error::{format_js_error, log_js_failure};
 use super::modules;
 use super::modules::polyfills::EXECUTION_DEADLINE;
-use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
+use super::modules::sdk::{SdkCommCtx, clear_comm_ctx, set_comm_ctx};
 
 const ACTOR_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),

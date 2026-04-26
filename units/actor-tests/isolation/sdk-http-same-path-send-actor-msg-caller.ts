@@ -7,7 +7,12 @@ export type Output = { tag: string; runtimeScope: string; unitPath: string };
 
 export default workflow<Input, Output>(async (ctx, input) => {
   await ctx.run("send", () =>
-    sdk.sendActorMessageSync<{ tag: string }>(ACTOR_PATH, input.actorId, "writeTag", { tag: input.tag }),
+    sdk.callActorAndWaitForResultSync<{ tag: string }, { ok: true }>(
+      ACTOR_PATH,
+      input.actorId,
+      "writeTag",
+      { tag: input.tag },
+    ),
   );
   const t = await ctx.run("readTag", () =>
     sdk.callActorAndWaitForResultSync<Record<string, never>, { tag: string }>(

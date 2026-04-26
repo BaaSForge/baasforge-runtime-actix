@@ -1,7 +1,9 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::establish_pool;
 use baal_runtime_actix::init_tracing;
+use baal_runtime_actix::routes::ActorLocks;
 use baal_runtime_actix::services::queue_worker_engine::{WQ_NATS_WORK_CONSUMER, WQ_NATS_WORK_STREAM};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -78,6 +80,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     } else { None };
 
+    let actor_redis: Option<baal_runtime_actix::services::workflow_engine::SharedRedis> =
+        if let Some(url) = settings.actor_redis_url.as_deref() {
+            match redis::Client::open(url) {
+                Ok(client) => match client.get_multiplexed_async_connection().await {
+                    Ok(conn) => {
+                        info!("[actor_redis] actor Redis connected (for sdk.callActor*)");
+                        Some(Arc::new(Mutex::new(conn)))
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "[actor_redis] connection failed");
+                        None
+                    }
+                },
+                Err(e) => {
+                    warn!(error = %e, "[actor_redis] client open failed");
+                    None
+                }
+            }
+        } else {
+            info!("[actor_redis] ACTOR_REDIS_URL unset; sdk.callActor* disabled in this process");
+            None
+        };
+
+    let actor_nats: Option<async_nats::Client> = if let Some(url) = settings.actor_nats_url.as_deref() {
+        match baal_runtime_actix::configs::connect_nats(url).await {
+            Ok(nc) => {
+                info!("[nats_actor] connected (for sdk.callActor*)");
+                Some(nc)
+            }
+            Err(e) => {
+                warn!(error = %e, "[nats_actor] connect failed");
+                None
+            }
+        }
+    } else {
+        info!("[nats_actor] ACTOR_NATS_URL unset; sdk.callActor* disabled in this process");
+        None
+    };
+
+    let actor_js = actor_nats
+        .as_ref()
+        .map(|nc| async_nats::jetstream::new(nc.clone()));
+
+    let actor_locks: ActorLocks = Arc::new(Mutex::new(HashMap::new()));
+
     let stream_name = WQ_NATS_WORK_STREAM.to_string();
     let consumer_name = WQ_NATS_WORK_CONSUMER.to_string();
 
@@ -91,6 +138,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             &consumer_name,
             wf_redis,
             wf_nats,
+            actor_redis,
+            actor_nats,
+            actor_js,
+            actor_locks,
         )
         .await
         {

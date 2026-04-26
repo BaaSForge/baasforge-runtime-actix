@@ -216,8 +216,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             }
         }
     } else {
-        tracing::info!("[actor_redis] ACTOR_REDIS_URL not set; falling back to wq_redis for actor state");
-        wq_redis.clone()
+        tracing::info!("[actor_redis] ACTOR_REDIS_URL not set; actor Redis disabled");
+        None
     };
 
     let actor_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.actor_nats_url {
@@ -232,8 +232,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             }
         }
     } else {
-        tracing::info!("[nats_actor] ACTOR_NATS_URL not set; falling back to wq_nats");
-        wq_nats_client.clone()
+        tracing::info!("[nats_actor] ACTOR_NATS_URL not set; actor NATS disabled");
+        None
     };
 
     let actor_jetstream: Option<async_nats::jetstream::Context> =
@@ -260,6 +260,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 .unwrap_or("wf_wake_consumer")
                 .to_string();
             tracing::info!("[test_mode] starting inline JetStream wake consumer");
+            let actor_redis_wake = actor_redis.clone();
+            let actor_nats_wake = actor_nats_client.clone();
+            let actor_js_wake = actor_jetstream.clone();
+            let actor_locks_wake = actor_locks.clone();
             tokio::spawn(async move {
                 if let Err(e) = crate::services::workflow_worker::runner::run_wake_consumer(
                     wr,
@@ -268,6 +272,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     rc,
                     &stream_name,
                     &consumer_name,
+                    actor_redis_wake,
+                    actor_nats_wake,
+                    actor_js_wake,
+                    actor_locks_wake,
                 )
                 .await
                 {
@@ -283,6 +291,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let rc = redis_conn.clone();
             let wf_redis_for_wq = wf_redis.clone();
             let wf_nats_for_wq = wf_nats_client.clone();
+            let actor_redis_for_wq = actor_redis.clone();
+            let actor_nats_for_wq = actor_nats_client.clone();
+            let actor_js_for_wq = actor_jetstream.clone();
+            let actor_locks_for_wq = actor_locks.clone();
             let stream_name = crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM.to_string();
             let consumer_name = crate::services::queue_worker_engine::WQ_NATS_WORK_CONSUMER.to_string();
             tracing::info!("[test_mode] starting inline JetStream queue_worker work consumer");
@@ -297,6 +309,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         &consumer_name,
                         wf_redis_for_wq,
                         wf_nats_for_wq,
+                        actor_redis_for_wq,
+                        actor_nats_for_wq,
+                        actor_js_for_wq,
+                        actor_locks_for_wq,
                     )
                     .await
                 {

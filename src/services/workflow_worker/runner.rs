@@ -2,7 +2,7 @@ use async_nats::jetstream;
 use crate::configs::Settings;
 use crate::database::establish_pool;
 use crate::init_tracing;
-use crate::libs::unit_js::modules::sdk::SdkCommCtx;
+use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::load_unit_for_path_scoped;
 use crate::services::workflow_engine;
@@ -73,6 +73,50 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         None
     };
 
+    let actor_locks: SdkActorLocks = Arc::new(Mutex::new(HashMap::new()));
+
+    let actor_redis: Option<SharedRedis> = if let Some(url) = &settings.actor_redis_url {
+        match redis::Client::open(url.as_str()) {
+            Ok(client) => match client.get_multiplexed_async_connection().await {
+                Ok(conn) => {
+                    info!("[actor_redis] connected for workflow wake (sdk.callActor*)");
+                    Some(Arc::new(Mutex::new(conn)))
+                }
+                Err(e) => {
+                    warn!(error = %e, "[actor_redis] connection failed");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!(error = %e, "[actor_redis] client open failed");
+                None
+            }
+        }
+    } else {
+        info!("[actor_redis] ACTOR_REDIS_URL unset; sdk.callActor* disabled in workflow wake");
+        None
+    };
+
+    let actor_nats: Option<async_nats::Client> = if let Some(url) = settings.actor_nats_url.as_deref() {
+        match crate::configs::connect_nats(url).await {
+            Ok(nc) => {
+                info!("[nats_actor] connected for workflow wake (sdk.callActor*)");
+                Some(nc)
+            }
+            Err(e) => {
+                warn!(error = %e, "[nats_actor] connect failed");
+                None
+            }
+        }
+    } else {
+        info!("[nats_actor] ACTOR_NATS_URL unset; sdk.callActor* disabled in workflow wake");
+        None
+    };
+
+    let actor_js = actor_nats
+        .as_ref()
+        .map(|nc| jetstream::new(nc.clone()));
+
     // If both wf_redis and nats are available, start the workflow wake consumer
     if let (Some(wf_redis), Some(nats)) = (&wf_redis, &nats_client) {
         let wf_redis = wf_redis.clone();
@@ -89,12 +133,27 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .as_deref()
             .unwrap_or("wf_wake_consumer")
             .to_string();
+        let actor_redis = actor_redis.clone();
+        let actor_nats = actor_nats.clone();
+        let actor_js = actor_js.clone();
+        let actor_locks = actor_locks.clone();
 
         info!("[workflow_wake] starting JetStream pull consumer for wf.*.*.wake");
 
         tokio::spawn(async move {
-            if let Err(e) =
-                run_wake_consumer(wf_redis, nats, pool, redis_conn_for_load, &stream_name, &consumer_name).await
+            if let Err(e) = run_wake_consumer(
+                wf_redis,
+                nats,
+                pool,
+                redis_conn_for_load,
+                &stream_name,
+                &consumer_name,
+                actor_redis,
+                actor_nats,
+                actor_js,
+                actor_locks,
+            )
+            .await
             {
                 error!(error = %e, "[workflow_wake] consumer exited with error");
             }
@@ -116,6 +175,10 @@ pub async fn run_wake_consumer(
     redis_conn: crate::database::SharedRedisConn,
     stream_name: &str,
     consumer_name: &str,
+    actor_redis: Option<SharedRedis>,
+    actor_nats: Option<async_nats::Client>,
+    actor_js: Option<jetstream::Context>,
+    actor_locks: SdkActorLocks,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
 
@@ -170,6 +233,10 @@ pub async fn run_wake_consumer(
                     let nats_client = Some(nats.clone());
                     let pool = pool.clone();
                     let redis_conn = redis_conn.clone();
+                    let actor_redis = actor_redis.clone();
+                    let actor_nats = actor_nats.clone();
+                    let actor_js = actor_js.clone();
+                    let actor_locks = actor_locks.clone();
 
                     let heartbeat_msg = msg.clone();
                     let heartbeat = tokio::spawn(async move {
@@ -195,6 +262,10 @@ pub async fn run_wake_consumer(
                         &project_id,
                         &instance_id,
                         payload.as_ref(),
+                        actor_redis,
+                        actor_nats,
+                        actor_js,
+                        actor_locks,
                     )
                     .await
                     {
@@ -237,6 +308,10 @@ pub async fn run_wake_consumer(
                 let nats_client = Some(nats.clone());
                 let pool = pool.clone();
                 let redis_conn = redis_conn.clone();
+                let actor_redis = actor_redis.clone();
+                let actor_nats = actor_nats.clone();
+                let actor_js = actor_js.clone();
+                let actor_locks = actor_locks.clone();
 
                 let heartbeat_msg = msg.clone();
                 let heartbeat = tokio::spawn(async move {
@@ -262,6 +337,10 @@ pub async fn run_wake_consumer(
                     &project_id,
                     &instance_id,
                     payload.as_ref(),
+                    actor_redis,
+                    actor_nats,
+                    actor_js,
+                    actor_locks,
                 )
                 .await
                 {
@@ -295,6 +374,10 @@ async fn handle_start(
     project_id: &str,
     instance_id: &str,
     _payload: Option<&serde_json::Value>,
+    actor_redis: Option<SharedRedis>,
+    actor_nats: Option<async_nats::Client>,
+    actor_js: Option<jetstream::Context>,
+    actor_locks: SdkActorLocks,
 ) -> Result<(), String> {
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
     let meta_json: String = {
@@ -364,10 +447,10 @@ async fn handle_start(
         wq_redis: None,
         wq_nats: None,
         wq_js: None,
-        actor_redis: None,
-        actor_nats: None,
-        actor_js: None,
-        actor_locks: Arc::new(Mutex::new(HashMap::new())),
+        actor_redis,
+        actor_nats,
+        actor_js,
+        actor_locks,
         project_id: project_id.to_string(),
         source_unit_path: unit_path.clone(),
         source_instance_id: Some(instance_id.to_string()),
@@ -407,6 +490,10 @@ async fn handle_wake(
     project_id: &str,
     instance_id: &str,
     payload: Option<&serde_json::Value>,
+    actor_redis: Option<SharedRedis>,
+    actor_nats: Option<async_nats::Client>,
+    actor_js: Option<jetstream::Context>,
+    actor_locks: SdkActorLocks,
 ) -> Result<(), String> {
     // Load the workflow meta to get the unit path
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
@@ -534,10 +621,10 @@ async fn handle_wake(
         wq_redis: None,
         wq_nats: None,
         wq_js: None,
-        actor_redis: None,
-        actor_nats: None,
-        actor_js: None,
-        actor_locks: Arc::new(Mutex::new(HashMap::new())),
+        actor_redis,
+        actor_nats,
+        actor_js,
+        actor_locks,
         project_id: project_id.to_string(),
         source_unit_path: unit_path.to_string(),
         source_instance_id: Some(instance_id.to_string()),

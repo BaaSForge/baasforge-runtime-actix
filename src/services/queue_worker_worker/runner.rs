@@ -1,13 +1,12 @@
 use async_nats::jetstream;
 use futures::StreamExt;
 use redis::AsyncCommands;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::database::DbPool;
-use crate::libs::unit_js::modules::sdk::SdkCommCtx;
+use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
 use crate::libs::unit_js::queue_worker_runner::{
     BatchConfig, QueueWorkerRunContext, QueueWorkerRunOutcome,
     extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler,
@@ -26,8 +25,12 @@ pub async fn run_work_consumer(
     redis_conn: crate::database::SharedRedisConn,
     stream_name: &str,
     consumer_name: &str,
-    wf_redis: Option<crate::libs::unit_js::modules::sdk::SharedRedis>,
+    wf_redis: Option<SharedRedis>,
     wf_nats: Option<async_nats::Client>,
+    actor_redis: Option<SharedRedis>,
+    actor_nats: Option<async_nats::Client>,
+    actor_js: Option<jetstream::Context>,
+    actor_locks: SdkActorLocks,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
 
@@ -80,9 +83,28 @@ pub async fn run_work_consumer(
                 let wf_redis = wf_redis.clone();
                 let wf_nats = wf_nats.clone();
                 let wf_js = wf_js.clone();
+                let actor_redis = actor_redis.clone();
+                let actor_nats = actor_nats.clone();
+                let actor_js = actor_js.clone();
+                let actor_locks = actor_locks.clone();
 
                 tokio::spawn(async move {
-                    handle_work_message(msg, wq_redis, nats, wq_js, pool, redis_conn, wf_redis, wf_nats, wf_js).await;
+                    handle_work_message(
+                        msg,
+                        wq_redis,
+                        nats,
+                        wq_js,
+                        pool,
+                        redis_conn,
+                        wf_redis,
+                        wf_nats,
+                        wf_js,
+                        actor_redis,
+                        actor_nats,
+                        actor_js,
+                        actor_locks,
+                    )
+                    .await;
                 });
             }
             Err(e) => {
@@ -101,9 +123,13 @@ async fn handle_work_message(
     wq_js: async_nats::jetstream::Context,
     pool: DbPool,
     redis_conn: crate::database::SharedRedisConn,
-    wf_redis: Option<crate::libs::unit_js::modules::sdk::SharedRedis>,
+    wf_redis: Option<SharedRedis>,
     wf_nats: Option<async_nats::Client>,
     wf_js: Option<async_nats::jetstream::Context>,
+    actor_redis: Option<SharedRedis>,
+    actor_nats: Option<async_nats::Client>,
+    actor_js: Option<jetstream::Context>,
+    actor_locks: SdkActorLocks,
 ) {
     let subject = msg.subject.to_string();
     let parts: Vec<&str> = subject.split('.').collect();
@@ -237,10 +263,10 @@ async fn handle_work_message(
             wq_redis: Some(wq_redis.clone()),
             wq_nats: Some(nats.clone()),
             wq_js: Some(wq_js.clone()),
-            actor_redis: None,
-            actor_nats: None,
-            actor_js: None,
-            actor_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            actor_redis: actor_redis.clone(),
+            actor_nats: actor_nats.clone(),
+            actor_js: actor_js.clone(),
+            actor_locks: actor_locks.clone(),
             project_id: project_id.clone(),
             source_unit_path: unit_path.clone(),
             source_instance_id: None,
@@ -316,10 +342,10 @@ async fn handle_work_message(
         wq_redis: Some(wq_redis.clone()),
         wq_nats: Some(nats.clone()),
         wq_js: Some(wq_js.clone()),
-        actor_redis: None,
-        actor_nats: None,
-        actor_js: None,
-        actor_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        actor_redis: actor_redis.clone(),
+        actor_nats: actor_nats.clone(),
+        actor_js: actor_js.clone(),
+        actor_locks: actor_locks.clone(),
         project_id: project_id.clone(),
         source_unit_path: unit_path.clone(),
         source_instance_id: None,

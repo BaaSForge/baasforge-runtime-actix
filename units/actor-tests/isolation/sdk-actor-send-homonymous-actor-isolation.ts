@@ -11,7 +11,12 @@ export default actor<St>({
       _ctx,
       input: { childActorId: string; tag: string },
     ): { tag: string; runtimeScope: string; unitPath: string } {
-      sdk.sendActorMessageSync<{ tag: string }>(ACTOR_PATH, input.childActorId, "writeTag", { tag: input.tag });
+      sdk.callActorAndWaitForResultSync<{ tag: string }, { ok: true }>(
+        ACTOR_PATH,
+        input.childActorId,
+        "writeTag",
+        { tag: input.tag },
+      );
       const t = sdk.callActorAndWaitForResultSync<Record<string, never>, { tag: string }>(
         ACTOR_PATH,
         input.childActorId,

@@ -264,11 +264,11 @@ function wfStageUrl(baseUrl: string, slug: string, runtimeId = STAGE_RUNTIME_ID)
 }
 
 function atWorkerUrl(baseUrl: string, slug: string): string {
-  return `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/actor-tests/${slug}`;
+  return `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/test/queue-worker/${slug}`;
 }
 
 function atWorkerStageUrl(baseUrl: string, slug: string, runtimeId: string): string {
-  return `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/stage/${runtimeId}/test/actor-tests/${slug}`;
+  return `${baseUrl}/api/v1/trigger/workerQueue/${PROJECT_ID}/stage/${runtimeId}/test/queue-worker/${slug}`;
 }
 
 function atWorkerRunPath(
@@ -1308,6 +1308,8 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const actorId = `iso-stage-actor-${uid()}`;
         await deleteActor(baseUrl, "runtime-scope-actor-target", actorId);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "runtime-scope-actor-target", actorId, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "runtime-scope-actor-target", actorId, STAGE_B_RUNTIME_ID));
         const prodStart = await httpPostFull(wfUrl(baseUrl, "runtime-scope-actor-caller"), {
           actorId,
           marker: "prod",
@@ -1353,6 +1355,8 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const actorId = `iso-stage-serial-${uid()}`;
         await deleteActor(baseUrl, "runtime-scope-actor-target", actorId);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "runtime-scope-actor-target", actorId, STAGE_RUNTIME_ID));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "runtime-scope-actor-target", actorId, STAGE_B_RUNTIME_ID));
         const runOne = async (marker: string, which: "prod" | "a" | "b") => {
           const start =
             which === "prod"
@@ -1495,6 +1499,7 @@ function allInlineTests(): ActorInlineTestDef[] {
           { tag: "STAGE_A_ONLY" },
         );
         if (wA.status !== 200) throw new Error(`stage-a writeTag: ${wA.status}`);
+        await httpPostFull(`${actorUrl(baseUrl, slug, aid, "probe")}?await=true`, {});
         const prodState = await httpGetFull(actorStateUrl(baseUrl, slug, aid));
         if (prodState.status !== 200) throw new Error(`prod state GET: ${prodState.status}`);
         if ((prodState.body?.state?.tag as string | undefined) === "STAGE_A_ONLY") {
@@ -1686,14 +1691,17 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const expectedPath = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
         const isoSlug = "http-same-unit-path-runtime-isolation";
-        const qwSlug = "sdk-qw-homonymous-actor-isolation";
+        const qwSlug = "sdk-qw-send-homonymous-actor-isolation";
         const aid = `sdk-qw-${uid()}`;
+        const tagP = `TAG-P-${uid()}`;
+        const tagA = `TAG-A-${uid()}`;
+        const tagB = `TAG-B-${uid()}`;
         await deleteActor(baseUrl, isoSlug, aid);
         await httpDeleteFull(actorStageDeleteUrl(baseUrl, isoSlug, aid, STAGE_RUNTIME_ID));
         await httpDeleteFull(actorStageDeleteUrl(baseUrl, isoSlug, aid, STAGE_B_RUNTIME_ID));
-        const enqP = await httpPostFull(atWorkerUrl(baseUrl, qwSlug), { actorId: aid });
-        const enqA = await httpPostFull(atWorkerStageUrl(baseUrl, qwSlug, STAGE_RUNTIME_ID), { actorId: aid });
-        const enqB = await httpPostFull(atWorkerStageUrl(baseUrl, qwSlug, STAGE_B_RUNTIME_ID), { actorId: aid });
+        const enqP = await httpPostFull(atWorkerUrl(baseUrl, qwSlug), { actorId: aid, tag: tagP });
+        const enqA = await httpPostFull(atWorkerStageUrl(baseUrl, qwSlug, STAGE_RUNTIME_ID), { actorId: aid, tag: tagA });
+        const enqB = await httpPostFull(atWorkerStageUrl(baseUrl, qwSlug, STAGE_B_RUNTIME_ID), { actorId: aid, tag: tagB });
         if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod qw enqueue: ${enqP.status}`);
         if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a qw enqueue: ${enqA.status}`);
         if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b qw enqueue: ${enqB.status}`);
@@ -1702,13 +1710,28 @@ function allInlineTests(): ActorInlineTestDef[] {
           pollAtWorker(baseUrl, qwSlug, enqA.body.runId as string, STAGE_RUNTIME_ID),
           pollAtWorker(baseUrl, qwSlug, enqB.body.runId as string, STAGE_B_RUNTIME_ID),
         ]);
-        if (p.status !== "completed" || p.result?.runtimeScope !== "prod" || p.result?.unitPath !== expectedPath) {
+        if (
+          p.status !== "completed" ||
+          p.result?.tag !== tagP ||
+          p.result?.runtimeScope !== "prod" ||
+          p.result?.unitPath !== expectedPath
+        ) {
           throw new Error(`qw prod→actor: ${JSON.stringify(p)}`);
         }
-        if (a.status !== "completed" || a.result?.runtimeScope !== "stage-a" || a.result?.unitPath !== expectedPath) {
+        if (
+          a.status !== "completed" ||
+          a.result?.tag !== tagA ||
+          a.result?.runtimeScope !== "stage-a" ||
+          a.result?.unitPath !== expectedPath
+        ) {
           throw new Error(`qw stage-a→actor: ${JSON.stringify(a)}`);
         }
-        if (b.status !== "completed" || b.result?.runtimeScope !== "stage-b" || b.result?.unitPath !== expectedPath) {
+        if (
+          b.status !== "completed" ||
+          b.result?.tag !== tagB ||
+          b.result?.runtimeScope !== "stage-b" ||
+          b.result?.unitPath !== expectedPath
+        ) {
           throw new Error(`qw stage-b→actor: ${JSON.stringify(b)}`);
         }
       },
