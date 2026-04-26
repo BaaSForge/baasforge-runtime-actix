@@ -2,3 +2,5 @@ node_modules
 dist
 .output.log
 test.terminal.log
+.wf-output.tmp.json
+.ws-output.tmp.json
