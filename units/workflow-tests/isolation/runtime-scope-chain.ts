@@ -7,10 +7,10 @@ export type Output = {
 };
 
 export default workflow<Input, Output>(async (_ctx, input) => {
-  const workflowResult = sdk.callWorkflowAndWaitForOutputSync<{ marker: string }, { runtimeScope: string }>(
-    "test.wf.workflow.runtime-scope-workflow-target",
-    { marker: input.marker },
-  );
+  const workflowResult = sdk.callWorkflowAndWaitForOutputSync<{ marker: string }, { runtimeScope: string }>({
+    unitPath: "test.wf.workflow.runtime-scope-workflow-target",
+    input: { marker: input.marker },
+  });
   return {
     workflowScope: workflowResult.runtimeScope,
     marker: input.marker,

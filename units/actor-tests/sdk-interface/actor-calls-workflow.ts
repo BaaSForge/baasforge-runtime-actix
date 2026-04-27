@@ -10,7 +10,10 @@ export default actor<State>({
     triggerWorkflow(ctx, { n }: TriggerWorkflowInput): TriggerWorkflowOutput {
       const result = sdk.callWorkflowAndWaitForOutputSync<
         { n: number }, { doubled: number }
-      >("test.actor-tests.workflow.double-n", { n });
+      >({
+        unitPath: "test.actor-tests.workflow.double-n",
+        input: { n },
+      });
       ctx.state.workflowResult = result.doubled;
       return ctx.state;
     },

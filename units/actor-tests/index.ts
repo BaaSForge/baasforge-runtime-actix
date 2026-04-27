@@ -2266,6 +2266,43 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
 
+    // ---- sdk-dts-gaps (@sdk.d.ts vs host — implement then un-skip) ----
+    {
+      name: "actor-setAlarm-accepts-duration-object",
+      category: "sdk-dts-gaps",
+      skip:
+        "@sdk.d.ts ActorContext.setAlarm(..., Duration); actor-runtime.js only implements fireAfterMs, numeric epoch ms, and Date — plain Duration objects are not converted",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "actor-metadata-stateLimit-string",
+      category: "sdk-dts-gaps",
+      skip:
+        "@sdk.d.ts ActorMetadata.stateLimit is a string (e.g. 512kb); extract_actor_metadata only serializes stateLimitBytes number — align parsing or the type",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "actor-metadata-alarms-allowlist",
+      category: "sdk-dts-gaps",
+      skip:
+        "@sdk.d.ts ActorMetadata.alarms string[] is not extracted in actor_runner metadata JSON nor enforced in actor_worker/manager",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "actor-metadata-mailbox-backlog",
+      category: "sdk-dts-gaps",
+      skip:
+        "@sdk.d.ts ActorMetadata.mailboxBacklog is not present in Rust ActorMetadata / no backlog enforcement",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "actor-metadata-retry-policy-duration-fields",
+      category: "sdk-dts-gaps",
+      skip:
+        "@sdk.d.ts RetryPolicy uses Duration for initialInterval/maxInterval; actor metadata passes retry through to serde expecting initialIntervalMs/maxIntervalMs — add normalization like queue worker or document *_ms only",
+      run: async (_baseUrl) => {},
+    },
+
     // ---- sharding-seam (3) ----
     {
       name: "project-id-in-all-redis-keys",

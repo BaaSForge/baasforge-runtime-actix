@@ -10,11 +10,13 @@ export type Output = { first: number; second: number };
  */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const a = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>(
-    "test.wf.workflow.sdk-call-callee", { n: 3 },
-  );
-  const b = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>(
-    "test.wf.workflow.sdk-call-callee", { n: 5 },
-  );
+  const a = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>({
+    unitPath: "test.wf.workflow.sdk-call-callee",
+    input: { n: 3 },
+  });
+  const b = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>({
+    unitPath: "test.wf.workflow.sdk-call-callee",
+    input: { n: 5 },
+  });
   return { first: a.doubled, second: b.doubled };
 });

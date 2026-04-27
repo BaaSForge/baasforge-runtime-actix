@@ -20,11 +20,11 @@
 // =============================================================================
 // Every `sdk.*` method in this file is SYNCHRONOUS at the host level: the
 // function name ends in `...Sync`. Its return value is a plain value (not a
-// Promise), so writing `await sdk.xxxSync(...)` is misleading and discouraged.
+// Promise), so writing `await sdk.xxxSync({ ... })` is misleading and discouraged.
 // Write:
-//   const out = sdk.callActorAndWaitForResultSync<In, Out>(path, id, "h", p);
+//   const out = sdk.callActorAndWaitForResultSync<In, Out>({ unitPath, actorId, handler: "h", payload: p });
 // NOT:
-//   const out = await sdk.callActorAndWaitForResultSync<In, Out>(path, id, "h", p);
+//   const out = await sdk.callActorAndWaitForResultSync<In, Out>({ ... });
 //
 // The ONLY `await`-able things in unit code are:
 //   • `ctx.run(name, fn, opts?)` inside a workflow (returns Promise<T>)
@@ -51,13 +51,13 @@
 //       These throw an internal sentinel that must propagate freely:
 //         ctx.sleep(...)
 //         ctx.promise(...).get()
-//         sdk.callActorDurableAndWaitForResultSync(...)   ← actor variant
-//         sdk.callWorkflowAndWaitForOutputSync(...)       ← child workflow variant
+//         sdk.callActorDurableAndWaitForResultSync({ ... })   ← actor variant
+//         sdk.callWorkflowAndWaitForOutputSync({ ... })       ← child workflow variant
 //       NEVER place them inside ctx.run() — the sentinel would be swallowed.
 //   **  side-effecting sdk.* calls that are NOT suspension primitives MUST be
-//       wrapped: `await ctx.run("step", () => sdk.xxxSync(...))` so they execute
+//       wrapped: `await ctx.run("step", () => sdk.xxxSync({ ... }))` so they execute
 //       exactly once and replay deterministically from the journal.
-//       Use sdk.callActorAndWaitForResultSync (not the Durable variant) here.
+//       Use sdk.callActorAndWaitForResultSync({ ... }) (not the Durable variant) here.
 //
 // =============================================================================
 // Naming conventions for `sdk.*`
@@ -67,6 +67,7 @@
 //   sdk.fooAndWaitForResultSync          — synchronous BLOCK; returns the callee's result
 //   sdk.fooAndWaitForOutputSync          — synchronous BLOCK; returns the workflow Output
 //   sdk.startFooSync / sendFooSync       — synchronous fire-and-forget dispatch
+//   Each call is `sdk.methodSync({ ... })` — one object, never positional args.
 //
 // If the verb phrase includes "AndWaitForResult"/"AndWaitForOutput" the call
 // BLOCKS the current handler until the callee finishes. Use with care inside
@@ -96,6 +97,24 @@ declare module "@sdk" {
   // ---------------------------------------------------------------------------
 
   export type ApiUnitPathOrId = `${string}.${string}.api.${string}`;
+  export type ActorUnitPathOrId = `${string}.${string}.actor.${string}`;
+  export type QueueWorkerUnitPathOrId = `${string}.${string}.queue_worker.${string}`;
+  export type WorkflowUnitPathOrId = `${string}.${string}.workflow.${string}`;
+
+  // Every `sdk.*` method on `sdk` below takes exactly one argument object (never
+  // positional parameters). `*UnitPathOrId` types pin the middle segment (`api`,
+  // `actor`, `queue_worker`, `workflow`). `ActorInstanceId`, `WorkflowInstanceId`,
+  // and `QueueWorkerRunId` are nominal brands — use `as T` when bridging from plain
+  // `string` (HTTP, JSON, env).
+
+  declare const __baalBrandWorkflowInstanceId: unique symbol;
+  export type WorkflowInstanceId = string & { readonly [__baalBrandWorkflowInstanceId]: true };
+
+  declare const __baalBrandQueueWorkerRunId: unique symbol;
+  export type QueueWorkerRunId = string & { readonly [__baalBrandQueueWorkerRunId]: true };
+
+  declare const __baalBrandActorInstanceId: unique symbol;
+  export type ActorInstanceId = string & { readonly [__baalBrandActorInstanceId]: true };
 
   export const sdk: {
     /**
@@ -110,11 +129,13 @@ declare module "@sdk" {
      *
      * Synchronous — returns a string directly; do NOT `await`.
      *
+     * @param args.unitPathOrId — 4-segment path or 5-segment full unit id (`ApiUnitPathOrId`).
+     *
      * @example
-     *   const url = sdk.getApiUnitTriggerUrl("shop.orders.api.create-order");
+     *   const url = sdk.getApiUnitTriggerUrl({ unitPathOrId: "shop.orders.api.create-order" });
      *   const resp = await fetch(url, { method: "POST", body: JSON.stringify({...}) });
      */
-    getApiUnitTriggerUrl(unitPathOrId: ApiUnitPathOrId): string;
+    getApiUnitTriggerUrl(args: { unitPathOrId: ApiUnitPathOrId }): string;
 
     // -------------------------------------------------------------------------
     // Actor primitives
@@ -124,29 +145,29 @@ declare module "@sdk" {
      * Invoke an actor handler and BLOCK until it returns its result.
      *
      * Callable from inside a workflow `run` only when wrapped in
-     * `await ctx.run("step-name", () => sdk.callActorAndWaitForResultSync(...))`.
+     * `await ctx.run("step-name", () => sdk.callActorAndWaitForResultSync({ ... }))`.
      * Outside a workflow (API, Actor, QueueWorker) call it directly.
      *
      * Synchronous — returns the handler's result directly; do NOT `await`.
      *
-     * @param unitPath   "context.module.actor.name"
-     * @param actorId    any string; selects the actor instance (state keyed by this)
-     * @param handler    name of the handler declared on the target actor
-     * @param payload    handler input (pass `undefined` if the handler takes none)
-     * @param opts       { timeoutMs?: number }  — timeoutMs defaults to 30_000
+     * @param args — `unitPath` (`ActorUnitPathOrId`), `actorId` (`ActorInstanceId`),
+     *   `handler`, optional `payload`, optional `opts.timeoutMs` (default 30_000).
      *
      * @example
-     *   const out = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>(
-     *     "counter.core.actor.counter-actor", "user-42", "increment", { amount: 1 },
-     *   );
+     *   const out = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>({
+     *     unitPath: "counter.core.actor.counter-actor",
+     *     actorId: "user-42" as ActorInstanceId,
+     *     handler: "increment",
+     *     payload: { amount: 1 },
+     *   });
      */
-    callActorAndWaitForResultSync<TInput, TResult = _Internal_RequireExplicit>(
-      unitPath: string,
-      actorId: string,
-      handler: string,
-      payload?: TInput,
-      opts?: CallActorSyncOptions,
-    ): _Internal_Resolve<TResult>;
+    callActorAndWaitForResultSync<TInput, TResult = _Internal_RequireExplicit>(args: {
+      unitPath: ActorUnitPathOrId;
+      actorId: ActorInstanceId;
+      handler: string;
+      payload?: TInput;
+      opts?: CallActorSyncOptions;
+    }): _Internal_Resolve<TResult>;
 
     /**
      * Fire-and-forget actor message: the message is persisted/queued on the
@@ -154,22 +175,28 @@ declare module "@sdk" {
      *
      * There is no way to retrieve the handler's result via this handle — if
      * you need the result later, either call
-     * `callActorAndWaitForResultSync`, or have the callee write its result
+     * `callActorAndWaitForResultSync({ ... })`, or have the callee write its result
      * back into an actor / workflow you own.
      *
      * Synchronous — returns `{ delivered: true }` directly; do NOT `await`.
      *
+     * @param args — `unitPath`, `actorId`, `handler`, optional `payload` (same shape as
+     *   `callActorAndWaitForResultSync` minus `opts`).
+     *
      * @example
-     *   sdk.sendActorMessageSync<IncrementInput>(
-     *     "counter.core.actor.counter-actor", "user-42", "increment", { amount: 1 },
-     *   );
+     *   sdk.sendActorMessageSync<IncrementInput>({
+     *     unitPath: "counter.core.actor.counter-actor",
+     *     actorId: "user-42" as ActorInstanceId,
+     *     handler: "increment",
+     *     payload: { amount: 1 },
+     *   });
      */
-    sendActorMessageSync<TInput>(
-      unitPath: string,
-      actorId: string,
-      handler: string,
-      payload?: TInput,
-    ): { delivered: true };
+    sendActorMessageSync<TInput>(args: {
+      unitPath: ActorUnitPathOrId;
+      actorId: ActorInstanceId;
+      handler: string;
+      payload?: TInput;
+    }): { delivered: true };
 
     /**
      * Workflow-only suspension primitive: durably call an actor handler from
@@ -185,17 +212,23 @@ declare module "@sdk" {
      * sentinel when the result is not yet known; never `await` and never
      * catch its error — let the sentinel propagate).
      *
+     * @param args — `unitPath`, `actorId`, `handler`, optional `payload` (no `opts`; same
+     *   nominal types as `callActorAndWaitForResultSync`).
+     *
      * @example
-     *   const charge = sdk.callActorDurableAndWaitForResultSync<ChargeInput, ChargeOutput>(
-     *     "billing.core.actor.wallet", input.userId, "charge", { amount: 100 },
-     *   );
+     *   const charge = sdk.callActorDurableAndWaitForResultSync<ChargeInput, ChargeOutput>({
+     *     unitPath: "billing.core.actor.wallet",
+     *     actorId: input.userId as ActorInstanceId,
+     *     handler: "charge",
+     *     payload: { amount: 100 },
+     *   });
      */
-    callActorDurableAndWaitForResultSync<TInput, TResult = _Internal_RequireExplicit>(
-      unitPath: string,
-      actorId: string,
-      handler: string,
-      payload?: TInput,
-    ): _Internal_Resolve<TResult>;
+    callActorDurableAndWaitForResultSync<TInput, TResult = _Internal_RequireExplicit>(args: {
+      unitPath: ActorUnitPathOrId;
+      actorId: ActorInstanceId;
+      handler: string;
+      payload?: TInput;
+    }): _Internal_Resolve<TResult>;
 
     // -------------------------------------------------------------------------
     // Queue Worker primitive
@@ -211,18 +244,21 @@ declare module "@sdk" {
      *
      * Synchronous — returns `{ runId }` directly; do NOT `await`.
      *
+     * @param args — `unitPath` (`QueueWorkerUnitPathOrId`), `data`, optional `opts`
+     *   (`delay`, `deduplicationKey`). Returns `runId` as `QueueWorkerRunId`.
+     *
      * @example
-     *   const { runId } = sdk.enqueueWorkerSync<NotifyInput>(
-     *     "shop.comms.queue_worker.send-email",
-     *     { to: "a@b.com", subject: "Hi" },
-     *     { delay: { minutes: 5 } },
-     *   );
+     *   const { runId } = sdk.enqueueWorkerSync<NotifyInput>({
+     *     unitPath: "shop.comms.queue_worker.send-email",
+     *     data: { to: "a@b.com", subject: "Hi" },
+     *     opts: { delay: { minutes: 5 } },
+     *   });
      */
-    enqueueWorkerSync<TData>(
-      unitPath: string,
-      data: TData,
-      opts?: EnqueueWorkerOptions,
-    ): { runId: string };
+    enqueueWorkerSync<TData>(args: {
+      unitPath: QueueWorkerUnitPathOrId;
+      data: TData;
+      opts?: EnqueueWorkerOptions;
+    }): { runId: QueueWorkerRunId };
 
     // -------------------------------------------------------------------------
     // Workflow primitives
@@ -238,24 +274,28 @@ declare module "@sdk" {
      *   • the caller only needs to kick it off.
      *
      * Use the returned `instanceId` later with
-     * `callWorkflowHandlerAndWaitForResultSync` to signal / query the
-     * workflow, or to look it up via the management HTTP API.
+     * `callWorkflowHandlerAndWaitForResultSync({ unitPath, instanceId, handler, input?, opts? })`
+     * to signal / query the workflow, or to look it up via the management HTTP API.
      *
      * Synchronous — returns `{ instanceId }` directly; do NOT `await`.
      *
+     * @param args — `unitPath` (`WorkflowUnitPathOrId`), `input`. `instanceId` in the result
+     *   is typed as `WorkflowInstanceId`.
+     *
      * Inside a workflow `run`, this call is NOT durable — wrap it in
-     * `ctx.run("start-child", () => sdk.startWorkflowSync(...))` for replay
+     * `ctx.run("start-child", () => sdk.startWorkflowSync({ unitPath, input }))` for replay
      * safety when the caller crashes between the start and the next step.
      *
      * @example
-     *   const { instanceId } = sdk.startWorkflowSync<Input>(
-     *     "orders.saga.workflow.checkout", inputData,
-     *   );
+     *   const { instanceId } = sdk.startWorkflowSync<Input>({
+     *     unitPath: "orders.saga.workflow.checkout",
+     *     input: inputData,
+     *   });
      */
-    startWorkflowSync<TInput>(
-      unitPath: string,
-      input: TInput,
-    ): { instanceId: string };
+    startWorkflowSync<TInput>(args: {
+      unitPath: WorkflowUnitPathOrId;
+      input: TInput;
+    }): { instanceId: WorkflowInstanceId };
 
     /**
      * Start a workflow AND BLOCK until it reaches a terminal state
@@ -270,16 +310,20 @@ declare module "@sdk" {
      *
      * Synchronous — returns the workflow's Output directly; do NOT `await`.
      *
+     * @param args — `unitPath` (`WorkflowUnitPathOrId`), `input`, optional `opts.timeoutMs`
+     *   (default 300_000).
+     *
      * @example
-     *   const out = sdk.callWorkflowAndWaitForOutputSync<Input, Output>(
-     *     "orders.saga.workflow.checkout", inputData,
-     *   );
+     *   const out = sdk.callWorkflowAndWaitForOutputSync<Input, Output>({
+     *     unitPath: "orders.saga.workflow.checkout",
+     *     input: inputData,
+     *   });
      */
-    callWorkflowAndWaitForOutputSync<TInput, TOutput = _Internal_RequireExplicit>(
-      unitPath: string,
-      input: TInput,
-      opts?: CallWorkflowSyncOptions,
-    ): _Internal_Resolve<TOutput>;
+    callWorkflowAndWaitForOutputSync<TInput, TOutput = _Internal_RequireExplicit>(args: {
+      unitPath: WorkflowUnitPathOrId;
+      input: TInput;
+      opts?: CallWorkflowSyncOptions;
+    }): _Internal_Resolve<TOutput>;
 
     /**
      * Invoke a shared `handlers` entry on a RUNNING workflow instance (e.g.
@@ -287,26 +331,33 @@ declare module "@sdk" {
      *
      * BLOCKS until the handler returns its value. The workflow MUST already
      * exist — you usually get the `instanceId` from a previous call to
-     * `startWorkflowSync`.
+     * `startWorkflowSync({ unitPath, input })`.
      *
      * This is the ONLY way to reach a workflow's `handlers` from another
-     * unit. `callWorkflowAndWaitForOutputSync` / `startWorkflowSync` can NOT
+     * unit. `callWorkflowAndWaitForOutputSync({ ... })` / `startWorkflowSync({ ... })` can NOT
      * signal an existing instance; they only start new ones.
      *
      * Synchronous — returns the handler's result directly; do NOT `await`.
      *
+     * @param args — `unitPath`, `instanceId` (`WorkflowInstanceId`, usually from
+     *   `startWorkflowSync`), `handler`, optional `input`, optional `opts.timeoutMs`
+     *   (default 30_000).
+     *
      * @example
-     *   const r = sdk.callWorkflowHandlerAndWaitForResultSync<
-     *     ApproveInput, ApproveOutput
-     *   >("orders.saga.workflow.checkout", instanceId, "approve", { by: "admin" });
+     *   const r = sdk.callWorkflowHandlerAndWaitForResultSync<ApproveInput, ApproveOutput>({
+     *     unitPath: "orders.saga.workflow.checkout",
+     *     instanceId,
+     *     handler: "approve",
+     *     input: { by: "admin" },
+     *   });
      */
-    callWorkflowHandlerAndWaitForResultSync<TInput, TResult = _Internal_RequireExplicit>(
-      unitPath: string,
-      instanceId: string,
-      handler: string,
-      input?: TInput,
-      opts?: CallWorkflowHandlerSyncOptions,
-    ): _Internal_Resolve<TResult>;
+    callWorkflowHandlerAndWaitForResultSync<TInput, TResult = _Internal_RequireExplicit>(args: {
+      unitPath: WorkflowUnitPathOrId;
+      instanceId: WorkflowInstanceId;
+      handler: string;
+      input?: TInput;
+      opts?: CallWorkflowHandlerSyncOptions;
+    }): _Internal_Resolve<TResult>;
   };
 
   // ---------------------------------------------------------------------------
@@ -387,7 +438,7 @@ declare module "@sdk" {
   export interface QueueWorkerDefinition<TData, TResult> {}
 
   export interface QueueWorkerContext {
-    readonly id: string;
+    readonly id: QueueWorkerRunId;
     readonly attempt: number;
     readonly enqueuedAt: number;
     readonly TerminalError: typeof TerminalError;
@@ -445,7 +496,7 @@ declare module "@sdk" {
    * or `ctx.promise(...).get` — let them propagate).
    */
   export interface WorkflowContext {
-    readonly key: string;
+    readonly key: WorkflowInstanceId;
 
     /**
      * Execute a durable step. The result is persisted; on replay (after
@@ -494,12 +545,12 @@ declare module "@sdk" {
   /**
    * Workflow shared-handler context — available inside each function in the
    * optional `handlers: { ... }` block. Handlers are invoked externally
-   * (from another unit via `sdk.callWorkflowHandlerAndWaitForResultSync`).
+   * (from another unit via `sdk.callWorkflowHandlerAndWaitForResultSync({ ... })`).
    * They can read state and resolve/reject a durable promise to steer the
    * `run` function; they cannot run durable steps or sleep.
    */
   export interface WorkflowSharedContext {
-    readonly key: string;
+    readonly key: WorkflowInstanceId;
     promise<T = _Internal_RequireExplicit>(name: string): WorkflowDurablePromiseHandle<_Internal_Resolve<T>>;
     get<T = _Internal_RequireExplicit>(key: string): _Internal_Resolve<T> | null;
   }
@@ -548,7 +599,7 @@ declare module "@sdk" {
   export interface ActorDefinition<TState> {}
 
   export interface ActorContext<TState> {
-    readonly id: string;
+    readonly id: ActorInstanceId;
     readonly attempt: number;
     state: TState;
     /**

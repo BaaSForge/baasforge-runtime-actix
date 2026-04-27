@@ -16,9 +16,10 @@ export type Output =
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
   try {
-    sdk.callWorkflowAndWaitForOutputSync<unknown, void>(
-      "test.wf.workflow.sdk-call-failing-callee", {},
-    );
+    sdk.callWorkflowAndWaitForOutputSync<unknown, void>({
+      unitPath: "test.wf.workflow.sdk-call-failing-callee",
+      input: {},
+    });
     return { caught: false, reason: "expected to throw on callee failure" };
   } catch (e) {
     const err = e as Error;

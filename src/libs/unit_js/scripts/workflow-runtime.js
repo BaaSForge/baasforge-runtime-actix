@@ -323,8 +323,9 @@ globalThis.__baal_wf_result = (function () {
     // This counter resets to 0 each execution (fresh QuickJS runtime), which
     // is safe because execution always replays the same call sequence.
     var __sdkCallIdx = 0;
-    sdk.callWorkflowAndWaitForOutputSync = function (unitPath, data, _opts) {
-      void _opts;
+    sdk.callWorkflowAndWaitForOutputSync = function (args) {
+      var unitPath = args.unitPath;
+      void args.opts;
       var callName = "sdk_call_" + __sdkCallIdx++;
 
       var cached = __wfCtx.__promises[callName];
@@ -344,6 +345,7 @@ globalThis.__baal_wf_result = (function () {
         throw new Error("sdk.callWorkflowAndWaitForOutputSync is not available: NATS not configured");
       }
 
+      var data = args.input;
       var dataJson = data !== undefined ? JSON.stringify(data) : "null";
       __baal_start_call(unitPath, dataJson, callName);
 
@@ -358,7 +360,11 @@ globalThis.__baal_wf_result = (function () {
     };
 
     var __sdkActorCallIdx = 0;
-    sdk.callActorDurableAndWaitForResultSync = function (unitPath, actorId, handler, payload) {
+    sdk.callActorDurableAndWaitForResultSync = function (args) {
+      var unitPath = args.unitPath;
+      var actorId = args.actorId;
+      var handler = args.handler;
+      var payload = args.payload;
       var callName = "sdk_actor_" + __sdkActorCallIdx++;
 
       var cached = __wfCtx.__promises[callName];

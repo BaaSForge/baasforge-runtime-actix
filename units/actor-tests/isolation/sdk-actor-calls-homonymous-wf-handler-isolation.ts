@@ -8,12 +8,25 @@ export default actor<St>({
   state: {},
   handlers: {
     runHandlerProbe(_ctx): { scopeFromHandler: string; unitPathFromHandler: string } {
-      const { instanceId } = sdk.startWorkflowSync<Record<string, never>>(CHILD, {});
+      const { instanceId } = sdk.startWorkflowSync<Record<string, never>>({
+        unitPath: CHILD,
+        input: {},
+      });
       const read = sdk.callWorkflowHandlerAndWaitForResultSync<
         Record<string, never>,
         { scope: string; unitPath: string }
-      >(CHILD, instanceId, "readScope", {});
-      sdk.callWorkflowHandlerAndWaitForResultSync(CHILD, instanceId, "finish", {});
+      >({
+        unitPath: CHILD,
+        instanceId,
+        handler: "readScope",
+        input: {},
+      });
+      sdk.callWorkflowHandlerAndWaitForResultSync({
+        unitPath: CHILD,
+        instanceId,
+        handler: "finish",
+        input: {},
+      });
       return { scopeFromHandler: read.scope, unitPathFromHandler: read.unitPath };
     },
   },

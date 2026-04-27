@@ -24,6 +24,8 @@
   `callWorkflowAndWaitForOutputSync`, `callWorkflowHandlerAndWaitForResultSync`,
   `getApiUnitTriggerUrl`. Never use legacy names like `callActor`, `callWorkflow`,
   `callActorDurable`, `enqueueWorker` (no `Sync`), or `callWorkflowHandler`.
+- Every `sdk.*` method takes **one object argument** (e.g. `{ unitPath, actorId, handler, payload?, opts? }`, `{ unitPath, input, opts? }`, `{ unitPath, data, opts? }` for `enqueueWorkerSync`, `{ unitPathOrId }` for `getApiUnitTriggerUrl`). Do not document or generate positional calls.
+- In `@sdk.d.ts`, each `unitPath` / `unitPathOrId` is a template literal type (`ApiUnitPathOrId`, `ActorUnitPathOrId`, `QueueWorkerUnitPathOrId`, `WorkflowUnitPathOrId`) — four dot-separated segments with the third segment fixed to `api`, `actor`, `queue_worker`, or `workflow`. Instance keys are nominal brands (`ActorInstanceId`, `WorkflowInstanceId`, `QueueWorkerRunId`). Communication snippets must show `as ActorInstanceId` / `as WorkflowInstanceId` / `as QueueWorkerRunId` when the value is not already that branded type (e.g. from query params, JSON, env).
 
 ## What NOT to repeat
 

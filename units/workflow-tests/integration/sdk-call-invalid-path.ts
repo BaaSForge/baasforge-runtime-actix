@@ -1,4 +1,4 @@
-import { workflow, sdk } from "@sdk";
+import { workflow, sdk, type WorkflowUnitPathOrId } from "@sdk";
 
 export type Input = void;
 export type Output =
@@ -13,7 +13,10 @@ export default workflow<Input, Output>(async (ctx) => {
   void ctx;
 
   try {
-    sdk.callWorkflowAndWaitForOutputSync<unknown, void>("bad-path", {});
+    sdk.callWorkflowAndWaitForOutputSync<unknown, void>({
+      unitPath: "bad-path" as WorkflowUnitPathOrId,
+      input: {},
+    });
     return { ok: false, reason: "expected to reject invalid path" };
   } catch (e) {
     const err = e as Error;

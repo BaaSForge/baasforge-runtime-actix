@@ -1,7 +1,7 @@
-import { workflow, sdk } from "@sdk";
+import { workflow, sdk, type WorkflowInstanceId } from "@sdk";
 
 export type Input = void;
-export type Output = { instanceId: string; nonEmpty: boolean };
+export type Output = { instanceId: WorkflowInstanceId; nonEmpty: boolean };
 
 /**
  * Verifies sdk.startWorkflowSync is fire-and-forget:
@@ -10,10 +10,10 @@ export type Output = { instanceId: string; nonEmpty: boolean };
  * caller does not wait for it.
  */
 export default workflow<Input, Output>(async (_ctx) => {
-  const started = sdk.startWorkflowSync<{ n: number }>(
-    "test.wf.workflow.sdk-call-callee",
-    { n: 9 },
-  );
+  const started = sdk.startWorkflowSync<{ n: number }>({
+    unitPath: "test.wf.workflow.sdk-call-callee",
+    input: { n: 9 },
+  });
   return {
     instanceId: started.instanceId,
     nonEmpty: typeof started.instanceId === "string" && started.instanceId.length > 0,

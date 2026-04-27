@@ -1,40 +1,5 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
-    "moduleResolution": "bundler",
-    "lib": ["ES2023"],
-
-    "types": ["node"],
-    "declaration": false,
-    "sourceMap": true,
-    "skipLibCheck": true,
-
-    "strict": true,
-    "noEmit": true,
-    "noImplicitAny": true,
-    "noImplicitOverride": true,
-    "strictNullChecks": true,
-    "strictFunctionTypes": true,
-    "strictBindCallApply": true,
-    "strictPropertyInitialization": true,
-    "noImplicitThis": true,
-    "alwaysStrict": true,
-    "useUnknownInCatchVariables": true,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
-    "noPropertyAccessFromIndexSignature": true,
-
-    "paths": {
-      "@sdk": ["../shared/@sdk.d.ts"],
-      "@units/*": ["../shared/@sdk.d.ts"]
-    }
-  },
+  "extends": "../tsconfig.base.json",
   "include": [
     "../shared/@sdk.d.ts",
     "**/*.ts"

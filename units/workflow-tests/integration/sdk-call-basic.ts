@@ -9,8 +9,9 @@ export type Output = { called: true; doubled: number };
  */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const result = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>(
-    "test.wf.workflow.sdk-call-callee", { n: 2 },
-  );
+  const result = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>({
+    unitPath: "test.wf.workflow.sdk-call-callee",
+    input: { n: 2 },
+  });
   return { called: true, doubled: result.doubled };
 });

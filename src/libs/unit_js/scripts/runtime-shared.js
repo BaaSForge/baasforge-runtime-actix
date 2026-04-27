@@ -74,7 +74,12 @@ function __stripImports(source) {
 // All methods are synchronous and return plain values — never Promises.
 
 var sdk = {
-  callActorAndWaitForResultSync: function (unitPath, actorId, handler, payload, opts) {
+  callActorAndWaitForResultSync: function (args) {
+    var unitPath = args.unitPath;
+    var actorId = args.actorId;
+    var handler = args.handler;
+    var payload = args.payload;
+    var opts = args.opts;
     var timeoutMs = (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : 30000;
     var payloadJson = payload !== undefined ? JSON.stringify(payload) : '{}';
     var resultJson = __baal_call_actor_sync(unitPath, actorId, handler, payloadJson, timeoutMs);
@@ -83,26 +88,37 @@ var sdk = {
     return parsed.result;
   },
 
-  sendActorMessageSync: function (unitPath, actorId, handler, payload) {
+  sendActorMessageSync: function (args) {
+    var unitPath = args.unitPath;
+    var actorId = args.actorId;
+    var handler = args.handler;
+    var payload = args.payload;
     var payloadJson = payload !== undefined ? JSON.stringify(payload) : '{}';
     __baal_call_actor_async(unitPath, actorId, handler, payloadJson);
     return { delivered: true };
   },
 
-  enqueueWorkerSync: function (unitPath, data, opts) {
-    void opts;
+  enqueueWorkerSync: function (args) {
+    var unitPath = args.unitPath;
+    var data = args.data;
+    void args.opts;
     var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
     var resultJson = __baal_enqueue_worker(unitPath, dataJson);
     return JSON.parse(resultJson);
   },
 
-  startWorkflowSync: function (unitPath, data) {
+  startWorkflowSync: function (args) {
+    var unitPath = args.unitPath;
+    var data = args.input;
     var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
     var startedJson = __baal_start_workflow_fire_forget(unitPath, dataJson);
     return JSON.parse(startedJson);
   },
 
-  callWorkflowAndWaitForOutputSync: function (unitPath, data, opts) {
+  callWorkflowAndWaitForOutputSync: function (args) {
+    var unitPath = args.unitPath;
+    var data = args.input;
+    var opts = args.opts;
     var dataJson = data !== undefined ? JSON.stringify(data) : 'null';
     var timeoutMs = (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : 300000;
     var resultJson = __baal_call_workflow_sync(unitPath, dataJson, timeoutMs);
@@ -111,7 +127,12 @@ var sdk = {
     return parsed.value;
   },
 
-  callWorkflowHandlerAndWaitForResultSync: function (unitPath, instanceId, handler, input, opts) {
+  callWorkflowHandlerAndWaitForResultSync: function (args) {
+    var unitPath = args.unitPath;
+    var instanceId = args.instanceId;
+    var handler = args.handler;
+    var input = args.input;
+    var opts = args.opts;
     var inputJson = input !== undefined ? JSON.stringify(input) : 'null';
     var timeoutMs = (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : 30000;
     var resultJson = __baal_call_workflow_handler_sync(unitPath, instanceId, handler, inputJson, timeoutMs);
@@ -120,7 +141,8 @@ var sdk = {
     return parsed.value;
   },
 
-  getApiUnitTriggerUrl: function (unitPathOrId) {
+  getApiUnitTriggerUrl: function (args) {
+    var unitPathOrId = args.unitPathOrId;
     var parts = String(unitPathOrId).split('.');
     if (parts.length === 5) {
       var rev = parseInt(parts[4], 10);

@@ -1,4 +1,4 @@
-import { workflow, sdk } from "@sdk";
+import { workflow, sdk, type WorkflowUnitPathOrId } from "@sdk";
 
 export type Input = void;
 export type Output =
@@ -12,10 +12,10 @@ export type Output =
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
 
-  const target = "workflowtests.integration.api.not_a_workflow_unit";
+  const target = "workflowtests.integration.api.not_a_workflow_unit" as WorkflowUnitPathOrId;
 
   try {
-    sdk.callWorkflowAndWaitForOutputSync<unknown, void>(target, {});
+    sdk.callWorkflowAndWaitForOutputSync<unknown, void>({ unitPath: target, input: {} });
     return { ok: false, reason: "expected to reject non-workflow units" };
   } catch (e) {
     const err = e as Error;

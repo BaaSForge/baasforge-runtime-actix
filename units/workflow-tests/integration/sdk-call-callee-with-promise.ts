@@ -5,8 +5,9 @@ export type Output = { result: unknown };
 
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
-  const result = sdk.callWorkflowAndWaitForOutputSync<unknown, unknown>(
-    "test.wf.workflow.sdk-call-promise-callee", {},
-  );
+  const result = sdk.callWorkflowAndWaitForOutputSync<unknown, unknown>({
+    unitPath: "test.wf.workflow.sdk-call-promise-callee",
+    input: {},
+  });
   return { result };
 });

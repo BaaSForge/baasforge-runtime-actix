@@ -1,4 +1,4 @@
-import { actor, sdk } from "@sdk";
+import { actor, sdk, type ActorInstanceId } from "@sdk";
 
 const TARGET = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
 
@@ -11,7 +11,12 @@ export default actor<St>({
       return sdk.callActorAndWaitForResultSync<
         Record<string, never>,
         { runtimeScope: string; unitPath: string }
-      >(TARGET, input.childActorId, "probe", {});
+      >({
+        unitPath: TARGET,
+        actorId: input.childActorId as ActorInstanceId,
+        handler: "probe",
+        payload: {},
+      });
     },
   },
 });

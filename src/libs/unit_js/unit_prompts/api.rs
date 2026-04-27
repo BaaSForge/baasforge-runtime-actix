@@ -53,12 +53,16 @@ Blocking warning: every `...AndWaitForResultSync` / `...AndWaitForOutputSync` ca
 API unit holds the HTTP response open until it returns. Never use one of the waiting
 forms for a workflow that suspends on a signal/promise — use `startWorkflowSync` to
 kick it off and `callWorkflowHandlerAndWaitForResultSync` to later signal/query it.
+
+SDK shape: every `sdk.*` method takes a single object argument (see `units/shared/@sdk.d.ts`).
+Use typed unit paths (`ActorUnitPathOrId`, `WorkflowUnitPathOrId`, etc.) and cast plain
+strings to `ActorInstanceId` / `WorkflowInstanceId` at boundaries (query params, JSON).
 "#;
 
 pub const CODE_EXAMPLES: &str = r#"
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
-import { sdk } from "@sdk";
+import { sdk, type ActorInstanceId } from "@sdk";
 import type { IncrementInput, IncrementOutput } from "@units/my-ctx.my-module.actor.counter";
 import type { Input as WfInput, Output as WfOutput } from "@units/my-ctx.my-module.workflow.process-order";
 
@@ -80,19 +84,19 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   }
 
   // Blocking actor call — waits for the handler result. Sync; no await.
-  const result = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>(
-    "my-ctx.my-module.actor.counter",
-    actorId,
-    "increment",
-    { by: body.by },
-  );
+  const result = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>({
+    unitPath: "my-ctx.my-module.actor.counter",
+    actorId: actorId as ActorInstanceId,
+    handler: "increment",
+    payload: { by: body.by },
+  });
 
   // Fire-and-forget workflow start — returns instanceId immediately. Use this
   // form for workflows that suspend on signals/promises. Sync; no await.
-  const { instanceId } = sdk.startWorkflowSync<WfInput>(
-    "my-ctx.my-module.workflow.process-order",
-    { actorId, count: result.count },
-  );
+  const { instanceId } = sdk.startWorkflowSync<WfInput>({
+    unitPath: "my-ctx.my-module.workflow.process-order",
+    input: { actorId, count: result.count },
+  });
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ ok: true, count: result.count, workflowId: instanceId }));
@@ -108,42 +112,67 @@ units can import the exported types for compile-time type safety on fetch calls:
     from "@units/context.module.api.unit-name";
 
 Outbound (what THIS unit can do) — ALL sdk.* calls are synchronous; write NO `await`
-in front of any `sdk.*` call. A call with `...AndWaitFor...` in its name BLOCKS the
-HTTP response until the callee finishes; plain `sendFooSync` / `enqueueFooSync` /
-`startFooSync` return immediately without waiting.
+in front of any `sdk.*` call. Each call takes one object argument (see `@sdk.d.ts`).
+`unitPath` / `unitPathOrId` must match the corresponding `*UnitPathOrId` type; `actorId`
+is `ActorInstanceId`, `instanceId` is `WorkflowInstanceId` — use `as T` from plain strings.
+A call with `...AndWaitFor...` in its name BLOCKS the HTTP response until the callee
+finishes; `sendActorMessageSync` / `enqueueWorkerSync` / `startWorkflowSync` return immediately
+without waiting.
+
+  import { type ActorInstanceId, type WorkflowInstanceId } from "@sdk";
+
+  // userId / workflowInstanceId: plain string (e.g. JSON body, query) — cast at SDK boundary
+  const actorKey = userId as ActorInstanceId;
+  const wfKey = workflowInstanceId as WorkflowInstanceId;
 
   // Call an actor and wait for the handler result
-  const out = sdk.callActorAndWaitForResultSync<In, Out>(
-    "ctx.mod.actor.name", id, "handler", payload,
-  );
+  const actorOut = sdk.callActorAndWaitForResultSync<In, Out>({
+    unitPath: "ctx.mod.actor.name",
+    actorId: actorKey,
+    handler: "handler",
+    payload,
+  });
 
   // Fire-and-forget actor message (no result)
-  sdk.sendActorMessageSync<In>("ctx.mod.actor.name", id, "handler", payload);
+  sdk.sendActorMessageSync<In>({
+    unitPath: "ctx.mod.actor.name",
+    actorId: actorKey as ActorInstanceId,
+    handler: "handler",
+    payload,
+  });
 
   // Fire-and-forget background job (returns runId)
-  const { runId } = sdk.enqueueWorkerSync<In>("ctx.mod.queue_worker.name", payload);
+  const { runId } = sdk.enqueueWorkerSync<In>({
+    unitPath: "ctx.mod.queue_worker.name",
+    data: payload,
+  });
 
   // Start a workflow, get back instanceId immediately (recommended default)
-  const { instanceId } = sdk.startWorkflowSync<WfInput>(
-    "ctx.mod.workflow.name", input,
-  );
+  const { instanceId } = sdk.startWorkflowSync<WfInput>({
+    unitPath: "ctx.mod.workflow.name",
+    input,
+  });
 
   // Start a workflow AND wait for its full Output (ONLY for fast, non-signal workflows)
-  const out = sdk.callWorkflowAndWaitForOutputSync<WfInput, WfOutput>(
-    "ctx.mod.workflow.name", input,
-  );
+  const wfOut = sdk.callWorkflowAndWaitForOutputSync<WfInput, WfOutput>({
+    unitPath: "ctx.mod.workflow.name",
+    input,
+  });
 
   // Signal / query a RUNNING workflow by instanceId
-  const r = sdk.callWorkflowHandlerAndWaitForResultSync<HandlerIn, HandlerOut>(
-    "ctx.mod.workflow.name", instanceId, "handlerName", input,
-  );
+  const r = sdk.callWorkflowHandlerAndWaitForResultSync<HandlerIn, HandlerOut>({
+    unitPath: "ctx.mod.workflow.name",
+    instanceId: wfKey as WorkflowInstanceId,
+    handler: "handlerName",
+    input,
+  });
 
 Common mistakes to avoid:
 
 - Using `callWorkflowAndWaitForOutputSync` for a workflow that waits on a signal
   freezes the endpoint forever — use `startWorkflowSync` instead, then signal via
   `callWorkflowHandlerAndWaitForResultSync`.
-- Writing `await sdk.xxxSync(...)` — wrong; these functions are NOT async and return
+- Writing `await sdk.xxxSync({ ... })` — wrong; these functions are NOT async and return
   plain values. `await` on a non-Promise is a no-op but misleads anyone reading the code.
 - Using `sdk.callActorDurableAndWaitForResultSync` — that variant is workflow-only.
   API units must use `sdk.callActorAndWaitForResultSync`.

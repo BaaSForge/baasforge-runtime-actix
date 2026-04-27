@@ -17,7 +17,7 @@ activation. Mutate `ctx.state` directly inside handlers; the updated state is pe
 atomically after each successful handler execution.
 
 `handlers` — a record of named handler functions. Each receives (ctx, payload?):
-- ctx.id: string — the actor instance ID (supplied by the caller)
+- ctx.id: ActorInstanceId (from `@sdk`) — the actor instance ID (supplied by the caller)
 - ctx.attempt: number — current attempt number, 1-based; increments on each retry
 - ctx.state: TState — mutable reference to this instance's persisted state
 - ctx.setAlarm(name: string, at: Date | number | Duration | { fireAfterMs: number }) — schedule a named alarm; use `{ fireAfterMs }` for a delay from host commit time
@@ -111,10 +111,10 @@ export default actor<State>({
     },
 
     notify(ctx, payload: NotifyInput): NotifyOutput {
-      sdk.enqueueWorkerSync<NotificationInput>(
-        "my-ctx.my-module.queue_worker.send-notification",
-        { actorId: ctx.id, message: payload.message },
-      );
+      sdk.enqueueWorkerSync<NotificationInput>({
+        unitPath: "my-ctx.my-module.queue_worker.send-notification",
+        data: { actorId: ctx.id, message: payload.message },
+      });
       return { ok: true };
     },
   },
@@ -139,61 +139,95 @@ unit type.
 
 From API, actor, or queue_worker units:
 
+  import { type ActorInstanceId } from "@sdk";
   import type { IncrementInput, IncrementOutput } from "@units/ctx.mod.actor.name";
 
+  const actorKey = "actor-instance-id" as ActorInstanceId;
+
   // Wait for result
-  const result = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>(
-    "ctx.mod.actor.name", "actor-instance-id", "increment", { by: 1 },
-  );
+  const result = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>({
+    unitPath: "ctx.mod.actor.name",
+    actorId: actorKey,
+    handler: "increment",
+    payload: { by: 1 },
+  });
 
   // Fire-and-forget (no result)
-  sdk.sendActorMessageSync<IncrementInput>(
-    "ctx.mod.actor.name", "actor-instance-id", "increment", { by: 1 },
-  );
+  sdk.sendActorMessageSync<IncrementInput>({
+    unitPath: "ctx.mod.actor.name",
+    actorId: actorKey,
+    handler: "increment",
+    payload: { by: 1 },
+  });
 
   // With a custom timeout (ms)
-  const result = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>(
-    "ctx.mod.actor.name", "actor-instance-id", "increment", { by: 1 }, { timeoutMs: 5000 },
-  );
+  const result2 = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>({
+    unitPath: "ctx.mod.actor.name",
+    actorId: actorKey,
+    handler: "increment",
+    payload: { by: 1 },
+    opts: { timeoutMs: 5000 },
+  });
 
-From workflow `run` — use sdk.callActorDurableAndWaitForResultSync (the non-durable
-forms are unavailable inside a workflow). It suspends the workflow durably until the
-handler completes, and returns the cached result on replay. MUST be wrapped in
-ctx.run for determinism:
+From workflow `run` — use sdk.callActorDurableAndWaitForResultSync. It is a SUSPENSION
+PRIMITIVE: call it BARE in the `run` body, NEVER inside ctx.run(). It suspends the
+workflow durably until the handler completes, and returns the cached result on replay.
+The internal suspension sentinel must propagate freely — never catch it, never wrap it:
 
-  await ctx.run("step", (): IncrementOutput =>
-    sdk.callActorDurableAndWaitForResultSync<IncrementInput, IncrementOutput>(
-      "ctx.mod.actor.name", "actor-instance-id", "increment", { by: 1 },
-    ),
-  );
+  const result = sdk.callActorDurableAndWaitForResultSync<IncrementInput, IncrementOutput>({
+    unitPath: "ctx.mod.actor.name",
+    actorId: "actor-instance-id" as ActorInstanceId,
+    handler: "increment",
+    payload: { by: 1 },
+  });
 
-The actorId is any string chosen by the caller. Same unit path + actorId always reaches the
-same state. Different actorIds are fully isolated instances.
+At runtime the actor key is any string the caller chooses; in TypeScript it is typed as
+`ActorInstanceId` so it is not confused with workflow instance IDs or queue run IDs.
+Use `as ActorInstanceId` when bridging from `string` (HTTP, JSON, env). Same unit path +
+actorId always reaches the same state; different actorIds are fully isolated instances.
 
 Outbound (what THIS actor can do) — every sync-wait call blocks the handler until it
 returns; handler execution is sequential per actor instance so long blocking calls
-stall the mailbox.
+stall the mailbox. Use `ActorInstanceId` / `WorkflowInstanceId` (`as T` from plain
+`string` when needed); `unitPath` strings must satisfy `ActorUnitPathOrId`, etc.
+
+  import { type ActorInstanceId, type WorkflowInstanceId } from "@sdk";
 
   // Blocking actor call
-  const out = sdk.callActorAndWaitForResultSync<In, Out>(
-    "ctx.mod.actor.other", id, "handler", payload,
-  );
+  const out = sdk.callActorAndWaitForResultSync<In, Out>({
+    unitPath: "ctx.mod.actor.other",
+    actorId: otherActorKey as ActorInstanceId,
+    handler: "handler",
+    payload,
+  });
 
   // Fire-and-forget actor message
-  sdk.sendActorMessageSync<In>("ctx.mod.actor.other", id, "handler", payload);
+  sdk.sendActorMessageSync<In>({
+    unitPath: "ctx.mod.actor.other",
+    actorId: otherActorKey as ActorInstanceId,
+    handler: "handler",
+    payload,
+  });
 
   // Fire-and-forget background job
-  const { runId } = sdk.enqueueWorkerSync<In>("ctx.mod.queue_worker.name", payload);
+  const { runId } = sdk.enqueueWorkerSync<In>({
+    unitPath: "ctx.mod.queue_worker.name",
+    data: payload,
+  });
 
   // Start a workflow (fire-and-forget; preferred)
-  const { instanceId } = sdk.startWorkflowSync<WfInput>(
-    "ctx.mod.workflow.name", input,
-  );
+  const { instanceId } = sdk.startWorkflowSync<WfInput>({
+    unitPath: "ctx.mod.workflow.name",
+    input,
+  });
 
   // Signal a running workflow
-  const r = sdk.callWorkflowHandlerAndWaitForResultSync<HIn, HOut>(
-    "ctx.mod.workflow.name", instanceId, "handlerName", input,
-  );
+  const r = sdk.callWorkflowHandlerAndWaitForResultSync<HIn, HOut>({
+    unitPath: "ctx.mod.workflow.name",
+    instanceId: wfInstance as WorkflowInstanceId,
+    handler: "handlerName",
+    input,
+  });
 "#;
 
 pub const METADATA: &str = r#"

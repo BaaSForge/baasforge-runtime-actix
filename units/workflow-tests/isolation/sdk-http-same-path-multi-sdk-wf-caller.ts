@@ -1,4 +1,4 @@
-import { workflow, sdk } from "@sdk";
+import { workflow, sdk, type ActorInstanceId } from "@sdk";
 
 const ACTOR = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
 const WF = "test.wf.workflow.http-same-unit-path-runtime-isolation";
@@ -16,18 +16,26 @@ export type Output = {
 
 export default workflow<Input, Output>(async (ctx, input) => {
   const ar = await ctx.run("actor", () =>
-    sdk.callActorAndWaitForResultSync<Record<string, never>, { runtimeScope: string; unitPath: string }>(
-      ACTOR,
-      input.actorId,
-      "probe",
-      {},
-    ),
+    sdk.callActorAndWaitForResultSync<Record<string, never>, { runtimeScope: string; unitPath: string }>({
+      unitPath: ACTOR,
+      actorId: input.actorId as ActorInstanceId,
+      handler: "probe",
+      payload: {},
+    }),
   );
   const wf = sdk.callWorkflowAndWaitForOutputSync<
     { marker?: string },
     { runtimeScope: string; unitPath: string; marker: string | null }
-  >(WF, { marker: input.marker });
-  const enq = await ctx.run("qw", () => sdk.enqueueWorkerSync<{ marker: string }>(QW, { marker: input.marker }));
+  >({
+    unitPath: WF,
+    input: { marker: input.marker },
+  });
+  const enq = await ctx.run("qw", () =>
+    sdk.enqueueWorkerSync<{ marker: string }>({
+      unitPath: QW,
+      data: { marker: input.marker },
+    }),
+  );
   return {
     actorScope: ar.runtimeScope,
     actorUnitPath: ar.unitPath,

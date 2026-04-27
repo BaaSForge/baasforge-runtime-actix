@@ -1,4 +1,4 @@
-import { workflow, sdk } from "@sdk";
+import { workflow, sdk, type ActorInstanceId } from "@sdk";
 
 export type Input = { marker: string; rootActorId: string; chainActorId: string; leafActorId: string };
 export type Output = {
@@ -12,16 +12,16 @@ export default workflow<Input, Output>(async (ctx, input) => {
     sdk.callActorAndWaitForResultSync<
       { marker: string; chainActorId: string; leafActorId: string },
       { midScope: string; wfScope: string; marker: string }
-    >(
-      "test.actor-tests.actor.runtime-isolation-actor-chain-root",
-      input.rootActorId,
-      "runChain",
-      {
+    >({
+      unitPath: "test.actor-tests.actor.runtime-isolation-actor-chain-root",
+      actorId: input.rootActorId as ActorInstanceId,
+      handler: "runChain",
+      payload: {
         marker: input.marker,
         chainActorId: input.chainActorId,
         leafActorId: input.leafActorId,
       },
-    ),
+    }),
   );
   return { midScope: out.midScope, wfScope: out.wfScope, marker: out.marker };
 });

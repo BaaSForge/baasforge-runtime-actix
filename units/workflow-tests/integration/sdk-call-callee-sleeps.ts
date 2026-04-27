@@ -7,9 +7,9 @@ export default workflow<Input, Output>(async (ctx) => {
   void ctx;
   const callResult = sdk.callWorkflowAndWaitForOutputSync<
     { n: number }, { n_doubled: number; slept: boolean }
-  >(
-    "test.wf.workflow.sdk-call-sleeping-callee",
-    { n: 5 },
-  );
+  >({
+    unitPath: "test.wf.workflow.sdk-call-sleeping-callee",
+    input: { n: 5 },
+  });
   return { callResult, callerDone: true };
 });

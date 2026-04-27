@@ -21,7 +21,7 @@ side effects and I/O must be inside `ctx.run()` steps. Code outside steps re-exe
 every replay.
 
 `ctx` inside `run` — SYNCHRONOUS unless noted:
-- ctx.key: string — the workflow instance ID
+- ctx.key: WorkflowInstanceId (from `@sdk`) — the workflow instance ID
 - ctx.TerminalError — throw to permanently fail the workflow without retry
 
 ctx.run(name, fn, opts?) — durable step. RETURNS A PROMISE; use `await ctx.run(...)`.
@@ -58,7 +58,7 @@ NOT triggered by `sdk.startWorkflowSync` / `callWorkflowAndWaitForOutputSync`, a
 do NOT auto-run when the workflow starts. A handler's only jobs are to read state and
 resolve/reject a durable promise that the `run` function is waiting on. Handlers
 receive WorkflowSharedContext:
-- ctx.key: string — instance ID
+- ctx.key: WorkflowInstanceId (from `@sdk`) — instance ID
 - ctx.promise(name) — returns WorkflowDurablePromiseHandle: { resolve(value), reject(error) } — synchronous
 - ctx.get(key) — synchronous; read workflow state
 
@@ -67,15 +67,15 @@ CRITICAL rules:
   SUSPENSION PRIMITIVES — call bare in the run body, never inside ctx.run():
     ctx.sleep(...)
     ctx.promise(...).get()
-    sdk.callActorDurableAndWaitForResultSync(...)
-    sdk.callWorkflowAndWaitForOutputSync(...)
+    sdk.callActorDurableAndWaitForResultSync({ unitPath, actorId, handler, payload? })
+    sdk.callWorkflowAndWaitForOutputSync({ unitPath, input, opts? })
   They throw an internal sentinel that must propagate freely. Wrapping in ctx.run()
   swallows the sentinel and breaks the suspension mechanism.
   SIDE EFFECTS — wrap every one inside `await ctx.run("step", () => ...)`:
-    sdk.callActorAndWaitForResultSync(...)
-    sdk.enqueueWorkerSync(...)
-    sdk.startWorkflowSync(...)
-    sdk.sendActorMessageSync(...)
+    sdk.callActorAndWaitForResultSync({ unitPath, actorId, handler, payload?, opts? })
+    sdk.enqueueWorkerSync({ unitPath, data, opts? })
+    sdk.startWorkflowSync({ unitPath, input })
+    sdk.sendActorMessageSync({ unitPath, actorId, handler, payload? })
   Anything outside ctx.run() re-executes on every replay.
 - Step names (ctx.run, ctx.sleep, ctx.promise) must be unique within the workflow instance
 - Never use Date.now() or Math.random() directly — use ctx.date.now() and ctx.rand.*
@@ -97,7 +97,7 @@ Example: handler "approve" → ApproveInput, ApproveOutput.
 "#;
 
 pub const CODE_EXAMPLES: &str = r#"
-import { workflow, sdk } from "@sdk";
+import { workflow, sdk, type ActorInstanceId } from "@sdk";
 import type { ChargeInput, ChargeOutput, RefundInput, RefundOutput } from "@units/my-ctx.my-module.actor.billing";
 import type { Input as FulfillInput } from "@units/my-ctx.my-module.queue_worker.fulfill-order";
 
@@ -111,12 +111,12 @@ export type RejectOutput = { ok: boolean };
 export default workflow<Input, Output>({
   run: async (ctx, input): Promise<Output> => {
     await ctx.run("charge-payment", (): ChargeOutput =>
-      sdk.callActorAndWaitForResultSync<ChargeInput, ChargeOutput>(
-        "my-ctx.my-module.actor.billing",
-        input.userId,
-        "charge",
-        { orderId: input.orderId },
-      ),
+      sdk.callActorAndWaitForResultSync<ChargeInput, ChargeOutput>({
+        unitPath: "my-ctx.my-module.actor.billing",
+        actorId: input.userId as ActorInstanceId,
+        handler: "charge",
+        payload: { orderId: input.orderId },
+      }),
     );
 
     ctx.set("phase", "awaiting-approval");
@@ -127,12 +127,12 @@ export default workflow<Input, Output>({
 
     if (!approval?.approved) {
       await ctx.run("refund", (): RefundOutput =>
-        sdk.callActorAndWaitForResultSync<RefundInput, RefundOutput>(
-          "my-ctx.my-module.actor.billing",
-          input.userId,
-          "refund",
-          { orderId: input.orderId },
-        ),
+        sdk.callActorAndWaitForResultSync<RefundInput, RefundOutput>({
+          unitPath: "my-ctx.my-module.actor.billing",
+          actorId: input.userId as ActorInstanceId,
+          handler: "refund",
+          payload: { orderId: input.orderId },
+        }),
       );
       return { success: false, orderId: input.orderId };
     }
@@ -142,10 +142,10 @@ export default workflow<Input, Output>({
     ctx.sleep("fulfillment-delay", { seconds: 5 });
 
     await ctx.run("fulfill-order", (): void => {
-      sdk.enqueueWorkerSync<FulfillInput>(
-        "my-ctx.my-module.queue_worker.fulfill-order",
-        { orderId: input.orderId, idempotencyKey: ctx.rand.uuidv4() },
-      );
+      sdk.enqueueWorkerSync<FulfillInput>({
+        unitPath: "my-ctx.my-module.queue_worker.fulfill-order",
+        data: { orderId: input.orderId, idempotencyKey: ctx.rand.uuidv4() },
+      });
     });
 
     return { success: true, orderId: input.orderId };
@@ -171,7 +171,10 @@ export default workflow<Input, Output>({
 
 pub const COMMUNICATION: &str = r#"
 Inbound — another unit can interact with this workflow in two ways. All sdk.* calls are
-synchronous; do NOT write `await` in front of them.
+synchronous; do NOT write `await` in front of them. Each call takes one object argument
+(`{ unitPath, input }`, `{ unitPath, instanceId, handler, input?, opts? }`, …) per `@sdk.d.ts`.
+`unitPath` is `WorkflowUnitPathOrId` (four segments, third is `workflow`); `instanceId`
+is `WorkflowInstanceId` (use `as WorkflowInstanceId` when the value is a plain `string`).
 
   1) Start a new instance:
 
@@ -179,40 +182,54 @@ synchronous; do NOT write `await` in front of them.
 
      // Fire-and-forget — returns { instanceId } immediately; this is the
      // recommended form whenever the workflow waits on a signal/promise.
-     const { instanceId } = sdk.startWorkflowSync<Input>(
-       "ctx.mod.workflow.name", inputData,
-     );
+     const { instanceId } = sdk.startWorkflowSync<Input>({
+       unitPath: "ctx.mod.workflow.name",
+       input: inputData,
+     });
 
      // Start and BLOCK until the workflow terminates. Only safe for short,
      // non-signal workflows.
-     const out = sdk.callWorkflowAndWaitForOutputSync<Input, Output>(
-       "ctx.mod.workflow.name", inputData,
-     );
+     const out = sdk.callWorkflowAndWaitForOutputSync<Input, Output>({
+       unitPath: "ctx.mod.workflow.name",
+       input: inputData,
+     });
 
   2) Signal / query a RUNNING instance by calling one of its `handlers`:
 
+     import { type WorkflowInstanceId } from "@sdk";
      import type { ApproveInput, ApproveOutput } from "@units/ctx.mod.workflow.name";
 
-     const result = sdk.callWorkflowHandlerAndWaitForResultSync<ApproveInput, ApproveOutput>(
-       "ctx.mod.workflow.name", instanceId, "approve", { approvedBy: "admin" },
-     );
+     const result = sdk.callWorkflowHandlerAndWaitForResultSync<ApproveInput, ApproveOutput>({
+       unitPath: "ctx.mod.workflow.name",
+       instanceId: wfInstanceId as WorkflowInstanceId,
+       handler: "approve",
+       input: { approvedBy: "admin" },
+     });
 
      It blocks until the handler returns. The handler typically resolves a
      durable promise that the `run` function is waiting on.
 
-Outbound (what THIS workflow can do) — two patterns, never mix them:
+Outbound (what THIS workflow can do) — two patterns, never mix them.
+`unitPath` for actors / queue workers / workflows must match `ActorUnitPathOrId`,
+`QueueWorkerUnitPathOrId`, `WorkflowUnitPathOrId` respectively; `actorId` is `ActorInstanceId`.
+
+  import { type ActorInstanceId } from "@sdk";
 
 SUSPENSION PRIMITIVES — call bare in the run body, never inside ctx.run():
 
   // Actor call via durable suspension — bare, no ctx.run wrapper
-  const result = sdk.callActorDurableAndWaitForResultSync<In, Out>(
-    "ctx.mod.actor.name", id, "handler", payload,
-  );
+  const result = sdk.callActorDurableAndWaitForResultSync<In, Out>({
+    unitPath: "ctx.mod.actor.name",
+    actorId: userKey as ActorInstanceId,
+    handler: "handler",
+    payload,
+  });
 
   // Child workflow — suspends durably until child completes
-  const childOut = sdk.callWorkflowAndWaitForOutputSync<ChildInput, ChildOutput>(
-    "ctx.mod.workflow.child", childInput,
-  );
+  const childOut = sdk.callWorkflowAndWaitForOutputSync<ChildInput, ChildOutput>({
+    unitPath: "ctx.mod.workflow.child",
+    input: childInput,
+  });
 
   // Timer and external signal — also bare suspension primitives
   ctx.sleep("wait", { seconds: 30 });
@@ -222,19 +239,25 @@ SIDE EFFECTS — every one wrapped in `await ctx.run("name", () => ...)`:
 
   // Actor call as a named, journaled step
   const result = await ctx.run("step-name", (): Out =>
-    sdk.callActorAndWaitForResultSync<In, Out>(
-      "ctx.mod.actor.name", id, "handler", payload,
-    ),
+    sdk.callActorAndWaitForResultSync<In, Out>({
+      unitPath: "ctx.mod.actor.name",
+      actorId: userKey as ActorInstanceId,
+      handler: "handler",
+      payload,
+    }),
   );
 
   // Fire-and-forget enqueue
   await ctx.run("enqueue-step", (): void => {
-    sdk.enqueueWorkerSync<In>("ctx.mod.queue_worker.name", payload);
+    sdk.enqueueWorkerSync<In>({ unitPath: "ctx.mod.queue_worker.name", data: payload });
   });
 
   // Fire-and-forget workflow start
-  await ctx.run("start-child", (): { instanceId: string } =>
-    sdk.startWorkflowSync<ChildInput>("ctx.mod.workflow.child", childInput),
+  await ctx.run("start-child", () =>
+    sdk.startWorkflowSync<ChildInput>({
+      unitPath: "ctx.mod.workflow.child",
+      input: childInput,
+    }),
   );
 "#;
 

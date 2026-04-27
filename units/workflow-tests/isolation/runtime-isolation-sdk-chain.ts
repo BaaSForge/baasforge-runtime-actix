@@ -12,8 +12,11 @@ export default workflow<Input, Output>(async (ctx, input) => {
     sdk.callWorkflowAndWaitForOutputSync<
       { marker?: string },
       { midSelf: string; child: string; marker: string | null }
-    >("test.wf.workflow.runtime-isolation-wf-chain-mid", {
-      ...(input.marker === undefined ? {} : { marker: input.marker }),
+    >({
+      unitPath: "test.wf.workflow.runtime-isolation-wf-chain-mid",
+      input: {
+        ...(input.marker === undefined ? {} : { marker: input.marker }),
+      },
     }),
   );
   return { marker: mid.marker, midSelf: mid.midSelf, childScope: mid.child };

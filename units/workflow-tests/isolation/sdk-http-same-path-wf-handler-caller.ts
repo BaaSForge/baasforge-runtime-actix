@@ -6,15 +6,27 @@ export type Input = void;
 export type Output = { scopeFromHandler: string; unitPathFromHandler: string };
 
 export default workflow<Input, Output>(async (ctx) => {
-  const started = await ctx.run("start-child", () => sdk.startWorkflowSync<Record<string, never>>(CHILD, {}));
+  const started = await ctx.run("start-child", () =>
+    sdk.startWorkflowSync<Record<string, never>>({ unitPath: CHILD, input: {} }),
+  );
   const read = await ctx.run("read-scope", () =>
     sdk.callWorkflowHandlerAndWaitForResultSync<
       Record<string, never>,
       { scope: string; unitPath: string }
-    >(CHILD, started.instanceId, "readScope", {}),
+    >({
+      unitPath: CHILD,
+      instanceId: started.instanceId,
+      handler: "readScope",
+      input: {},
+    }),
   );
   await ctx.run("finish-child", () =>
-    sdk.callWorkflowHandlerAndWaitForResultSync(CHILD, started.instanceId, "finish", {}),
+    sdk.callWorkflowHandlerAndWaitForResultSync({
+      unitPath: CHILD,
+      instanceId: started.instanceId,
+      handler: "finish",
+      input: {},
+    }),
   );
   return { scopeFromHandler: read.scope, unitPathFromHandler: read.unitPath };
 });

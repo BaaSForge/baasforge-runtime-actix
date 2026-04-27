@@ -15,7 +15,10 @@ export default actor<St>({
       return sdk.callWorkflowAndWaitForOutputSync<
         { marker?: string },
         { runtimeScope: string; unitPath: string; marker: string | null }
-      >(WF_PATH, { marker: input.marker });
+      >({
+        unitPath: WF_PATH,
+        input: { marker: input.marker },
+      });
     },
   },
 });

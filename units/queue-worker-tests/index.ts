@@ -862,6 +862,43 @@ function allInlineTests(): WorkerInlineTestDef[] {
       run: async (_baseUrl) => {},
     },
 
+    // ---- sdk-dts-gaps (@sdk.d.ts vs host — implement then un-skip) ----
+    {
+      name: "enqueue-worker-opts-delay",
+      category: "sdk-dts-gaps",
+      skip:
+        "EnqueueWorkerOptions.delay — runtime-shared.js voids args.opts; enqueue_queue_worker_run has no delay scheduling",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "enqueue-worker-opts-deduplication-key",
+      category: "sdk-dts-gaps",
+      skip:
+        "EnqueueWorkerOptions.deduplicationKey — args.opts ignored in JS; Rust enqueue path has no dedup window",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "queue-worker-metadata-concurrency",
+      category: "sdk-dts-gaps",
+      skip:
+        "QueueWorkerMetadata.concurrency — not extracted in queue-worker-metadata.js / WorkerMetadata; no per-worker concurrency cap in consumer",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "queue-worker-metadata-rate-limit",
+      category: "sdk-dts-gaps",
+      skip:
+        "QueueWorkerMetadata.rateLimit — not normalized in queue-worker-runtime.js __normalizeQueueWorkerMetadata; no engine enforcement",
+      run: async (_baseUrl) => {},
+    },
+    {
+      name: "queue-worker-metadata-dead-letter-enabled-gates-dlq",
+      category: "sdk-dts-gaps",
+      skip:
+        "QueueWorkerMetadata.deadLetter.enabled — metadata field not wired to runner; verify whether onDeadLetter / DLQ should be opt-in per spec",
+      run: async (_baseUrl) => {},
+    },
+
     // ---- isolation: cross-project-isolation ----
     {
       name: "cross-project-isolation",

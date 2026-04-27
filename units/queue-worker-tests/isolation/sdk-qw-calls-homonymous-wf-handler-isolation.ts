@@ -4,12 +4,25 @@ const CHILD = "test.wf.workflow.http-same-path-wf-handler-isolation";
 
 export default queueWorker<Record<string, never>, { scopeFromHandler: string; unitPathFromHandler: string }>(
   async (_ctx) => {
-    const { instanceId } = sdk.startWorkflowSync<Record<string, never>>(CHILD, {});
+    const { instanceId } = sdk.startWorkflowSync<Record<string, never>>({
+      unitPath: CHILD,
+      input: {},
+    });
     const read = sdk.callWorkflowHandlerAndWaitForResultSync<
       Record<string, never>,
       { scope: string; unitPath: string }
-    >(CHILD, instanceId, "readScope", {});
-    sdk.callWorkflowHandlerAndWaitForResultSync(CHILD, instanceId, "finish", {});
+    >({
+      unitPath: CHILD,
+      instanceId,
+      handler: "readScope",
+      input: {},
+    });
+    sdk.callWorkflowHandlerAndWaitForResultSync({
+      unitPath: CHILD,
+      instanceId,
+      handler: "finish",
+      input: {},
+    });
     return { scopeFromHandler: read.scope, unitPathFromHandler: read.unitPath };
   },
 );

@@ -1304,6 +1304,17 @@ function allTests(): TestDef[] {
         { type: "notNull", path: "result" },
       ],
     },
+    {
+      name: "sdk-dts-child-workflow-respects-opts-timeoutMs",
+      category: "sdk-dts-gaps",
+      workflowSlug: "sdk-call-basic",
+      input: {},
+      handlers: [], timeoutPromise: false, cancelOnSuspend: false,
+      replay: false, dedup: false,
+      skip:
+        "Inside workflow run, workflow-runtime.js overrides sdk.callWorkflowAndWaitForOutputSync and drops args.opts (CallWorkflowSyncOptions.timeoutMs); durable child call always uses fixed suspend window",
+      checks: [],
+    },
 
     // ---- promises new (2) ----
     {

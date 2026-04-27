@@ -9,5 +9,8 @@ export default queueWorker<
   return sdk.callWorkflowAndWaitForOutputSync<
     { marker?: string },
     { runtimeScope: string; unitPath: string; marker: string | null }
-  >(WF_PATH, { marker: data.marker });
+  >({
+    unitPath: WF_PATH,
+    input: { marker: data.marker },
+  });
 });
