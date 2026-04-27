@@ -418,6 +418,29 @@ function pass(name: string, detail?: string): TestResult {
   return detail !== undefined ? { name, pass: true, detail } : { name, pass: true };
 }
 
+function actorTestRunnerConcurrency(): number {
+  const raw = process.env["ACTOR_TEST_RUNNER_CONCURRENCY"];
+  if (raw === undefined || raw === "") return 16;
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= 1 ? n : 16;
+}
+
+async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
+  await Promise.all(
+    Array.from({ length: workers }, async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i]!, i);
+      }
+    }),
+  );
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Actor test runner
 // ---------------------------------------------------------------------------
@@ -2696,20 +2719,21 @@ function buildReport(results: TestResult[]) {
 export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const baseUrl = getBaseUrl(req);
 
-  const results = await Promise.all([
-    ...allActorTests().map(async (test) => {
-      console.log(`  actor: ${test.category}: ${test.name} …`);
-      return runActorTest(baseUrl, test);
-    }),
-    ...[...allInlineTests(), stateLimitAtLimitTest()].map(async (test) => {
-      console.log(`  actor: ${test.category}: ${test.name} …`);
-      return runInlineTest(baseUrl, test);
-    }),
-    ...allEndpointTests().map(async (test) => {
-      console.log(`  actor: ${test.category}: ${test.name} …`);
-      return runInlineTest(baseUrl, test);
-    }),
-  ]);
+  type Job =
+    | { kind: "actor"; test: ActorTestDef }
+    | { kind: "inline"; test: ActorInlineTestDef };
+
+  const jobs: Job[] = [
+    ...allActorTests().map((test) => ({ kind: "actor" as const, test })),
+    ...[...allInlineTests(), stateLimitAtLimitTest()].map((test) => ({ kind: "inline" as const, test })),
+    ...allEndpointTests().map((test) => ({ kind: "inline" as const, test })),
+  ];
+
+  const results = await mapPool(jobs, actorTestRunnerConcurrency(), async (job) => {
+    const label = `${job.test.category}: ${job.test.name}`;
+    console.log(`  actor: ${label} …`);
+    return job.kind === "actor" ? runActorTest(baseUrl, job.test) : runInlineTest(baseUrl, job.test);
+  });
 
   const report = buildReport(results);
   const body = JSON.stringify(report, null, 2);
