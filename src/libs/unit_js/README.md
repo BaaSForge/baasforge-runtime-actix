@@ -22,7 +22,7 @@ The public trigger routes — `POST /api/v1/trigger/actor/...`, `POST /api/v1/tr
 | --- | --- |
 | `sdk.callActorAndWaitForResultSync` doing `await fetch(baseUrl + "/api/v1/trigger/actor/...")` | `sdk.callActorAndWaitForResultSync` calling host fn `__baal_call_actor_sync(...)` |
 | `sdk.enqueueWorkerSync` doing `fetch(...)` to `workerQueue` | `sdk.enqueueWorkerSync` calling `__baal_enqueue_worker(...)` |
-| `sdk.callWorkflowAndWaitForOutputSync` polling `/api/v1/trigger/wf/.../result` | `sdk.callWorkflowAndWaitForOutputSync` calling `__baal_call_workflow_sync(...)` (non-workflow) or `__baal_start_call(...)` + durable promise (workflow) |
+| `sdk.callWorkflowAndWaitForOutputSync` polling `/api/v1/trigger/wf/.../result` | `sdk.callWorkflowAndWaitForOutputSync` calling `__baal_call_workflow_sync(...)` (outside a workflow) or `__baal_start_call(...)` + durable promise (inside a workflow `run`) |
 
 Internal host functions live in [modules/sdk.rs](modules/sdk.rs) and read handles (Redis, NATS, JetStream, `DbPool`, `ActorLocks`) from a thread-local `SdkCommCtx` that is never exposed to JS.
 
@@ -48,7 +48,7 @@ If you need new functionality, add a `__baal_*` host function in `modules/sdk.rs
 ### 3. Shared SDK helpers live in exactly one file
 
 - `sdk.callActorAndWaitForResultSync`, `sdk.sendActorMessageSync`, `sdk.enqueueWorkerSync`, `sdk.startWorkflowSync`, `sdk.callWorkflowAndWaitForOutputSync`, `sdk.callWorkflowHandlerAndWaitForResultSync`, and any future `sdk.*` method belong in [scripts/runtime-shared.js](scripts/runtime-shared.js).
-- Per-unit-type scripts may **override** a helper when a different semantic is required (e.g. `workflow-runtime.js` replaces `sdk.callWorkflowAndWaitForOutputSync` and `sdk.callActorDurableAndWaitForResultSync` to suspend on a durable promise instead of blocking). Overrides must still be thin proxies to host functions.
+- Per-unit-type scripts may **override** a helper when a different semantic is required (e.g. `workflow-runtime.js` replaces `sdk.callWorkflowAndWaitForOutputSync` to suspend on a durable promise instead of blocking). Overrides must still be thin proxies to host functions.
 - Do **not** copy a helper into more than one script.
 
 ### 4. No duplication of per-unit-type globals like `__baal_*_base_url`

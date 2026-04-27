@@ -359,39 +359,6 @@ globalThis.__baal_wf_result = (function () {
       throw suspend;
     };
 
-    var __sdkActorCallIdx = 0;
-    sdk.callActorDurableAndWaitForResultSync = function (args) {
-      var unitPath = args.unitPath;
-      var actorId = args.actorId;
-      var handler = args.handler;
-      var payload = args.payload;
-      var callName = "sdk_actor_" + __sdkActorCallIdx++;
-
-      var cached = __wfCtx.__promises[callName];
-      if (cached) {
-        if (cached.status === "resolved") {
-          return cached.value !== undefined ? JSON.parse(cached.value) : null;
-        }
-        if (cached.status === "rejected") {
-          throw new Error(cached.error || "sdk.callActorDurableAndWaitForResultSync: actor call failed");
-        }
-        if (cached.status === "timed_out") {
-          throw new Error("sdk.callActorDurableAndWaitForResultSync timed out waiting for: " + unitPath + "/" + actorId + "/" + handler);
-        }
-      }
-
-      if (typeof __baal_start_actor_call !== "function") {
-        throw new Error("sdk.callActorDurableAndWaitForResultSync is not available: NATS not configured");
-      }
-
-      var payloadJson = payload !== undefined ? JSON.stringify(payload) : "null";
-      __baal_start_actor_call(unitPath, actorId, handler, payloadJson, callName);
-
-      var suspend = new __SuspendExecution("promise", callName, { timeout: 300000 });
-      __pendingSuspend = suspend;
-      throw suspend;
-    };
-
     var input = __wfCtx.__input ? JSON.parse(__wfCtx.__input) : undefined;
     return (async function () {
       try {

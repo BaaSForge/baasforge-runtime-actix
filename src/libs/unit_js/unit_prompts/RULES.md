@@ -19,7 +19,6 @@
 - All `sdk.*` methods are synchronous. Examples and Communication sections MUST NOT use `await` in front of any `sdk.*` call. The only valid `await` inside unit code is in front of `ctx.run(...)` (workflow steps) and user-authored async fns like `fetch` / `text(req)`.
 - Use the current SDK method names ending in `...Sync`:
   `callActorAndWaitForResultSync`, `sendActorMessageSync`,
-  `callActorDurableAndWaitForResultSync`,
   `enqueueWorkerSync`, `startWorkflowSync`,
   `callWorkflowAndWaitForOutputSync`, `callWorkflowHandlerAndWaitForResultSync`,
   `getApiUnitTriggerUrl`. Never use legacy names like `callActor`, `callWorkflow`,

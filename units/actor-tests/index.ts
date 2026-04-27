@@ -253,7 +253,7 @@ async function deleteActor(
 }
 
 // ---------------------------------------------------------------------------
-// Workflow trigger helpers (for callActorDurable cross-unit tests)
+// Workflow trigger helpers (for workflow→actor cross-unit tests)
 // ---------------------------------------------------------------------------
 
 function wfUrl(baseUrl: string, slug: string, projectId = PROJECT_ID): string {

@@ -39,7 +39,7 @@
 //
 //   target \ source             │ API │ Actor │ Workflow │ QueueWorker │
 //   ────────────────────────────┼─────┼───────┼──────────┼─────────────┤
-//   Actor handler (wait result) │  ✓  │   ✓   │   †/wrap │      ✓      │
+//   Actor handler (wait result) │  ✓  │   ✓   │   wrap** │      ✓      │
 //   Actor handler (fire&forget) │  ✓  │   ✓   │   wrap** │      ✓      │
 //   Queue Worker (enqueue)      │  ✓  │   ✓   │   wrap** │      ✓      │
 //   Start new Workflow (f&f)    │  ✓  │   ✓   │   wrap** │      ✓      │
@@ -51,13 +51,14 @@
 //       These throw an internal sentinel that must propagate freely:
 //         ctx.sleep(...)
 //         ctx.promise(...).get()
-//         sdk.callActorDurableAndWaitForResultSync({ ... })   ← actor variant
-//         sdk.callWorkflowAndWaitForOutputSync({ ... })       ← child workflow variant
+//         sdk.callWorkflowAndWaitForOutputSync({ ... })   ← child workflow variant
 //       NEVER place them inside ctx.run() — the sentinel would be swallowed.
-//   **  side-effecting sdk.* calls that are NOT suspension primitives MUST be
-//       wrapped: `await ctx.run("step", () => sdk.xxxSync({ ... }))` so they execute
-//       exactly once and replay deterministically from the journal.
-//       Use sdk.callActorAndWaitForResultSync({ ... }) (not the Durable variant) here.
+//   **  side-effecting sdk.* calls MUST be wrapped in ctx.run so they execute
+//       exactly once and replay deterministically from the journal:
+//         await ctx.run("step", () => sdk.callActorAndWaitForResultSync({ ... }))
+//         await ctx.run("step", () => sdk.enqueueWorkerSync({ ... }))
+//         await ctx.run("step", () => sdk.startWorkflowSync({ ... }))
+//         await ctx.run("step", () => sdk.sendActorMessageSync({ ... }))
 //
 // =============================================================================
 // Naming conventions for `sdk.*`
@@ -197,38 +198,6 @@ declare module "@sdk" {
       handler: string;
       payload?: TInput;
     }): { delivered: true };
-
-    /**
-     * Workflow-only suspension primitive: durably call an actor handler from
-     * inside a workflow `run`. Suspends the workflow until the handler
-     * completes, then resumes with the result. On replay the result is
-     * returned from the durable cache without re-invoking the actor.
-     *
-     * Call BARE in the `run` body — like `ctx.sleep` / `ctx.promise().get()`.
-     * NEVER place inside `ctx.run()`: the internal suspension sentinel would
-     * be swallowed by ctx.run's error boundary and the call would break.
-     *
-     * Synchronous — returns the handler result directly (throws a suspension
-     * sentinel when the result is not yet known; never `await` and never
-     * catch its error — let the sentinel propagate).
-     *
-     * @param args — `unitPath`, `actorId`, `handler`, optional `payload` (no `opts`; same
-     *   nominal types as `callActorAndWaitForResultSync`).
-     *
-     * @example
-     *   const charge = sdk.callActorDurableAndWaitForResultSync<ChargeInput, ChargeOutput>({
-     *     unitPath: "billing.core.actor.wallet",
-     *     actorId: input.userId as ActorInstanceId,
-     *     handler: "charge",
-     *     payload: { amount: 100 },
-     *   });
-     */
-    callActorDurableAndWaitForResultSync<TInput, TResult = _Internal_RequireExplicit>(args: {
-      unitPath: ActorUnitPathOrId;
-      actorId: ActorInstanceId;
-      handler: string;
-      payload?: TInput;
-    }): _Internal_Resolve<TResult>;
 
     // -------------------------------------------------------------------------
     // Queue Worker primitive

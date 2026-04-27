@@ -67,7 +67,6 @@ CRITICAL rules:
   SUSPENSION PRIMITIVES — call bare in the run body, never inside ctx.run():
     ctx.sleep(...)
     ctx.promise(...).get()
-    sdk.callActorDurableAndWaitForResultSync({ unitPath, actorId, handler, payload? })
     sdk.callWorkflowAndWaitForOutputSync({ unitPath, input, opts? })
   They throw an internal sentinel that must propagate freely. Wrapping in ctx.run()
   swallows the sentinel and breaks the suspension mechanism.
@@ -217,14 +216,6 @@ Outbound (what THIS workflow can do) — two patterns, never mix them.
 
 SUSPENSION PRIMITIVES — call bare in the run body, never inside ctx.run():
 
-  // Actor call via durable suspension — bare, no ctx.run wrapper
-  const result = sdk.callActorDurableAndWaitForResultSync<In, Out>({
-    unitPath: "ctx.mod.actor.name",
-    actorId: userKey as ActorInstanceId,
-    handler: "handler",
-    payload,
-  });
-
   // Child workflow — suspends durably until child completes
   const childOut = sdk.callWorkflowAndWaitForOutputSync<ChildInput, ChildOutput>({
     unitPath: "ctx.mod.workflow.child",
@@ -237,7 +228,7 @@ SUSPENSION PRIMITIVES — call bare in the run body, never inside ctx.run():
 
 SIDE EFFECTS — every one wrapped in `await ctx.run("name", () => ...)`:
 
-  // Actor call as a named, journaled step
+  // Actor call as a named, journaled step (this is the correct pattern for actor calls in workflows)
   const result = await ctx.run("step-name", (): Out =>
     sdk.callActorAndWaitForResultSync<In, Out>({
       unitPath: "ctx.mod.actor.name",

@@ -174,8 +174,6 @@ Common mistakes to avoid:
   `callWorkflowHandlerAndWaitForResultSync`.
 - Writing `await sdk.xxxSync({ ... })` — wrong; these functions are NOT async and return
   plain values. `await` on a non-Promise is a no-op but misleads anyone reading the code.
-- Using `sdk.callActorDurableAndWaitForResultSync` — that variant is workflow-only.
-  API units must use `sdk.callActorAndWaitForResultSync`.
 "#;
 
 pub const METADATA: &str = r#"

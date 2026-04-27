@@ -169,18 +169,6 @@ From API, actor, or queue_worker units:
     opts: { timeoutMs: 5000 },
   });
 
-From workflow `run` — use sdk.callActorDurableAndWaitForResultSync. It is a SUSPENSION
-PRIMITIVE: call it BARE in the `run` body, NEVER inside ctx.run(). It suspends the
-workflow durably until the handler completes, and returns the cached result on replay.
-The internal suspension sentinel must propagate freely — never catch it, never wrap it:
-
-  const result = sdk.callActorDurableAndWaitForResultSync<IncrementInput, IncrementOutput>({
-    unitPath: "ctx.mod.actor.name",
-    actorId: "actor-instance-id" as ActorInstanceId,
-    handler: "increment",
-    payload: { by: 1 },
-  });
-
 At runtime the actor key is any string the caller chooses; in TypeScript it is typed as
 `ActorInstanceId` so it is not confused with workflow instance IDs or queue run IDs.
 Use `as ActorInstanceId` when bridging from `string` (HTTP, JSON, env). Same unit path +
