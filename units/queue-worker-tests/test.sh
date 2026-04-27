@@ -103,21 +103,25 @@ echo "  TEST RUNNER URL: $TEST_RUNNER_URL"
 echo ""
 
 # ------------------------------------------------------------------
-# 3. Run queue worker endpoint + behavioral tests
+# 3–4. QuickJS queue-worker suite + WebSocket tests (parallel jobs)
 # ------------------------------------------------------------------
-echo "==> Running queue worker tests (timeout ${TEST_TIMEOUT}s)…"
+echo "==> Running queue-worker trigger + WebSocket tests in parallel (timeout ${TEST_TIMEOUT}s for curl)…"
 QW_OUTPUT="$SCRIPT_DIR/.qw-output.tmp.json"
-curl -s --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" > "$QW_OUTPUT"
-
-# ------------------------------------------------------------------
-# 4. Run WebSocket tests (Node.js, outside the QuickJS runtime)
-# ------------------------------------------------------------------
-echo "==> Running WebSocket tests…"
 WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
-node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" > "$WS_OUTPUT"
+curl -s --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" >"$QW_OUTPUT" &
+curl_pid=$!
+node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" >"$WS_OUTPUT" &
+ws_pid=$!
+fail=0
+wait $curl_pid || fail=1
+wait $ws_pid || fail=1
+if (( fail != 0 )); then
+  echo "ERROR: queue-worker curl and/or WebSocket job failed" >&2
+  exit 1
+fi
 
 # ------------------------------------------------------------------
-# 5. Merge queue-worker report + WebSocket report → .output.log
+# 5. Merge parallel job reports → .output.log
 # ------------------------------------------------------------------
 echo "==> Merging reports…"
 echo "    (queue worker) $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$QW_OUTPUT" | tr -d '\n')"

@@ -1768,7 +1768,7 @@ function allEndpointTests(): EndpointTestDef[] {
       name: "concurrent-wake-same-instance",
       category: "endpoint_durability",
       run: async (baseUrl) => {
-        const { base } = await epStart(baseUrl, "basic-promise", {});
+        const { base } = await epStart(baseUrl, "concurrent-wake-same-instance", {});
         await epPollStatus(base, "suspended");
 
         const [r1, r2] = await Promise.all([
@@ -1843,7 +1843,7 @@ function allEndpointTests(): EndpointTestDef[] {
       name: "resume-cancelled-noop",
       category: "endpoint_crash_recovery",
       run: async (baseUrl) => {
-        const { base } = await epStart(baseUrl, "workflow-cancellation", {});
+        const { base } = await epStart(baseUrl, "endpoint-crash-resume-cancelled", {});
         await epPollStatus(base, "suspended");
 
         const cancelResp = await httpPostFull(`${base}/cancel`);
@@ -1865,7 +1865,7 @@ function allEndpointTests(): EndpointTestDef[] {
       name: "cancel-then-restart-fresh",
       category: "endpoint_lifecycle",
       run: async (baseUrl) => {
-        const { base: base1 } = await epStart(baseUrl, "workflow-cancellation", {});
+        const { base: base1 } = await epStart(baseUrl, "cancel-then-restart-cancellation-sleep", {});
         await epPollStatus(base1, "suspended");
         await httpPostFull(`${base1}/cancel`);
 
@@ -2939,20 +2939,17 @@ function allEndpointTests(): EndpointTestDef[] {
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const baseUrl = getBaseUrl(req);
-  const tests = allTests();
-  const results: TestResult[] = [];
 
-  for (const test of tests) {
-    console.log(`  workflow: ${test.category}: ${test.name} …`);
-    const result = await runTest(baseUrl, test);
-    results.push(result);
-  }
-
-  for (const et of allEndpointTests()) {
-    console.log(`  workflow: ${et.category}: ${et.name} …`);
-    const result = await runEndpointTest(baseUrl, et);
-    results.push(result);
-  }
+  const results = await Promise.all([
+    ...allTests().map(async (test) => {
+      console.log(`  workflow: ${test.category}: ${test.name} …`);
+      return runTest(baseUrl, test);
+    }),
+    ...allEndpointTests().map(async (et) => {
+      console.log(`  workflow: ${et.category}: ${et.name} …`);
+      return runEndpointTest(baseUrl, et);
+    }),
+  ]);
 
   const report = buildReport(results);
   const body = JSON.stringify(report, null, 2);

@@ -103,21 +103,25 @@ echo "  TRIGGER URL: $BASE_URL"
 echo ""
 
 # ------------------------------------------------------------------
-# 3. Run QuickJS workflow + endpoint tests
+# 3–4. QuickJS workflow suite + WebSocket tests (parallel jobs)
 # ------------------------------------------------------------------
-echo "==> Running workflow tests (timeout ${TEST_TIMEOUT}s)…"
+echo "==> Running workflow trigger + WebSocket tests in parallel (timeout ${TEST_TIMEOUT}s for curl)…"
 WF_OUTPUT="$SCRIPT_DIR/.wf-output.tmp.json"
-curl -s --max-time "$TEST_TIMEOUT" "$BASE_URL" > "$WF_OUTPUT"
-
-# ------------------------------------------------------------------
-# 4. Run WebSocket tests (Node.js, outside the QuickJS runtime)
-# ------------------------------------------------------------------
-echo "==> Running WebSocket tests…"
 WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
-node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" > "$WS_OUTPUT"
+curl -s --max-time "$TEST_TIMEOUT" "$BASE_URL" >"$WF_OUTPUT" &
+curl_pid=$!
+node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" >"$WS_OUTPUT" &
+ws_pid=$!
+fail=0
+wait $curl_pid || fail=1
+wait $ws_pid || fail=1
+if (( fail != 0 )); then
+  echo "ERROR: workflow curl and/or WebSocket job failed" >&2
+  exit 1
+fi
 
 # ------------------------------------------------------------------
-# 5. Merge workflow report + WebSocket report → .output.log
+# 5. Merge parallel job reports → .output.log
 # ------------------------------------------------------------------
 echo "==> Merging reports…"
 echo "    (workflows)   $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$WF_OUTPUT" | tr -d '\n')"

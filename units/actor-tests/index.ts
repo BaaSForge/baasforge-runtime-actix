@@ -2695,25 +2695,21 @@ function buildReport(results: TestResult[]) {
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const baseUrl = getBaseUrl(req);
-  const results: TestResult[] = [];
 
-  for (const test of allActorTests()) {
-    console.log(`  actor: ${test.category}: ${test.name} …`);
-    const result = await runActorTest(baseUrl, test);
-    results.push(result);
-  }
-
-  for (const test of [...allInlineTests(), stateLimitAtLimitTest()]) {
-    console.log(`  actor: ${test.category}: ${test.name} …`);
-    const result = await runInlineTest(baseUrl, test);
-    results.push(result);
-  }
-
-  for (const test of allEndpointTests()) {
-    console.log(`  actor: ${test.category}: ${test.name} …`);
-    const result = await runInlineTest(baseUrl, test);
-    results.push(result);
-  }
+  const results = await Promise.all([
+    ...allActorTests().map(async (test) => {
+      console.log(`  actor: ${test.category}: ${test.name} …`);
+      return runActorTest(baseUrl, test);
+    }),
+    ...[...allInlineTests(), stateLimitAtLimitTest()].map(async (test) => {
+      console.log(`  actor: ${test.category}: ${test.name} …`);
+      return runInlineTest(baseUrl, test);
+    }),
+    ...allEndpointTests().map(async (test) => {
+      console.log(`  actor: ${test.category}: ${test.name} …`);
+      return runInlineTest(baseUrl, test);
+    }),
+  ]);
 
   const report = buildReport(results);
   const body = JSON.stringify(report, null, 2);

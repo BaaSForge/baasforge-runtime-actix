@@ -23,6 +23,18 @@ The three trees **`units/actor-tests`**, **`units/workflow-tests`**, and **`unit
 
 If you add a test that needs another unit type, **copy the minimal unit source into that suite’s tree** (or add a small new file there) and wire it through the same env dirs—do not point `test.sh` at `../other-suite/dist`.
 
+## Parallel runs (write tests accordingly)
+
+**Workflow / actor / queue-worker API runners** start **all** declarative and endpoint-style cases in one `Promise.all` (see `handleRequest` in each suite’s `index.ts`). **`workflow-tests/test.sh`** also runs the trigger HTTP suite and **`ws-tests.mjs`** at the same time. Assume **many** concurrent instances on the same project and NATS subjects.
+
+**Pitfalls**
+
+1. **Per–unit-path dedup (workflows)** — For a given project and production path, the engine keeps **at most one** running or suspended instance per `test.wf.<slug>` (see [`workflow_engine.rs`](../src/services/workflow_engine.rs): `workflow_dedup_name_key`, `start_workflow`). Two tests that `POST` the **same** workflow slug while both are active can attach to the **same** `instanceId`, share handlers/cancel, and flake (wrong `result`, `cancel` → 400 `workflow already …`). **Fix:** give each test its **own** workflow unit (duplicate source with a new filename/slug) or only one test may own that slug while non-terminal.
+
+2. **WebSocket assertions** — A socket subscribed to `wf.events.{project}.>` will see **everyone’s** lifecycle frames. **Do not** assert `workflow.*` count is zero while another test runs workflows. **Fix:** record the `instanceId` (or run id) you started in that test and assert that id **does not** appear on the wrong URL (prod vs stage) or assert only frames for **your** id on the expected side.
+
+**Actor / queue-worker suites** — Same idea: shared dedup or global streams where applicable; scope assertions to **your** instance or run id.
+
 ## How consumers run during tests
 
 In `TEST_MODE`, the HTTP server **spawns all three consumers in-process**:

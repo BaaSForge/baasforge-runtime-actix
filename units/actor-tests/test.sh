@@ -104,21 +104,25 @@ echo "  TEST RUNNER URL: $TEST_RUNNER_URL"
 echo ""
 
 # ------------------------------------------------------------------
-# 3. Run actor endpoint + behavioral tests
+# 3–4. QuickJS actor suite + WebSocket tests (parallel jobs)
 # ------------------------------------------------------------------
-echo "==> Running actor tests (timeout ${TEST_TIMEOUT}s)…"
+echo "==> Running actor trigger + WebSocket tests in parallel (timeout ${TEST_TIMEOUT}s for curl)…"
 ACTOR_OUTPUT="$SCRIPT_DIR/.actor-output.tmp.json"
-curl -s --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" > "$ACTOR_OUTPUT"
-
-# ------------------------------------------------------------------
-# 4. Run WebSocket tests (Node.js, outside the QuickJS runtime)
-# ------------------------------------------------------------------
-echo "==> Running WebSocket tests…"
 WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
-node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" > "$WS_OUTPUT"
+curl -s --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" >"$ACTOR_OUTPUT" &
+curl_pid=$!
+node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" >"$WS_OUTPUT" &
+ws_pid=$!
+fail=0
+wait $curl_pid || fail=1
+wait $ws_pid || fail=1
+if (( fail != 0 )); then
+  echo "ERROR: actor curl and/or WebSocket job failed" >&2
+  exit 1
+fi
 
 # ------------------------------------------------------------------
-# 5. Merge trigger/QuickJS report + WebSocket report → .output.log
+# 5. Merge parallel job reports → .output.log
 # ------------------------------------------------------------------
 echo "==> Merging reports…"
 echo "    (trigger/QuickJS) $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$ACTOR_OUTPUT" | tr -d '\n')"

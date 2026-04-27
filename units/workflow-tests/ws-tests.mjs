@@ -551,28 +551,42 @@ const STAGE_WS_TESTS = [
   {
     name: "ws-stage-socket-excludes-production-workflow-events",
     run: async () => {
+      let prodIid;
       const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
-        await epStart("echo-input", { wsStageExcludeProd: true });
+        const s = await epStart("echo-input", { wsStageExcludeProd: true });
+        prodIid = s.instanceId;
       });
-      const wf = msgs.filter(
-        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      const leaked = msgs.filter(
+        (m) =>
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("workflow.") &&
+          m.parsed?.instanceId === prodIid,
       );
-      if (wf.length > 0) {
-        throw new Error(`stage socket must not deliver prod workflow frames; got ${wf.length}`);
+      if (leaked.length > 0) {
+        throw new Error(
+          `stage socket must not deliver prod workflow frames for ${prodIid}; got ${leaked.length}`,
+        );
       }
     },
   },
   {
     name: "ws-production-socket-excludes-stage-workflow-events",
     run: async () => {
+      let stageIid;
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async () => {
-        await epStageStart("echo-input", { wsProdExcludeStage: true });
+        const s = await epStageStart("echo-input", { wsProdExcludeStage: true });
+        stageIid = s.instanceId;
       });
-      const wf = msgs.filter(
-        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      const leaked = msgs.filter(
+        (m) =>
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("workflow.") &&
+          m.parsed?.instanceId === stageIid,
       );
-      if (wf.length > 0) {
-        throw new Error(`prod socket must not deliver stage workflow frames; got ${wf.length}`);
+      if (leaked.length > 0) {
+        throw new Error(
+          `prod socket must not deliver stage workflow frames for ${stageIid}; got ${leaked.length}`,
+        );
       }
     },
   },
@@ -619,14 +633,21 @@ const STAGE_WS_TESTS = [
     name: "ws-http-same-unit-path-stage-excludes-prod-homonymous-workflow",
     run: async () => {
       const slug = "http-same-unit-path-runtime-isolation";
+      let prodIid;
       const msgs = await wsCollect(toWsStageUrl(PROJECT_ID, STAGE_RUNTIME_ID), 4_000, async () => {
-        await epStart(slug, { marker: "ws-prod-leak", wsHttpSamePathWfProd: true });
+        const s = await epStart(slug, { marker: "ws-prod-leak", wsHttpSamePathWfProd: true });
+        prodIid = s.instanceId;
       });
-      const wf = msgs.filter(
-        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      const leaked = msgs.filter(
+        (m) =>
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("workflow.") &&
+          m.parsed?.instanceId === prodIid,
       );
-      if (wf.length > 0) {
-        throw new Error(`stage ws must not deliver prod homonymous wf frames; got ${wf.length}`);
+      if (leaked.length > 0) {
+        throw new Error(
+          `stage ws must not deliver prod homonymous wf frames for ${prodIid}; got ${leaked.length}`,
+        );
       }
     },
   },
@@ -634,14 +655,25 @@ const STAGE_WS_TESTS = [
     name: "ws-http-same-unit-path-prod-excludes-stage-homonymous-workflow",
     run: async () => {
       const slug = "http-same-unit-path-runtime-isolation";
+      let stageIid;
       const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_500, async () => {
-        await epStageStart(slug, { marker: "ws-stg-leak", wsHttpSamePathWfStg: true }, STAGE_RUNTIME_ID);
+        const s = await epStageStart(
+          slug,
+          { marker: "ws-stg-leak", wsHttpSamePathWfStg: true },
+          STAGE_RUNTIME_ID,
+        );
+        stageIid = s.instanceId;
       });
-      const wf = msgs.filter(
-        (m) => typeof m.parsed?.event === "string" && String(m.parsed.event).startsWith("workflow."),
+      const leaked = msgs.filter(
+        (m) =>
+          typeof m.parsed?.event === "string" &&
+          String(m.parsed.event).startsWith("workflow.") &&
+          m.parsed?.instanceId === stageIid,
       );
-      if (wf.length > 0) {
-        throw new Error(`prod ws must not deliver stage homonymous wf frames; got ${wf.length}`);
+      if (leaked.length > 0) {
+        throw new Error(
+          `prod ws must not deliver stage homonymous wf frames for ${stageIid}; got ${leaked.length}`,
+        );
       }
     },
   },
@@ -652,19 +684,19 @@ const STAGE_WS_TESTS = [
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const prodResults = [];
-  for (const test of TESTS) {
-    process.stderr.write(`  ws: ${test.name} … `);
-    const result = await runTest(test, "endpoint_ws");
-    prodResults.push(result);
+  const [prodResults, stageResults] = await Promise.all([
+    Promise.all(TESTS.map((test) => runTest(test, "endpoint_ws"))),
+    Promise.all(STAGE_WS_TESTS.map((test) => runTest(test, "endpoint_ws_stage"))),
+  ]);
+
+  for (let i = 0; i < TESTS.length; i++) {
+    const result = prodResults[i];
+    process.stderr.write(`  ws: ${TESTS[i].name} … `);
     process.stderr.write(result.pass ? "PASS\n" : `FAIL: ${result.error}\n`);
   }
-
-  const stageResults = [];
-  for (const test of STAGE_WS_TESTS) {
-    process.stderr.write(`  ws-stage: ${test.name} … `);
-    const result = await runTest(test, "endpoint_ws_stage");
-    stageResults.push(result);
+  for (let i = 0; i < STAGE_WS_TESTS.length; i++) {
+    const result = stageResults[i];
+    process.stderr.write(`  ws-stage: ${STAGE_WS_TESTS[i].name} … `);
     process.stderr.write(result.pass ? "PASS\n" : `FAIL: ${result.error}\n`);
   }
 

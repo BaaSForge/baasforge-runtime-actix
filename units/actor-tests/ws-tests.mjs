@@ -676,24 +676,37 @@ async function main() {
     { label: "ws_actor_stage_runtime", tests: WS_STAGE_RUNTIME },
   ];
 
-  const allResults = [];
+  const flatTasks = sections.flatMap((section) =>
+    section.tests.map((test) => ({ label: section.label, test })),
+  );
+  process.stderr.write(
+    `\n  WebSocket: running ${flatTasks.length} cases in parallel (all sections)\n`,
+  );
+  const allResults = await Promise.all(
+    flatTasks.map(({ label, test }) => runTest(label, test)),
+  );
+
   const sectionResults = {};
+  let flatIdx = 0;
+  for (const section of sections) {
+    const n = section.tests.length;
+    sectionResults[section.label] = allResults.slice(flatIdx, flatIdx + n);
+    flatIdx += n;
+  }
 
   for (const section of sections) {
+    const results = sectionResults[section.label];
     process.stderr.write(`\n  [${section.label}]\n`);
-    const results = [];
-    for (const test of section.tests) {
+    for (let i = 0; i < section.tests.length; i++) {
+      const test = section.tests[i];
+      const result = results[i];
       process.stderr.write(`    ${test.name} … `);
-      const result = await runTest(section.label, test);
-      results.push(result);
-      allResults.push(result);
       if (result.skipped) {
-        process.stderr.write(`SKIP\n`);
+        process.stderr.write("SKIP\n");
       } else {
         process.stderr.write(result.pass ? "PASS\n" : `FAIL: ${result.error}\n`);
       }
     }
-    sectionResults[section.label] = results;
   }
 
   const summaryBySection = {};
