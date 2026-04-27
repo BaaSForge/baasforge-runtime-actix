@@ -73,8 +73,14 @@ var ctx = {
   attempt: __actorCtx.attempt,
   get state() { return __currentState; },
   setAlarm: function (name, at) {
+    if (typeof at === "object" && at !== null && typeof at.fireAfterMs === "number") {
+      var ms = at.fireAfterMs;
+      if (!Number.isFinite(ms) || ms < 0) return;
+      __pendingAlarms.push({ name: String(name), fireAfterMs: Math.floor(ms) });
+      return;
+    }
     var ts = typeof at === "number" ? at : Date.parse(at);
-    __pendingAlarms.push({ name: String(name), at: ts });
+    __pendingAlarms.push({ name: String(name), at: ts, relative: false });
   },
   cancelAlarm: function (name) {
     __cancelledAlarms.push(String(name));

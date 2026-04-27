@@ -20,7 +20,7 @@ atomically after each successful handler execution.
 - ctx.id: string — the actor instance ID (supplied by the caller)
 - ctx.attempt: number — current attempt number, 1-based; increments on each retry
 - ctx.state: TState — mutable reference to this instance's persisted state
-- ctx.setAlarm(name: string, at: Date | number | Duration) — schedule a named alarm
+- ctx.setAlarm(name: string, at: Date | number | Duration | { fireAfterMs: number }) — schedule a named alarm; use `{ fireAfterMs }` for a delay from host commit time
 - ctx.cancelAlarm(name: string) — cancel a pending alarm by name
 - ctx.TerminalError — throw an instance to skip retries and trigger onDeadLetter
 

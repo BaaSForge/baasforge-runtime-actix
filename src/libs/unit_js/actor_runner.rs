@@ -50,6 +50,8 @@ impl ActorKind {
 pub struct PendingAlarm {
     pub name: String,
     pub at: i64,
+    #[serde(default)]
+    pub relative: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +220,18 @@ fn build_actor_ctx_js(ctx: &ActorCtxJson) -> String {
     )
 }
 
+fn json_number_as_i64_ms(v: &Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_u64().and_then(|u| i64::try_from(u).ok()))
+        .or_else(|| {
+            let f = v.as_f64()?;
+            if !f.is_finite() {
+                return None;
+            }
+            Some(f as i64)
+        })
+}
+
 fn parse_actor_result(result_json: &str) -> Result<ActorOutcome, String> {
     let val: Value = serde_json::from_str(result_json)
         .map_err(|e| format!("failed to parse actor result: {e}"))?;
@@ -243,8 +257,16 @@ fn parse_actor_result(result_json: &str) -> Result<ActorOutcome, String> {
                 arr.iter()
                     .filter_map(|item| {
                         let name = item.get("name")?.as_str()?.to_string();
-                        let at = item.get("at")?.as_i64()?;
-                        Some(PendingAlarm { name, at })
+                        if let Some(ms) = item.get("fireAfterMs").and_then(json_number_as_i64_ms) {
+                            return Some(PendingAlarm {
+                                name,
+                                at: ms,
+                                relative: true,
+                            });
+                        }
+                        let at = item.get("at").and_then(json_number_as_i64_ms)?;
+                        let relative = item.get("relative").and_then(|v| v.as_bool()).unwrap_or(false);
+                        Some(PendingAlarm { name, at, relative })
                     })
                     .collect()
             })

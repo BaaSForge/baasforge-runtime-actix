@@ -551,8 +551,11 @@ declare module "@sdk" {
     readonly id: string;
     readonly attempt: number;
     state: TState;
-    /** Schedule a named alarm. `at` can be a Date, absolute timestamp, or relative Duration. */
-    setAlarm(name: string, at: Date | number | Duration): void;
+    /**
+     * Schedule a named alarm. `at` can be a Date, absolute Unix ms, `Duration`, or `{ fireAfterMs }`.
+     * Prefer `{ fireAfterMs }` for delays from “now”: the host applies the delay at commit time (same idea as timer-by-duration in systems like Temporal).
+     */
+    setAlarm(name: string, at: Date | number | Duration | { fireAfterMs: number }): void;
     cancelAlarm(name: string): void;
     readonly TerminalError: typeof TerminalError;
   }

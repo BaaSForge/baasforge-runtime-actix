@@ -9,7 +9,9 @@ use crate::services::actor_engine::{
     publish_actor_event, set_alarm,
 };
 use crate::services::project_release::load_unit_for_path_scoped;
+use chrono::Utc;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{error, warn};
 use uuid::Uuid;
@@ -170,18 +172,8 @@ async fn run_actor_inner(
                     .await?;
                 }
 
-                for alarm in &pending_alarms {
-                    set_alarm(
-                        &actor_redis,
-                        &input.project_id,
-                        comm.stage_runtime_id,
-                        &input.unit_path,
-                        &input.actor_id,
-                        &alarm.name,
-                        alarm.at,
-                    )
-                    .await;
-                }
+                let cancelled_names: HashSet<&str> =
+                    cancelled_alarms.iter().map(|n| n.as_str()).collect();
                 for name in &cancelled_alarms {
                     cancel_alarm(
                         &actor_redis,
@@ -190,6 +182,26 @@ async fn run_actor_inner(
                         &input.unit_path,
                         &input.actor_id,
                         name,
+                    )
+                    .await;
+                }
+                for alarm in &pending_alarms {
+                    if cancelled_names.contains(alarm.name.as_str()) {
+                        continue;
+                    }
+                    let fire_at_ms = if alarm.relative {
+                        Utc::now().timestamp_millis().saturating_add(alarm.at)
+                    } else {
+                        alarm.at
+                    };
+                    set_alarm(
+                        &actor_redis,
+                        &input.project_id,
+                        comm.stage_runtime_id,
+                        &input.unit_path,
+                        &input.actor_id,
+                        &alarm.name,
+                        fire_at_ms,
                     )
                     .await;
                 }

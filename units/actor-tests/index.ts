@@ -28,6 +28,7 @@
  * └──────────────────────────────────┴──────────────────────────────────────────────────────────────────────┘
  */
 
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 // ---------------------------------------------------------------------------
@@ -1049,10 +1050,15 @@ function allInlineTests(): ActorInlineTestDef[] {
       name: "cancel-alarm",
       category: "alarms",
       run: async (baseUrl) => {
-        const id = `alarm-cancel-${uid()}`;
+        const id = `alarm-cancel-${randomUUID()}`;
         await deleteActor(baseUrl, "cancel-alarm", id);
-        await callActor(baseUrl, "cancel-alarm", id, "scheduleAlarm", { delayMs: 800 });
-        await callActor(baseUrl, "cancel-alarm", id, "cancelAlarm");
+        const delayMs = 15_000;
+        const sch = await callActorFull(baseUrl, "cancel-alarm", id, "scheduleAlarm", { delayMs });
+        if (sch.status !== 200)
+          throw new Error(`scheduleAlarm: ${sch.status} ${JSON.stringify(sch.body)}`);
+        const can = await callActorFull(baseUrl, "cancel-alarm", id, "cancelAlarm");
+        if (can.status !== 200)
+          throw new Error(`cancelAlarm: ${can.status} ${JSON.stringify(can.body)}`);
         await sleep(2_000);
         const state = await getState(baseUrl, "cancel-alarm", id);
         if (state?.state?.alarmFired === true)
