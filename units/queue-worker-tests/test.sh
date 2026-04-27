@@ -14,6 +14,7 @@
 #   ./units/queue-worker-tests/test.sh
 #   TEST_PORT=4445 ./units/queue-worker-tests/test.sh
 #   SKIP_BUILD=1 ./units/queue-worker-tests/test.sh
+#   TEST_RUNNER_CONCURRENCY=32 ./units/queue-worker-tests/test.sh  # HTTP cases in flight (default 24)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 

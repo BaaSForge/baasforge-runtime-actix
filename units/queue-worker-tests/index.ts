@@ -19,6 +19,33 @@ const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
+const DEFAULT_TEST_RUNNER_CONCURRENCY = 24;
+
+function testRunnerConcurrency(): number {
+  const raw = process.env["TEST_RUNNER_CONCURRENCY"];
+  if (raw == null || raw === "") return DEFAULT_TEST_RUNNER_CONCURRENCY;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_TEST_RUNNER_CONCURRENCY;
+  return n;
+}
+
+async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
+  await Promise.all(
+    Array.from({ length: items.length ? workers : 0 }, async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        const item = items[i]!;
+        out[i] = await fn(item, i);
+      }
+    }),
+  );
+  return out;
+}
+
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
   return `http://${host}`;
@@ -2191,17 +2218,19 @@ function buildReport(results: TestResult[]) {
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const baseUrl = getBaseUrl(req);
-
-  const results = await Promise.all([
-    ...allWorkerTests().map(async (test) => {
-      console.log(`  queue-worker: ${test.category}: ${test.name} …`);
-      return runWorkerTest(baseUrl, test);
-    }),
-    ...allInlineTests().map(async (test) => {
-      console.log(`  queue-worker: ${test.category}: ${test.name} …`);
-      return runInlineTest(baseUrl, test);
-    }),
-  ]);
+  const conc = testRunnerConcurrency();
+  const tasks = [
+    ...allWorkerTests().map((test) => ({ kind: "worker" as const, test })),
+    ...allInlineTests().map((test) => ({ kind: "inline" as const, test })),
+  ];
+  const results = await mapPool(tasks, conc, async (task) => {
+    if (task.kind === "worker") {
+      console.log(`  queue-worker: ${task.test.category}: ${task.test.name} …`);
+      return runWorkerTest(baseUrl, task.test);
+    }
+    console.log(`  queue-worker: ${task.test.category}: ${task.test.name} …`);
+    return runInlineTest(baseUrl, task.test);
+  });
 
   const report = buildReport(results);
   const body = JSON.stringify(report, null, 2);

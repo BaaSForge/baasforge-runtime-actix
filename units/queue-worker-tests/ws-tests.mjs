@@ -32,6 +32,7 @@ if (nodeMajor < 22) {
 const BASE_URL = process.argv[2] ?? "http://127.0.0.1:3335";
 const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
+const WS_UNUSED_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000099";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
@@ -508,7 +509,7 @@ const WS_FILTERING = [
   {
     name: "ws-wrong-project-receives-no-queue-worker-events",
     run: async () => {
-      const msgs = await wsCollect(toWsUrl(ALT_PROJECT_ID), 3_500, async (ws) => {
+      const msgs = await wsCollect(toWsUrl(WS_UNUSED_PROJECT_ID), 3_500, async (ws) => {
         ws.send(JSON.stringify({ action: "subscribe", unitType: "queue-worker" }));
         await sleep(200);
         await enqueueWorker("echo-worker", { wsWrongProj: 1 });
