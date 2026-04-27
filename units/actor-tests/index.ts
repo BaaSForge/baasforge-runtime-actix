@@ -2501,7 +2501,9 @@ function allEndpointTests(): ActorInlineTestDef[] {
       category: "endpoints",
       run: async (baseUrl) => {
         const id = `ep-payload-large-${uid()}`;
-        const largeBody = "x".repeat(33 * 1024 * 1024);
+        const maxBody = 32 * 1024 * 1024;
+        const innerLen = maxBody - 10 + 2048;
+        const largeBody = "x".repeat(innerLen);
         const url = `${actorUrl(baseUrl, "state-init", id, "getState")}?await=true`;
         const resp = await fetch(url, {
           method: "POST",
