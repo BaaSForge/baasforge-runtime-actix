@@ -58,6 +58,9 @@ pub(super) fn collect() -> Vec<UnitSpec> {
 
     let mut out = Vec::new();
     for (rel_path, code) in files {
+        if rel_path.starts_with("seed-workflows/") || rel_path.starts_with("seed-queue-workers/") {
+            continue;
+        }
         match spec_from_path(&rel_path, code) {
             Some(spec) => out.push(spec),
             None => tracing::warn!(

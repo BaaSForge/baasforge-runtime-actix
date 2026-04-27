@@ -2,9 +2,10 @@
 # ---------------------------------------------------------------------------
 # Actor integration tests (end-to-end)
 #
-# Builds the TypeScript actor units + test runner, starts the **real**
-# application server in TEST_MODE, seeds all actor units + the API test
-# runner into the database, hits the trigger URL, and prints the report.
+# Builds the TypeScript actor units + test runner (including in-tree
+# seed-workflows / seed-queue-workers copies for homonymous-path isolation),
+# starts the **real** application server in TEST_MODE, seeds units + API
+# runner, hits the trigger URL, and prints the report.
 #
 # Requires:
 #   - docker compose up -d   (Redis, NATS, Postgres, Actor Redis, Actor NATS, Actor PG)
@@ -72,6 +73,11 @@ else
   echo "==> Skipping build (SKIP_BUILD=1)"
 fi
 
+if [[ ! -d "$SCRIPT_DIR/dist/seed-workflows" || ! -d "$SCRIPT_DIR/dist/seed-queue-workers" ]]; then
+  echo "FATAL: $SCRIPT_DIR/dist/seed-workflows or .../seed-queue-workers missing (run tsc on actor-tests or omit SKIP_BUILD=1)"
+  exit 1
+fi
+
 # ------------------------------------------------------------------
 # 2. Start the real server in TEST_MODE
 # ------------------------------------------------------------------
@@ -82,6 +88,8 @@ APP_ENV=production \
 PORT="$PORT" \
 TEST_UNIT_FILES="actor-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_ACTOR_DIR="$SCRIPT_DIR/dist" \
+TEST_WORKFLOW_DIR="$SCRIPT_DIR/dist/seed-workflows" \
+TEST_QUEUE_WORKER_DIR="$SCRIPT_DIR/dist/seed-queue-workers" \
   "$PROJECT_ROOT/target/release/baal-runtime-actix" &
 SERVER_PID=$!
 

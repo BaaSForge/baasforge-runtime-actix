@@ -21,7 +21,7 @@ Similar entrypoints:
 
 The three trees **`units/actor-tests`**, **`units/workflow-tests`**, and **`units/queue-worker-tests`** are **self-contained**: their `test.sh` scripts do not compile or seed from a sibling `units/` folder. Homonymous-path and cross-type checks still use the same runtime unit paths (`test.actor-tests.*`, `test.wf.*`, `test.queue-worker.*`) where the product expects them.
 
-If you add a test that needs another unit type, **copy the minimal unit source into that suite’s tree** (or add a small new file there) and wire it through the same env dirs—do not point `test.sh` at `../other-suite/dist`.
+If you add a test that needs another unit type, **copy the minimal unit source into that suite’s tree** (or add a small new file there) and wire it through the same env dirs—do not point `test.sh` at `../other-suite/dist`. Example: actor-tests keeps homonymous-path workflow/qw sources under `seed-workflows/` and `seed-queue-workers/` (compiled next to actors into `dist/seed-workflows`, `dist/seed-queue-workers`); the test seeder skips those prefixes when walking `TEST_ACTOR_DIR` so they are only picked up via `TEST_WORKFLOW_DIR` / `TEST_QUEUE_WORKER_DIR`.
 
 ## Parallel runs (write tests accordingly)
 
