@@ -403,6 +403,22 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         crate::services::test_seed::print_trigger_urls(&settings);
     }
 
+    let test_mode_teardown = if settings.test_mode {
+        Some(crate::services::test_seed::TestModeTeardown {
+            pool: pool.clone(),
+            settings: settings.clone(),
+            redis_conn: redis_conn.clone(),
+            wf_redis: wf_redis.clone(),
+            wq_redis: wq_redis.clone(),
+            actor_redis: actor_redis.clone(),
+            wf_jetstream: wf_jetstream.clone(),
+            wq_jetstream: wq_jetstream.clone(),
+            actor_jetstream: actor_jetstream.clone(),
+        })
+    } else {
+        None
+    };
+
     let app_context = AppContext::new(
         pool.clone(),
         settings.clone(),
@@ -418,8 +434,6 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         actor_jetstream,
         actor_locks,
     );
-
-    let test_pool = if settings.test_mode { Some(pool) } else { None };
 
     let enable_dev_cors = cfg!(debug_assertions);
 
@@ -567,8 +581,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     .run()
     .await?;
 
-    if let Some(pool) = test_pool {
-        crate::services::test_seed::teardown_test_entities(&pool);
+    if let Some(td) = test_mode_teardown {
+        td.run().await;
     }
 
     Ok(())

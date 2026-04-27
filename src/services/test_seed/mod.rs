@@ -13,13 +13,19 @@ mod api_units;
 mod queue_worker_units;
 mod workflow_units;
 
+use crate::actor_schema::{actor_alarms, actor_snapshots};
 use crate::configs::Settings;
 use crate::database::{DbPool, SharedRedisConn};
+use crate::services::actor_engine::ACTOR_NATS_STREAM;
+use crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM;
+use crate::services::workflow_engine::SharedRedis;
+use diesel::delete;
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::Text;
 use redis::AsyncCommands;
 use std::path::Path;
+use uuid::Uuid;
 
 pub(crate) const TEST_USER_ID: &str = "00000000-aaaa-bbbb-cccc-000000000001";
 pub(crate) const TEST_PROJECT_ID: &str = "00000000-aaaa-bbbb-cccc-000000000010";
@@ -536,6 +542,210 @@ pub async fn clear_test_project_runtime_redis_cache(redis: &SharedRedisConn) -> 
         }
     }
     Ok(())
+}
+
+pub async fn clear_test_workflow_redis(wf: &Option<SharedRedis>) -> Result<(), redis::RedisError> {
+    let Some(rc) = wf else {
+        return Ok(());
+    };
+    let mut conn = rc.lock().await;
+    for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
+        let pattern = format!("wf:{pid}:*");
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        for key in keys {
+            let _: () = conn.del(key).await?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn clear_test_queue_worker_redis(wq: &Option<SharedRedis>) -> Result<(), redis::RedisError> {
+    let Some(rc) = wq else {
+        return Ok(());
+    };
+    let mut conn = rc.lock().await;
+    for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
+        let pattern = format!("wq:{pid}:*");
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        for key in keys {
+            let _: () = conn.del(key).await?;
+        }
+    }
+    Ok(())
+}
+
+fn test_mode_alarm_zset_member_is_seeded(m: &str) -> bool {
+    let parts: Vec<&str> = m.split('\t').collect();
+    match parts.as_slice() {
+        ["prod", pid, _, _, _] => *pid == TEST_PROJECT_ID || *pid == TEST_ALT_PROJECT_ID,
+        ["stage", rid, pid, _, _, _] => {
+            *rid == TEST_STAGE_RUNTIME_ID
+                || *rid == TEST_STAGE_B_RUNTIME_ID
+                || *pid == TEST_PROJECT_ID
+                || *pid == TEST_ALT_PROJECT_ID
+        }
+        _ => false,
+    }
+}
+
+pub async fn clear_test_actor_redis(actor: &Option<SharedRedis>) -> Result<(), redis::RedisError> {
+    let Some(rc) = actor else {
+        return Ok(());
+    };
+    let mut conn = rc.lock().await;
+    for prefix in [
+        format!("actor:p:{TEST_PROJECT_ID}:"),
+        format!("actor:p:{TEST_ALT_PROJECT_ID}:"),
+        format!("actor:s:{TEST_STAGE_RUNTIME_ID}:"),
+        format!("actor:s:{TEST_STAGE_B_RUNTIME_ID}:"),
+    ] {
+        let pattern = format!("{prefix}*");
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        for key in keys {
+            let _: () = conn.del(key).await?;
+        }
+    }
+    let global_key = "actor:alarms:global";
+    let members: Vec<String> = redis::cmd("ZRANGE")
+        .arg(global_key)
+        .arg(0isize)
+        .arg(-1isize)
+        .query_async(&mut *conn)
+        .await
+        .unwrap_or_default();
+    for m in members {
+        if test_mode_alarm_zset_member_is_seeded(&m) {
+            let _: () = redis::cmd("ZREM")
+                .arg(global_key)
+                .arg(&m)
+                .query_async(&mut *conn)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+pub fn teardown_actor_test_pg(settings: &Settings) {
+    let Some(ref url) = settings.actor_database_url else {
+        return;
+    };
+    let pool = crate::models::actor_store::build_actor_pg_pool(
+        url,
+        1,
+        settings.actor_database_connection_timeout_secs.max(1),
+    );
+    let Ok(mut conn) = pool.get() else {
+        tracing::warn!("test_seed: cannot get actor DB connection for teardown");
+        return;
+    };
+    for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
+        let Ok(u) = Uuid::parse_str(pid) else {
+            continue;
+        };
+        let _ = delete(actor_snapshots::table.filter(actor_snapshots::project_id.eq(u))).execute(&mut conn);
+        let _ = delete(actor_alarms::table.filter(actor_alarms::project_id.eq(u))).execute(&mut conn);
+    }
+}
+
+pub struct TestModeTeardown {
+    pub pool: DbPool,
+    pub settings: Settings,
+    pub redis_conn: SharedRedisConn,
+    pub wf_redis: Option<SharedRedis>,
+    pub wq_redis: Option<SharedRedis>,
+    pub actor_redis: Option<SharedRedis>,
+    pub wf_jetstream: Option<async_nats::jetstream::Context>,
+    pub wq_jetstream: Option<async_nats::jetstream::Context>,
+    pub actor_jetstream: Option<async_nats::jetstream::Context>,
+}
+
+impl TestModeTeardown {
+    pub async fn run(self) {
+        teardown_test_mode_persistence(
+            &self.pool,
+            &self.settings,
+            &self.redis_conn,
+            &self.wf_redis,
+            &self.wq_redis,
+            &self.actor_redis,
+            &self.wf_jetstream,
+            &self.wq_jetstream,
+            &self.actor_jetstream,
+        )
+        .await;
+    }
+}
+
+async fn purge_jetstream_subject_prefix(
+    js: &Option<async_nats::jetstream::Context>,
+    stream_name: &str,
+    subject_filter: &str,
+) {
+    let Some(js) = js else {
+        return;
+    };
+    let Ok(stream) = js.get_stream(stream_name).await else {
+        return;
+    };
+    if let Err(e) = stream.purge().filter(subject_filter.to_string()).await {
+        tracing::warn!(
+            error = %e,
+            stream = %stream_name,
+            filter = %subject_filter,
+            "test_seed: JetStream purge failed"
+        );
+    }
+}
+
+pub async fn teardown_test_mode_persistence(
+    pool: &DbPool,
+    settings: &Settings,
+    redis_conn: &SharedRedisConn,
+    wf_redis: &Option<SharedRedis>,
+    wq_redis: &Option<SharedRedis>,
+    actor_redis: &Option<SharedRedis>,
+    wf_jetstream: &Option<async_nats::jetstream::Context>,
+    wq_jetstream: &Option<async_nats::jetstream::Context>,
+    actor_jetstream: &Option<async_nats::jetstream::Context>,
+) {
+    tracing::info!("test_seed: test-mode persistence teardown (Redis, JetStream, PG)");
+
+    let wf_stream = settings
+        .wf_nats_jetstream_stream
+        .as_deref()
+        .unwrap_or("WF_WAKE");
+    let actor_stream = settings
+        .actor_nats_jetstream_stream
+        .as_deref()
+        .unwrap_or(ACTOR_NATS_STREAM);
+
+    for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
+        let wf_filter = format!("wf.{pid}.>");
+        purge_jetstream_subject_prefix(wf_jetstream, wf_stream, &wf_filter).await;
+        let wq_filter = format!("wq.{pid}.>");
+        purge_jetstream_subject_prefix(wq_jetstream, WQ_NATS_WORK_STREAM, &wq_filter).await;
+        let actor_filter = format!("actor.{pid}.>");
+        purge_jetstream_subject_prefix(actor_jetstream, actor_stream, &actor_filter).await;
+    }
+
+    if let Err(e) = clear_test_actor_redis(actor_redis).await {
+        tracing::warn!(error = %e, "test_seed: actor Redis teardown failed");
+    }
+    if let Err(e) = clear_test_workflow_redis(wf_redis).await {
+        tracing::warn!(error = %e, "test_seed: workflow Redis teardown failed");
+    }
+    if let Err(e) = clear_test_queue_worker_redis(wq_redis).await {
+        tracing::warn!(error = %e, "test_seed: queue-worker Redis teardown failed");
+    }
+    if let Err(e) = clear_test_project_runtime_redis_cache(redis_conn).await {
+        tracing::warn!(
+            error = %e,
+            "test_seed: project-runtime Redis cache teardown failed"
+        );
+    }
+
+    teardown_actor_test_pg(settings);
+    teardown_test_entities(pool);
 }
 
 pub fn print_trigger_urls(settings: &Settings) {
