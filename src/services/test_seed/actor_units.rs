@@ -33,6 +33,7 @@ fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
         unit_type: unit_type.into(),
         full_id: format!("test.actor-tests.{unit_type}.{unit_name_slug}.1"),
         compiled_code,
+        seed_source: format!("TEST_ACTOR_DIR/{rel_path}"),
         runtime_target,
     })
 }

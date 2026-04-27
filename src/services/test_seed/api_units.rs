@@ -3,7 +3,7 @@
 use super::{RuntimeTarget, UnitSpec};
 use crate::configs::Settings;
 
-pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
+pub(super) fn spec_for_label(label: &str, seed_source: String, compiled_code: String) -> UnitSpec {
     match label {
         "runtime-check" => UnitSpec {
             context_slug: "test".into(),
@@ -12,6 +12,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.runtime.api.check.1".into(),
             compiled_code,
+            seed_source,
             runtime_target: RuntimeTarget::All,
         },
         "workflow-tests" => UnitSpec {
@@ -21,6 +22,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.wf.api.test.1".into(),
             compiled_code,
+            seed_source,
             runtime_target: RuntimeTarget::All,
         },
         "queue-worker-tests" => UnitSpec {
@@ -30,6 +32,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.queue-worker-tests.api.index.1".into(),
             compiled_code,
+            seed_source,
             runtime_target: RuntimeTarget::All,
         },
         "actor-tests" => UnitSpec {
@@ -39,6 +42,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: "test.actor-tests.api.index.1".into(),
             compiled_code,
+            seed_source,
             runtime_target: RuntimeTarget::All,
         },
         other => UnitSpec {
@@ -48,6 +52,7 @@ pub(super) fn spec_for_label(label: &str, compiled_code: String) -> UnitSpec {
             unit_type: "api".into(),
             full_id: format!("test.{m}.api.{m}.1", m = other.replace('-', "_")),
             compiled_code,
+            seed_source,
             runtime_target: RuntimeTarget::All,
         },
     }
@@ -63,7 +68,8 @@ pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
                 continue;
             }
         };
-        out.push(spec_for_label(&tuf.label, code));
+        let seed_source = format!("TEST_UNIT_FILES label={} path={}", tuf.label, tuf.path);
+        out.push(spec_for_label(&tuf.label, seed_source, code));
     }
     out
 }

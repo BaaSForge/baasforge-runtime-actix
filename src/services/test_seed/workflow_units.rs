@@ -14,6 +14,7 @@ fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
         unit_type: "workflow".into(),
         full_id: format!("test.wf.workflow.{unit_name_slug}.1"),
         compiled_code,
+        seed_source: format!("TEST_WORKFLOW_DIR/{rel_path}"),
         runtime_target,
     })
 }
@@ -38,6 +39,9 @@ pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
 
     let mut out = Vec::new();
     for (rel_path, code) in files {
+        if rel_path.starts_with("seed-actors/") || rel_path.starts_with("seed-queue-workers/") {
+            continue;
+        }
         if let Some(spec) = spec_from_path(&rel_path, code) {
             out.push(spec);
         } else if let Some(stem) = Path::new(&rel_path).file_stem().and_then(|s| s.to_str()) {

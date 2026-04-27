@@ -14,6 +14,7 @@ fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
         unit_type: "queue_worker".into(),
         full_id: format!("test.queue-worker.queue_worker.{unit_name_slug}.1"),
         compiled_code,
+        seed_source: format!("TEST_QUEUE_WORKER_DIR/{rel_path}"),
         runtime_target,
     })
 }
@@ -38,6 +39,9 @@ pub(super) fn collect(settings: &Settings) -> Vec<UnitSpec> {
 
     let mut out = Vec::new();
     for (rel_path, code) in files {
+        if rel_path.starts_with("seed/workflows/") || rel_path.starts_with("seed/actors/") {
+            continue;
+        }
         match spec_from_path(&rel_path, code) {
             Some(spec) => out.push(spec),
             None => tracing::warn!(

@@ -24,6 +24,7 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::Text;
 use redis::AsyncCommands;
+use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -45,7 +46,7 @@ pub(crate) const TEST_STAGE_B_RUNTIME_ID: &str = "00000000-aaaa-bbbb-cccc-000000
 pub(crate) const TEST_STAGE_B_RELEASE_ID: &str = "00000000-aaaa-bbbb-cccc-000000000033";
 pub(crate) const TEST_STAGE_B_CHAT_SESSION_ID: &str = "00000000-aaaa-bbbb-cccc-000000000043";
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) enum RuntimeTarget {
     All,
     StageAOnly,
@@ -60,7 +61,36 @@ pub(crate) struct UnitSpec {
     pub unit_type: String,
     pub full_id: String,
     pub compiled_code: String,
+    pub seed_source: String,
     pub(super) runtime_target: RuntimeTarget,
+}
+
+fn assert_unique_discovered_full_ids(units: &[UnitSpec]) {
+    let mut by_key: HashMap<(&str, RuntimeTarget), Vec<&str>> = HashMap::new();
+    for u in units {
+        by_key
+            .entry((u.full_id.as_str(), u.runtime_target))
+            .or_default()
+            .push(u.seed_source.as_str());
+    }
+    let mut dupes: Vec<_> = by_key
+        .into_iter()
+        .filter(|(_, paths)| paths.len() > 1)
+        .collect();
+    if dupes.is_empty() {
+        return;
+    }
+    dupes.sort_by(|a, b| a.0.cmp(&b.0));
+    let msg = dupes
+        .iter()
+        .map(|((id, rt), paths)| {
+            format!("({id}, {rt:?}) ← {}", paths.join(" | "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    panic!(
+        "test_seed: duplicate (full_id, runtime_target) from discovery — same basename maps twice for the same runtime slot. {msg}"
+    );
 }
 
 pub(super) fn discover_unit_js_files(dir: &Path, sorted: bool) -> Vec<(String, String)> {
@@ -134,6 +164,8 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     discovered_units.extend(workflow_units::collect(settings));
     discovered_units.extend(queue_worker_units::collect(settings));
     discovered_units.extend(actor_units::collect());
+
+    assert_unique_discovered_full_ids(&discovered_units);
 
     let mut all_units: Vec<UnitSpec> = Vec::new();
     let mut stage_a_overrides: Vec<UnitSpec> = Vec::new();
@@ -754,7 +786,7 @@ pub fn print_trigger_urls(settings: &Settings) {
     let base_wf = format!("http://127.0.0.1:{port}/api/v1/trigger/wf/{TEST_PROJECT_ID}");
 
     for tuf in &settings.test_unit_files {
-        let spec = api_units::spec_for_label(&tuf.label, String::new());
+        let spec = api_units::spec_for_label(&tuf.label, String::new(), String::new());
         let path = unit_path_from_full_id(&spec.full_id);
         let parts: Vec<&str> = path.split('.').collect();
         if parts.len() == 4 {
