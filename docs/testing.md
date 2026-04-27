@@ -12,6 +12,17 @@
 ./units/workflow-tests/test.sh
 ```
 
+Similar entrypoints:
+
+- `./units/actor-tests/test.sh` — actor SDK + API runner
+- `./units/queue-worker-tests/test.sh` — queue worker SDK + API runner
+
+## `units/*` integration layout (isolation)
+
+The three trees **`units/actor-tests`**, **`units/workflow-tests`**, and **`units/queue-worker-tests`** are **self-contained**: their `test.sh` scripts do not compile or seed from a sibling `units/` folder. Homonymous-path and cross-type checks still use the same runtime unit paths (`test.actor-tests.*`, `test.wf.*`, `test.queue-worker.*`) where the product expects them.
+
+If you add a test that needs another unit type, **copy the minimal unit source into that suite’s tree** (or add a small new file there) and wire it through the same env dirs—do not point `test.sh` at `../other-suite/dist`.
+
 ## How consumers run during tests
 
 In `TEST_MODE`, the HTTP server **spawns all three consumers in-process**:
