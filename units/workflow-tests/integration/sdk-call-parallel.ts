@@ -1,3 +1,13 @@
+/**
+ * @skipped WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers making multiple `sdk.callWorkflowAndWaitForOutputSync` calls
+ * in one workflow (parallel pattern — both calls are issued before either result is consumed),
+ * showing that SDK calls are synchronous-style and can be fanned out without explicit awaiting
+ * between them.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = void;

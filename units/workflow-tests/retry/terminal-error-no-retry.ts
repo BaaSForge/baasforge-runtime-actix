@@ -1,19 +1,27 @@
+/**
+ * @active WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers `ctx.TerminalError` to throw a non-retriable error from inside
+ * a step, catching it with `instanceof ctx.TerminalError` in the workflow body, and verifying
+ * that no additional retries occur even when `retryPolicy.maxAttempts` is large.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = Record<string, never>;
 
 export type Output = {
-  /** Should stay 1 if TerminalError prevented step retries */
+  /** stays 1 as TerminalError prevents step retries */
   terminalInvocations: number;
 };
 
-// NOTE(ctx-set-in-failing-step): The invocation counter is incremented via ctx.set
-// inside a step closure that always throws TerminalError. This test is valid only if
-// ctx.set writes persist even when the enclosing step closure throws. If writes are
-// rolled back on failure the counter reads 0 after the catch, making the check
-// `terminalInvocations: 1` fail — masking rather than catching a retry bug.
-// Additionally, if TerminalError does NOT suppress retries, each retry increments
-// the counter, so a value > 1 would correctly indicate the bug.
+// ctx.set writes inside a step closure that throws TerminalError are still persisted —
+// the same durable-write semantics apply regardless of the error type.
+// TerminalError signals that the step should not be retried at all; the runtime
+// propagates it immediately as a rejected promise without scheduling any further attempts.
+// The invocation counter therefore equals exactly 1 after the catch: incremented once,
+// never incremented again because no retry runs.
 export default workflow(async (ctx, _input: Input): Promise<Output> => {
   void sdk;
 

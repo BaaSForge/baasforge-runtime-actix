@@ -1,3 +1,12 @@
+/**
+ * @active WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers the `retryPolicy` option on `ctx.run` (`maxAttempts`,
+ * `initialInterval`, `backoffFactor`, `maxInterval`), and reading/writing `ctx.get`/`ctx.set`
+ * state inside a failing step closure to track attempt counts across retries.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = Record<string, never>;
@@ -7,16 +16,12 @@ export type Output = {
   attempts: number;
 };
 
-// NOTE(ctx-set-in-failing-step): Same assumption as default-retry — ctx.set inside a
-// throwing step closure must persist across retries for the attempt counter to reach 5.
-// If state writes are transactional with step success the counter stays at 0 on every
-// retry and the step never succeeds.
-//
-// NOTE(backoff-timing): The harness caps its inter-retry wait at 500 ms
-// (`Math.min(delayMs + 100, 500)`). With backoffFactor=3 and initialInterval=50 ms,
-// the 4th retry delay is 1 350 ms, so the harness polls early for that iteration.
-// This is harmless — the 100-iteration poll loop provides enough total budget —
-// but it means the harness is not accurately mirroring the declared backoff.
+// ctx.set inside a throwing step closure still persists across retries.
+// The step reads the previous attempt count via ctx.get, increments it, writes it back
+// with ctx.set, then throws — and on the next retry the incremented value is visible.
+// This means state written inside a failing step is NOT rolled back on error; it is
+// durable regardless of whether the step succeeded. The loop therefore reaches attempt 5
+// and returns successfully.
 export default workflow(async (ctx, _input: Input): Promise<Output> => {
   void sdk;
 

@@ -1,3 +1,12 @@
+/**
+ * @active WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers the compensation (saga-undo) pattern — registering undo
+ * `ctx.run` closures as forward steps succeed, then executing them in reverse order inside
+ * a `ctx.TerminalError` catch block
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = Record<string, never>;

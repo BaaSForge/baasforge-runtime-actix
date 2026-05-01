@@ -1,3 +1,11 @@
+/**
+ * @active WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers parallel `ctx.run` steps scheduled via `Promise.all`, showing
+ * that multiple durable steps can be fanned out in a single await.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = Record<string, never>;

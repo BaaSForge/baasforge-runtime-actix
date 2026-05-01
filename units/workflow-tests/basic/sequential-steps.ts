@@ -1,3 +1,12 @@
+/**
+ * @active WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers basic `workflow<Input, Output>(async (ctx, input) => {...})` function
+ * form, typed Input/Output exports, sequential `ctx.run` steps where each step consumes the
+ * previous result.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = { seed: number };

@@ -1,3 +1,12 @@
+/**
+ * @active WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers creating multiple independent named `ctx.promise<T>` handles,
+ * resolving them with `.resolve()` before calling `.get()` (pre-resolve pattern), and
+ * consuming resolved values.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = void;

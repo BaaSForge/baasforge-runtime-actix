@@ -1,12 +1,16 @@
+/**
+ * @active WORKFLOW LLM PROMPT EXAMPLE
+ *
+ * @covers `sdk.callWorkflowAndWaitForOutputSync<Input, Output>({ unitPath, input })`
+ * to durably call another workflow unit and block until it returns a result.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = void;
 export type Output = { called: true; doubled: number };
 
-/**
- * Caller workflow: invokes sdk-call-callee and returns its result.
- * Happy-path test for durable callWorkflowAndWaitForOutputSync suspension.
- */
 export default workflow<Input, Output>(async (ctx) => {
   void ctx;
   const result = sdk.callWorkflowAndWaitForOutputSync<{ n: number }, { doubled: number }>({
