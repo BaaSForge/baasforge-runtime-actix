@@ -749,6 +749,40 @@ function allTests(): ApiTestDef[] {
           throw new Error(`expected null echoed, got ${JSON.stringify(echoed)}`);
       },
     },
+    {
+      name: "call-workflow-handler-echo-then-finish",
+      category: "sdk-cross-unit",
+      run: async (baseUrl) => {
+        const msg = `handler-api-${runTag}`;
+        const resp = await httpPost(apiUrl(baseUrl, "call-workflow-handler"), { msg });
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        const body = resp.body as Record<string, unknown>;
+        if (typeof body["instanceId"] !== "string" || String(body["instanceId"]).length === 0)
+          throw new Error(`expected instanceId, got ${JSON.stringify(body["instanceId"])}`);
+        const echo = body["handlerEcho"] as Record<string, unknown> | undefined;
+        if (echo?.["echoed"] !== msg)
+          throw new Error(`handler echo mismatch: ${JSON.stringify(echo)}`);
+        const fin = body["handlerFinish"] as Record<string, unknown> | undefined;
+        if (fin?.["closed"] !== true)
+          throw new Error(`finish handler mismatch: ${JSON.stringify(fin)}`);
+      },
+    },
+    {
+      name: "call-workflow-handler-from-stage-a",
+      category: "sdk-cross-unit",
+      run: async (baseUrl) => {
+        const resp = await httpPost(
+          apiStageUrl(baseUrl, "call-workflow-handler", STAGE_RUNTIME_ID),
+          { msg: "stage-a-handler" },
+        );
+        if (resp.status !== 200)
+          throw new Error(`expected 200 from stage-a, got ${resp.status}`);
+        const echo = (resp.body as Record<string, unknown>)["handlerEcho"] as Record<string, unknown> | undefined;
+        if (echo?.["echoed"] !== "stage-a-handler")
+          throw new Error(`stage-a handler echo wrong: ${JSON.stringify(echo)}`);
+      },
+    },
 
     // ── sdk-cross-unit: stage runtime scoping for SDK calls ──────────────────
     // Ensures that SDK calls issued from a stage runtime are routed within

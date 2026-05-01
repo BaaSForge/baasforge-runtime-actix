@@ -38,6 +38,7 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         actorId,
         handler: "increment",
         payload: { by },
+        opts: { timeoutMs: 30_000 },
       });
     } else {
       // "get" and "reset" take no meaningful payload
@@ -46,6 +47,7 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
         actorId,
         handler,
         payload: {},
+        opts: { timeoutMs: 30_000 },
       });
     }
 

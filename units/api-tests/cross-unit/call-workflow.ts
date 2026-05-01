@@ -32,6 +32,7 @@ export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const output = sdk.callWorkflowAndWaitForOutputSync<{ value: unknown }, { echoed: unknown }>({
       unitPath: "test.wf.workflow.wf-echo",
       input: { value: body.value ?? null },
+      opts: { timeoutMs: 120_000 },
     });
 
     res.writeHead(200, { "Content-Type": "application/json" });
