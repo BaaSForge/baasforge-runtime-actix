@@ -83,6 +83,21 @@ async function httpGet(url: string, headers?: Record<string, string>): Promise<{
   return { status: resp.status, body: parsed };
 }
 
+async function httpSend(
+  method: string,
+  url: string,
+  init?: { headers?: Record<string, string>; body?: string },
+): Promise<{ status: number; body: unknown; text: string; headers: Headers }> {
+  const reqInit: RequestInit = { method };
+  if (init?.headers !== undefined) reqInit.headers = init.headers;
+  if (init?.body !== undefined) reqInit.body = init.body;
+  const resp = await fetch(url, reqInit);
+  const responseText = await resp.text();
+  let parsed: unknown;
+  try { parsed = JSON.parse(responseText); } catch { parsed = responseText; }
+  return { status: resp.status, body: parsed, text: responseText, headers: resp.headers };
+}
+
 const PLATFORM_DEFAULT_TIMEOUT_TEST_GRACE_MS = 35_000;
 
 /** Hanging unit must be cut off by ~30 s default; allow `graceMs` (prod e2e). */
@@ -272,6 +287,102 @@ function allTests(): ApiTestDef[] {
           throw new Error(`expected object, got ${JSON.stringify(params)}`);
         if (Object.keys(params).length !== 0)
           throw new Error(`expected empty params, got ${JSON.stringify(params)}`);
+      },
+    },
+
+    // ── methods: HTTP verbs, non-JSON body, attachment-style GET ─────────────
+    {
+      name: "post-method-unit-returns-post",
+      category: "methods",
+      run: async (baseUrl) => {
+        const resp = await httpSend("POST", apiUrl(baseUrl, "post-method"));
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if ((resp.body as Record<string, unknown>)["method"] !== "POST")
+          throw new Error(`expected POST, got ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "put-to-echo-returns-put",
+      category: "methods",
+      run: async (baseUrl) => {
+        const resp = await httpSend("PUT", apiUrl(baseUrl, "echo"), {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ verb: "put" }),
+        });
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if ((resp.body as Record<string, unknown>)["method"] !== "PUT")
+          throw new Error(`expected PUT, got ${JSON.stringify(resp.body)}`);
+        const echoed = (resp.body as Record<string, unknown>)["echoed"] as Record<string, unknown> | undefined;
+        if (echoed?.["verb"] !== "put")
+          throw new Error(`echo body wrong: ${JSON.stringify(echoed)}`);
+      },
+    },
+    {
+      name: "patch-to-echo-returns-patch",
+      category: "methods",
+      run: async (baseUrl) => {
+        const resp = await httpSend("PATCH", apiUrl(baseUrl, "echo"), {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ n: 2 }),
+        });
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if ((resp.body as Record<string, unknown>)["method"] !== "PATCH")
+          throw new Error(`expected PATCH, got ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "delete-to-echo-returns-delete",
+      category: "methods",
+      run: async (baseUrl) => {
+        const resp = await httpSend("DELETE", apiUrl(baseUrl, "echo"), {
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mark: "del" }),
+        });
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        if ((resp.body as Record<string, unknown>)["method"] !== "DELETE")
+          throw new Error(`expected DELETE, got ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "text-plain-upload-roundtrips-utf8",
+      category: "methods",
+      run: async (baseUrl) => {
+        const upload = "plain\nlines\n世界";
+        const resp = await httpSend("POST", apiUrl(baseUrl, "text-body-echo"), {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+          body: upload,
+        });
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        const b = resp.body as Record<string, unknown>;
+        if (b["body"] !== upload)
+          throw new Error(`body mismatch: ${JSON.stringify(b["body"])}`);
+        if (typeof b["contentType"] !== "string" || !b["contentType"].includes("text/plain"))
+          throw new Error(`content-type not echoed: ${String(b["contentType"])}`);
+        if (b["length"] !== upload.length)
+          throw new Error(`length field wrong: ${String(b["length"])} vs ${upload.length}`);
+      },
+    },
+    {
+      name: "attachment-download-disposition-and-text-payload",
+      category: "methods",
+      run: async (baseUrl) => {
+        const resp = await fetch(apiUrl(baseUrl, "attachment-download"));
+        if (resp.status !== 200)
+          throw new Error(`expected 200, got ${resp.status}`);
+        const cd = resp.headers.get("content-disposition") ?? "";
+        if (!cd.toLowerCase().includes("attachment"))
+          throw new Error(`expected attachment Content-Disposition, got "${cd}"`);
+        const payload = await resp.text();
+        if (!payload.includes("alpha") || !payload.includes("gamma"))
+          throw new Error(`unexpected payload: ${JSON.stringify(payload)}`);
+        const meta = resp.headers.get("x-test-download-meta");
+        if (meta === null || !meta.includes("sample-lines"))
+          throw new Error(`missing download meta header`);
       },
     },
 
