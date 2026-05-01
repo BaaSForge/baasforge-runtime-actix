@@ -1,3 +1,11 @@
+/**
+ * @active QUEUE WORKER LLM PROMPT EXAMPLE
+ *
+ * @covers `ctx.id` (run id), `ctx.attempt` (1-based), and `ctx.enqueuedAt` (enqueue ms) on the
+ * handler context.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { queueWorker, sdk } from "@sdk";
 
 export type Input = Record<string, never>;

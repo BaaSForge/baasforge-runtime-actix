@@ -1,3 +1,11 @@
+/**
+ * @active QUEUE WORKER LLM PROMPT EXAMPLE
+ *
+ * @covers `metadata.retry` and `metadata.deadLetter`, throwing a retriable `Error` from
+ * `process` until attempts are exhausted, then `onDeadLetter` after DLQ is enabled.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { queueWorker, sdk } from "@sdk";
 
 export type Input = Record<string, never>;

@@ -1,3 +1,11 @@
+/**
+ * @active QUEUE WORKER LLM PROMPT EXAMPLE
+ *
+ * @covers `new ctx.TerminalError(...)` to skip retries and reach `onDeadLetter` when dead-letter
+ * is enabled.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { queueWorker, sdk } from "@sdk";
 
 export type Input = Record<string, never>;

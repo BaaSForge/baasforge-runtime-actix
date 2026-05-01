@@ -1,3 +1,12 @@
+/**
+ * @skipped QUEUE WORKER LLM PROMPT EXAMPLE
+ *
+ * @covers inbound workflow → queue worker: `enqueueWorkerSync` inside `ctx.run` (durable
+ * side-effect placement). The suite entry is skipped until workflow-to-worker enqueue is wired
+ * end-to-end.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { workflow, sdk } from "@sdk";
 
 export type Input = { data: any };

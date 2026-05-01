@@ -1,3 +1,11 @@
+/**
+ * @active QUEUE WORKER LLM PROMPT EXAMPLE
+ *
+ * @covers outbound synchronous SDK from a worker: `callWorkflowAndWaitForOutputSync` plus
+ * `enqueueWorkerSync` to chain another queue worker in one job.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { queueWorker, sdk } from "@sdk";
 
 export type Input = { marker: string };

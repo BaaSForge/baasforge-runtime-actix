@@ -1,3 +1,12 @@
+/**
+ * @active QUEUE WORKER LLM PROMPT EXAMPLE
+ *
+ * @covers worker → actor: `callActorAndWaitForResultSync` with `ActorInstanceId` casts,
+ * multiple handlers on one instance (write/read/probe), and shaping the worker return from actor
+ * results.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { queueWorker, sdk, type ActorInstanceId } from "@sdk";
 
 const ACTOR_PATH = "test.actor-tests.actor.http-same-unit-path-runtime-isolation";
