@@ -1,3 +1,11 @@
+/**
+ * @active ACTOR LLM PROMPT EXAMPLE
+ *
+ * @covers outbound `sdk.enqueueWorkerSync` from an actor handler (`unitPath`, `data`) and
+ * storing the returned `runId` on `ctx.state`.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { actor, sdk } from "@sdk";
 
 export type State = { enqueuedRunId: string | null };

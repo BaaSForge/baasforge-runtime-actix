@@ -1,3 +1,11 @@
+/**
+ * @active ACTOR LLM PROMPT EXAMPLE
+ *
+ * @covers outbound `sdk.callActorAndWaitForResultSync` from one actor unit to another
+ * (`unitPath`, `actorId as ActorInstanceId`, `handler`, typed `payload`).
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { actor, sdk, type ActorInstanceId } from "@sdk";
 
 // import type { ReceiveInput, ReceiveOutput } from "@units/test.actor-tests.actor.actor-calls-actor-child";

@@ -1,3 +1,12 @@
+/**
+ * @active ACTOR LLM PROMPT EXAMPLE
+ *
+ * @covers default `actor<State>({ state, handlers })` shape, exported `State` and per-handler
+ * `{Name}Input` / `{Name}Output` types, and mutating `ctx.state` across several handlers in one
+ * unit.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { actor } from "@sdk";
 
 export type Item = { id: string; price: number };

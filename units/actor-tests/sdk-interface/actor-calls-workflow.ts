@@ -1,3 +1,11 @@
+/**
+ * @active ACTOR LLM PROMPT EXAMPLE
+ *
+ * @covers outbound `sdk.callWorkflowAndWaitForOutputSync` from an actor handler (blocking
+ * synchronous SDK call) and persisting the workflow result on `ctx.state`.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { actor, sdk } from "@sdk";
 
 export type State = { workflowResult: number | null };

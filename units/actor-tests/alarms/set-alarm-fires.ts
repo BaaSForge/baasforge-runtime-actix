@@ -1,3 +1,11 @@
+/**
+ * @active ACTOR LLM PROMPT EXAMPLE
+ *
+ * @covers `ctx.setAlarm(name, at)` with an absolute `Date` deadline and `onAlarm(ctx, name)`
+ * mutating durable state when the alarm fires.
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import { actor } from "@sdk";
 
 export type State = { alarmFired: boolean; scheduledAt: number | null };
