@@ -1,13 +1,16 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers Typed `QueryParams`, building `URL` from `req.url`, iterating `searchParams`, GET handler with no body.
+ * 
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export type RequestBody = never;
 export type ResponseBody = { params: Record<string, string> };
 export type QueryParams = { [key: string]: string };
 
-/**
- * Parses and echoes all query parameters from the request URL.
- * Verifies that client-supplied query string values reach the unit intact.
- */
 export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const url = new URL(req.url ?? "/", "http://localhost");
   const params: Record<string, string> = {};

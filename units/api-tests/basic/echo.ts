@@ -1,3 +1,10 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers JSON POST body: `text` from `node:stream/consumers`, JSON.parse with fallback, typed `RequestBody`/`ResponseBody`, `void (async () => { ... })()` around async body read before `res.end`.
+ * 
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
 

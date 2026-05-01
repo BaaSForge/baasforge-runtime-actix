@@ -1,3 +1,10 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers Non-JSON request body (`text/plain`), `text(req)`, echoing content-type and length in JSON `ResponseBody`.
+ * 
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
 

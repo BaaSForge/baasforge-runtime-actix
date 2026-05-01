@@ -14,6 +14,17 @@
  *     --dir    "units/workflow-tests" \
  *     --output "src/libs/unit_js/unit_prompts/workflow.rs" \
  *     --var    "CODE_EXAMPLES"
+ *
+ * Files marked `@skipped <MARKER>` are excluded from discovery (not copied into
+ * the prompt). Put `@covers` and `@important` on contiguous lines without a
+ * blank line between them so the emitted JSDoc does not retain a bare ` *`
+ * line after `@important` is stripped.
+ *
+ * DO NOT add `@skipped <MARKER>` to file discovery (the `.filter` that builds
+ * `files`). Skipped examples may live next to active tests for humans or CI,
+ * but they must never be embedded in LLM prompt literals. Regression: discovery
+ * briefly OR'd `@skipped` and pulled skipped units into prompts — keep discovery
+ * strictly `@active` only.
  */
 
 "use strict";
@@ -45,7 +56,7 @@ function walkTs(dir) {
  * JSDoc lines so the output is tidy.
  *
  * Removed:
- *  - Lines that contain `@active <marker>` (the discovery marker itself)
+ *  - Lines that contain `@active <marker>` (the discovery marker)
  *  - Lines that match `* @important ...` (internal maintenance notes)
  *
  * Collapsed:
@@ -113,6 +124,8 @@ if (!marker || !dir || !output || !varName) {
 // ---------------------------------------------------------------------------
 // Discover files
 // ---------------------------------------------------------------------------
+// Discovery MUST stay `@active` only. Do not OR in `@skipped` here — skipped
+// examples are intentionally absent from prompt literals (see file header).
 
 const root = process.cwd();
 const absDir = path.join(root, dir);

@@ -1,3 +1,10 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers Non-JSON HTTP response: `writeHead` with `Content-Disposition` attachment, custom metadata header, plain text payload (download-style GET).
+ *
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 export type RequestBody = never;

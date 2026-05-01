@@ -1,3 +1,10 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers API → actor: `sdk.callActorAndWaitForResultSync` with typed payload/result, dynamic handler name, `ActorInstanceId`, and `opts.timeoutMs`.
+ * 
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
 import { sdk, type ActorInstanceId } from "@sdk";
@@ -6,16 +13,6 @@ export type RequestBody = { actorId?: string; handler?: "get" | "increment" | "r
 export type ResponseBody = { count: number };
 export type QueryParams = never;
 
-/**
- * Calls the companion `counter` actor via `sdk.callActorAndWaitForResultSync`.
- *
- * Request body:
- *   actorId  — actor instance id (default: "api-test-counter-default")
- *   handler  — "get" | "increment" | "reset" (default: "increment")
- *   by       — increment amount when handler="increment" (default: 1)
- *
- * Returns { count: number } — the counter value after the handler returns.
- */
 export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   void (async () => {
     const raw = await text(req);

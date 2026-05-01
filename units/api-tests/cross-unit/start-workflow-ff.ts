@@ -1,3 +1,10 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers API → workflow fire-and-forget: `sdk.startWorkflowSync` returning `instanceId` without blocking on workflow completion.
+ * 
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
 import { sdk } from "@sdk";
@@ -6,16 +13,6 @@ export type RequestBody = { value?: unknown };
 export type ResponseBody = { instanceId: string };
 export type QueryParams = never;
 
-/**
- * Starts the companion `echo` workflow fire-and-forget via
- * `sdk.startWorkflowSync`.
- *
- * Returns `{ instanceId }` immediately; the workflow runs in the background.
- * Use this to verify that `startWorkflowSync` is accepted without blocking.
- *
- * Request body:
- *   value — arbitrary payload forwarded to the workflow (default: null)
- */
 export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   void (async () => {
     const raw = await text(req);

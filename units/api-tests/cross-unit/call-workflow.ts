@@ -1,3 +1,10 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers API → workflow blocking: `sdk.callWorkflowAndWaitForOutputSync` with typed input/output and long `timeoutMs` for a workflow that finishes immediately.
+ * 
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
 import { sdk } from "@sdk";
@@ -6,19 +13,6 @@ export type RequestBody = { value?: unknown };
 export type ResponseBody = { echoed: unknown };
 export type QueryParams = never;
 
-/**
- * Calls the companion `echo` workflow and waits for its output via
- * `sdk.callWorkflowAndWaitForOutputSync`.
- *
- * The echo workflow immediately returns `{ echoed: input.value }` without
- * sleeping or waiting for signals, so this call is safe from an API unit
- * (no indefinite blocking).
- *
- * Request body:
- *   value — value to pass through the workflow (default: null)
- *
- * Returns `{ echoed: <value> }` — the workflow's output.
- */
 export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   void (async () => {
     const raw = await text(req);

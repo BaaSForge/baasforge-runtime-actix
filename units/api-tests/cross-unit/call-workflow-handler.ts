@@ -1,3 +1,10 @@
+/**
+ * @active API LLM PROMPT EXAMPLE
+ *
+ * @covers API → workflow shared handlers: `startWorkflowSync` then `callWorkflowHandlerAndWaitForResultSync` twice on the same `WorkflowInstanceId`.
+ * 
+ * @important Do not remove unless equivalent coverage is provided elsewhere in the prompt.
+ */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
 import { sdk, type WorkflowInstanceId } from "@sdk";
