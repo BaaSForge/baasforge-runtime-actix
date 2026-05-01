@@ -22,7 +22,7 @@ use crate::services::workflow_engine::SharedRedis;
 use diesel::delete;
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::Text;
+use diesel::sql_types::{Nullable, Text};
 use redis::AsyncCommands;
 use std::collections::HashMap;
 use std::path::Path;
@@ -63,6 +63,9 @@ pub(crate) struct UnitSpec {
     pub compiled_code: String,
     pub seed_source: String,
     pub(super) runtime_target: RuntimeTarget,
+    /// `project_units.metadata` JSONB (`None` for non-API seeds). API rows use
+    /// at least `"method"`; optional `"timeout_seconds"` caps handler execution (API).
+    pub metadata: Option<serde_json::Value>,
 }
 
 fn assert_unique_discovered_full_ids(units: &[UnitSpec]) {
@@ -296,15 +299,17 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
             "chatSessionId": TEST_ALT_CHAT_SESSION_ID,
         }));
 
+        let meta_json: Option<String> = spec.metadata.as_ref().map(|v| v.to_string());
         sql_query(
             "INSERT INTO project_units \
              (project_id, chat_session_id, id, revision, unit_type, \
               context_slug, module_slug, unit_name_slug, \
-              compiled_code, code, is_deleted) \
+              compiled_code, code, is_deleted, metadata) \
              VALUES ($1::uuid, $2::uuid, $3, 1, $4::project_unit_type, \
-                     $5, $6, $7, $8, $9, false) \
+                     $5, $6, $7, $8, $9, false, $10::jsonb) \
              ON CONFLICT (project_id, chat_session_id, id, revision) DO UPDATE \
-             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code",
+             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code, \
+                 metadata = EXCLUDED.metadata",
         )
         .bind::<Text, _>(TEST_PROJECT_ID)
         .bind::<Text, _>(TEST_CHAT_SESSION_ID)
@@ -315,6 +320,7 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
         .bind::<Text, _>(&spec.unit_name_slug)
         .bind::<Text, _>(&spec.compiled_code)
         .bind::<Text, _>(&spec.compiled_code)
+        .bind::<Nullable<Text>, _>(meta_json.as_deref())
         .execute(&mut conn)
         .unwrap_or_else(|e| panic!("test_seed: insert unit '{}': {e}", spec.full_id));
 
@@ -322,11 +328,12 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
             "INSERT INTO project_units \
              (project_id, chat_session_id, id, revision, unit_type, \
               context_slug, module_slug, unit_name_slug, \
-              compiled_code, code, is_deleted) \
+              compiled_code, code, is_deleted, metadata) \
              VALUES ($1::uuid, $2::uuid, $3, 1, $4::project_unit_type, \
-                     $5, $6, $7, $8, $9, false) \
+                     $5, $6, $7, $8, $9, false, $10::jsonb) \
              ON CONFLICT (project_id, chat_session_id, id, revision) DO UPDATE \
-             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code",
+             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code, \
+                 metadata = EXCLUDED.metadata",
         )
         .bind::<Text, _>(TEST_ALT_PROJECT_ID)
         .bind::<Text, _>(TEST_ALT_CHAT_SESSION_ID)
@@ -337,6 +344,7 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
         .bind::<Text, _>(&spec.unit_name_slug)
         .bind::<Text, _>(&spec.compiled_code)
         .bind::<Text, _>(&spec.compiled_code)
+        .bind::<Nullable<Text>, _>(meta_json.as_deref())
         .execute(&mut conn)
         .unwrap_or_else(|e| panic!("test_seed: insert alt unit '{}': {e}", spec.full_id));
     }
@@ -345,15 +353,17 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
             "unitId": spec.full_id,
             "chatSessionId": TEST_STAGE_CHAT_SESSION_ID,
         }));
+        let stage_meta_json = spec.metadata.as_ref().map(|v| v.to_string());
         sql_query(
             "INSERT INTO project_units \
              (project_id, chat_session_id, id, revision, unit_type, \
               context_slug, module_slug, unit_name_slug, \
-              compiled_code, code, is_deleted) \
+              compiled_code, code, is_deleted, metadata) \
              VALUES ($1::uuid, $2::uuid, $3, 1, $4::project_unit_type, \
-                     $5, $6, $7, $8, $9, false) \
+                     $5, $6, $7, $8, $9, false, $10::jsonb) \
              ON CONFLICT (project_id, chat_session_id, id, revision) DO UPDATE \
-             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code",
+             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code, \
+                 metadata = EXCLUDED.metadata",
         )
         .bind::<Text, _>(TEST_PROJECT_ID)
         .bind::<Text, _>(TEST_STAGE_CHAT_SESSION_ID)
@@ -364,6 +374,7 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
         .bind::<Text, _>(&spec.unit_name_slug)
         .bind::<Text, _>(&spec.compiled_code)
         .bind::<Text, _>(&spec.compiled_code)
+        .bind::<Nullable<Text>, _>(stage_meta_json.as_deref())
         .execute(&mut conn)
         .unwrap_or_else(|e| panic!("test_seed: insert stage unit '{}': {e}", spec.full_id));
     }
@@ -372,15 +383,17 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
             "unitId": spec.full_id,
             "chatSessionId": TEST_STAGE_B_CHAT_SESSION_ID,
         }));
+        let stage_b_meta_json = spec.metadata.as_ref().map(|v| v.to_string());
         sql_query(
             "INSERT INTO project_units \
              (project_id, chat_session_id, id, revision, unit_type, \
               context_slug, module_slug, unit_name_slug, \
-              compiled_code, code, is_deleted) \
+              compiled_code, code, is_deleted, metadata) \
              VALUES ($1::uuid, $2::uuid, $3, 1, $4::project_unit_type, \
-                     $5, $6, $7, $8, $9, false) \
+                     $5, $6, $7, $8, $9, false, $10::jsonb) \
              ON CONFLICT (project_id, chat_session_id, id, revision) DO UPDATE \
-             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code",
+             SET compiled_code = EXCLUDED.compiled_code, code = EXCLUDED.code, \
+                 metadata = EXCLUDED.metadata",
         )
         .bind::<Text, _>(TEST_PROJECT_ID)
         .bind::<Text, _>(TEST_STAGE_B_CHAT_SESSION_ID)
@@ -391,6 +404,7 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
         .bind::<Text, _>(&spec.unit_name_slug)
         .bind::<Text, _>(&spec.compiled_code)
         .bind::<Text, _>(&spec.compiled_code)
+        .bind::<Nullable<Text>, _>(stage_b_meta_json.as_deref())
         .execute(&mut conn)
         .unwrap_or_else(|e| panic!("test_seed: insert stage-b unit '{}': {e}", spec.full_id));
     }

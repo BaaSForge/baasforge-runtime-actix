@@ -121,4 +121,8 @@ pub struct ProjectUnitRow {
     /// *unit path* (four segments without revision), which APIs and release metadata use for lookup.
     pub id: String,
     pub revision: i32,
+    /// Per-unit configuration stored as JSONB. For API units the relevant
+    /// fields are `"method"` (informational) and `"timeout_seconds"` (max
+    /// handler wall time in seconds; absent or `0` means the platform default).
+    pub metadata: Option<serde_json::Value>,
 }

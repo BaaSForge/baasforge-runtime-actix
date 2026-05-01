@@ -35,6 +35,7 @@ fn spec_from_path(rel_path: &str, compiled_code: String) -> Option<UnitSpec> {
         compiled_code,
         seed_source: format!("TEST_ACTOR_DIR/{rel_path}"),
         runtime_target,
+        metadata: None,
     })
 }
 
