@@ -898,6 +898,38 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
     {
+      name: "stage-a-and-stage-b-pg-snapshots-isolated",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-ab-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "version-monotonic", id));
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "version-monotonic", id, STAGE_B_RUNTIME_ID));
+        await callActorStage(baseUrl, "version-monotonic", id, "increment");
+        await callActorStage(baseUrl, "version-monotonic", id, "increment");
+        await waitForPgVersion(baseUrl, "version-monotonic", id, 2, 4000, {
+          stageRuntimeId: STAGE_RUNTIME_ID,
+        });
+        await callActorStage(baseUrl, "version-monotonic", id, "increment", {}, STAGE_B_RUNTIME_ID);
+        await waitForPgVersion(baseUrl, "version-monotonic", id, 1, 4000, {
+          stageRuntimeId: STAGE_B_RUNTIME_ID,
+        });
+        const prodPg = await snapshotPg(baseUrl, "version-monotonic", id);
+        if (prodPg.found)
+          throw new Error("prod actor_snapshots row must not exist when only stage runtimes wrote");
+        const pgA = await snapshotPg(baseUrl, "version-monotonic", id, {
+          stageRuntimeId: STAGE_RUNTIME_ID,
+        });
+        const pgB = await snapshotPg(baseUrl, "version-monotonic", id, {
+          stageRuntimeId: STAGE_B_RUNTIME_ID,
+        });
+        if (!pgA.found || pgA.state?.count !== 2 || pgA.version !== 2)
+          throw new Error(`stage-a PG expected count=2 v=2, got ${JSON.stringify(pgA)}`);
+        if (!pgB.found || pgB.state?.count !== 1 || pgB.version !== 1)
+          throw new Error(`stage-b PG expected count=1 v=1, got ${JSON.stringify(pgB)}`);
+      },
+    },
+    {
       name: "throw-does-not-advance-pg-snapshot",
       category: "snapshot-pg",
       run: async (baseUrl) => {
