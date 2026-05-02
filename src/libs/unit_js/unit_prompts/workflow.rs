@@ -20,10 +20,6 @@ A workflow unit must have a default export produced by the `workflow()` function
 side effects and I/O must be inside `ctx.run()` steps. Code outside steps re-executes on
 every replay.
 
-`ctx` inside `run` — SYNCHRONOUS unless noted:
-- ctx.key: WorkflowInstanceId (from `@sdk`) — the workflow instance ID
-- ctx.TerminalError — throw to permanently fail the workflow without retry
-
 ctx.run(name, fn, opts?) — durable step. RETURNS A PROMISE; use `await ctx.run(...)`.
   - fn executes exactly once; on replay, returns the cached result without calling fn again
   - name must be unique across all steps in this workflow instance
@@ -84,12 +80,13 @@ CRITICAL rules:
 RetryPolicy: { maxAttempts?, initialInterval?: Duration, backoffFactor?, maxInterval?: Duration }
 Duration: { milliseconds?, seconds?, minutes?, hours?, days? }
 
-Exported types (MANDATORY — used for automatic documentation generation and cross-unit type safety):
+Exports (MANDATORY — used for automatic documentation generation and cross-unit type safety):
 
 - export type Input = { ... }               — the workflow start payload (REQUIRED)
 - export type Output = { ... }              — the workflow completion result (REQUIRED)
 - export type {HandlerName}Input = { ... }  — input type of each shared handler that takes input
 - export type {HandlerName}Output = { ... } — return type of each shared handler that returns a value (REQUIRED per handler)
+- export default workflow(...)              — the workflow definition (REQUIRED)
 
 Naming convention: PascalCase handler name + "Input" / "Output" suffix.
 Example: handler "approve" → ApproveInput, ApproveOutput.
@@ -552,7 +549,7 @@ export default workflow(async (ctx) => {
 pub const COMMUNICATION: &str = r#"
 Inbound — another unit can interact with this workflow in two ways. All sdk.* calls are
 synchronous; do NOT write `await` in front of them. Each call takes one object argument
-(`{ unitPath, input }`, `{ unitPath, instanceId, handler, input?, opts? }`, …) per `@sdk.d.ts`.
+(`{ unitPath, input }`, `{ unitPath, instanceId, handler, input?, opts? }`, …) per `@sdk`.
 `unitPath` is `WorkflowUnitPathOrId` (four segments, third is `workflow`); `instanceId`
 is `WorkflowInstanceId` (use `as WorkflowInstanceId` when the value is a plain `string`).
 
