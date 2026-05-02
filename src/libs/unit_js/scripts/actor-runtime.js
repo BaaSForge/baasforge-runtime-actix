@@ -148,12 +148,15 @@ globalThis.__baal_actor_result = (async function () {
     });
   } catch (err) {
     var isTerminal = err && err.__isTerminal === true;
-    return JSON.stringify({
+    var errBody = {
       ok: false,
       terminal: isTerminal,
       error: (err && err.message) ? err.message : String(err),
-      state: JSON.stringify(__currentState),
       state_touched: false,
-    });
+    };
+    if (isTerminal) {
+      errBody.state = JSON.stringify(__currentState);
+    }
+    return JSON.stringify(errBody);
   }
 })();

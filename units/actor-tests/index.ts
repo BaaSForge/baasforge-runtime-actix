@@ -14,6 +14,7 @@
  * │ Exactly-once state apply         │ durability/redelivery-after-nak, concurrency/duplicate-dispatch-*     │
  * │ Sequential ordering per actor    │ sequential-delivery/in-order-messages, no-interleaving               │
  * │ State durability: throw          │ durability/no-commit-on-handler-throw                                 │
+ * │ Retry uses stored pre-handler    │ retry-and-dlq/pre-handler-state-on-retry                              │
  * │ State durability: timeout        │ durability/no-commit-on-timeout, timeouts/timeout-no-state-commit     │
  * │ State durability: pod kill       │ durability/no-commit-on-pod-kill-mid-run, crash-recovery/*            │
  * │ State durability: redis loss     │ state-persistence/survive-redis-flush, crash-recovery/*               │
@@ -21,7 +22,7 @@
  * │ Project / unit / instance iso.   │ isolation/*                                                           │
  * │ Alarm semantics                  │ alarms/*                                                              │
  * │ Metadata enforcement             │ metadata-enforcement/*                                                │
- * │ SDK reachability from all types  │ cross-unit/*, sdk-interface/*                                         │
+ * │ SDK reachability from all types  │ cross-unit/*, sdk-interface/* (`sendActorMessageSync` parent)        │
  * │ HTTP contract correctness        │ endpoints/* (inline)                                                  │
  * │ Project-id scoping invariants    │ sharding-seam/*                                                       │
  * │ Lifecycle events                 │ ws-tests.mjs, lifecycle/*                                             │
@@ -886,7 +887,7 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
 
-    // ---- retry-and-dlq (6) ----
+    // ---- retry-and-dlq (7) ----
     {
       name: "retry-transient-error",
       category: "retry-and-dlq",
@@ -905,14 +906,31 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `retry-backoff-${uid()}`;
         await deleteActor(baseUrl, "backoff-intervals", id);
+        const t0 = Date.now();
         await callActor(baseUrl, "backoff-intervals", id, "failThenSucceed");
-        const state = await getState(baseUrl, "backoff-intervals", id);
-        const timestamps: number[] = state?.state?.timestamps ?? [];
-        if (timestamps.length < 2)
-          throw new Error(`expected >= 2 attempt timestamps, got ${timestamps.length}`);
-        const gap = timestamps[1]! - timestamps[0]!;
-        if (gap < 500)
-          throw new Error(`backoff interval too short: ${gap}ms`);
+        const elapsed = Date.now() - t0;
+        if (elapsed < 1300)
+          throw new Error(
+            `expected ~500ms+1000ms backoff between 3 attempts, wall clock too short: ${elapsed}ms`,
+          );
+      },
+    },
+    {
+      name: "pre-handler-state-on-retry",
+      category: "retry-and-dlq",
+      run: async (baseUrl) => {
+        const id = `retry-prehandler-${uid()}`;
+        await deleteActor(baseUrl, "pre-handler-state-on-retry", id);
+        const result = await callActor(baseUrl, "pre-handler-state-on-retry", id, "succeedOnThird");
+        const body = result?.result ?? result;
+        const lastAttempt = body?.lastAttempt;
+        if (lastAttempt !== 3)
+          throw new Error(`expected lastAttempt 3 after retries, got ${JSON.stringify(body)}`);
+        const state = await getState(baseUrl, "pre-handler-state-on-retry", id);
+        if ((state?.state?.bumpCount ?? -1) !== 1)
+          throw new Error(
+            `each retry should reset ctx.state to stored snapshot (bumpCount 1), got ${JSON.stringify(state?.state)}`,
+          );
       },
     },
     {
@@ -2065,7 +2083,7 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (_baseUrl) => {},
     },
 
-    // ---- sdk-interface (5) ----
+    // ---- sdk-interface (8) ----
     {
       name: "actor-calls-workflow",
       category: "sdk-interface",
@@ -2104,6 +2122,35 @@ function allInlineTests(): ActorInlineTestDef[] {
         const childState = await getState(baseUrl, "actor-calls-actor-child", childId);
         if (childState?.state?.receivedValue !== 7)
           throw new Error(`child actor did not receive value: ${JSON.stringify(childState?.state)}`);
+      },
+    },
+    {
+      name: "actor-send-actor-message-sync",
+      category: "sdk-interface",
+      run: async (baseUrl) => {
+        const parentId = `sdk-send-async-parent-${uid()}`;
+        const childId = `sdk-send-async-child-${uid()}`;
+        await Promise.all([
+          deleteActor(baseUrl, "send-actor-message-sync-parent", parentId),
+          deleteActor(baseUrl, "actor-calls-actor-child", childId),
+        ]);
+        const result = await callActor(baseUrl, "send-actor-message-sync-parent", parentId, "sendChild", {
+          childId,
+          value: 19,
+        });
+        const body = result?.result ?? result;
+        if (body?.delivered !== true)
+          throw new Error(`expected sdk.sendActorMessageSync { delivered: true }, got ${JSON.stringify(body)}`);
+        const parentState = await getState(baseUrl, "send-actor-message-sync-parent", parentId);
+        if (parentState?.state?.sent !== true)
+          throw new Error(`parent should commit after sync ack: ${JSON.stringify(parentState?.state)}`);
+        for (let i = 0; i < 40; i++) {
+          const childState = await getState(baseUrl, "actor-calls-actor-child", childId);
+          if (childState?.state?.receivedValue === 19) return;
+          await sleep(100);
+        }
+        const final = await getState(baseUrl, "actor-calls-actor-child", childId);
+        throw new Error(`child did not process async message: ${JSON.stringify(final?.state)}`);
       },
     },
     {

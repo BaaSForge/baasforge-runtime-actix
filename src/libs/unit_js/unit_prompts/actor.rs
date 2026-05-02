@@ -286,6 +286,37 @@ export default actor<State>({
     },
   },
 });
+
+// sdk-interface/send-actor-message-sync-parent.ts
+/**
+ * @covers outbound `sdk.sendActorMessageSync` from an actor handler to another actor. Fire-and-forget:
+ * enqueues the target handler and returns `{ delivered: true }` immediately without waiting
+ * for that handler to finish (contrast `callActorAndWaitForResultSync`).
+ *
+ */
+import { actor, sdk, type ActorInstanceId } from "@sdk";
+
+type ReceiveInput = { value: number };
+
+export type State = { sent: boolean };
+export type SendChildInput = { childId: string; value: number };
+export type SendChildOutput = { delivered: true };
+
+export default actor<State>({
+  state: { sent: false },
+  handlers: {
+    sendChild(ctx, { childId, value }: SendChildInput): SendChildOutput {
+      const ack = sdk.sendActorMessageSync<ReceiveInput>({
+        unitPath: "test.actor-tests.actor.actor-calls-actor-child",
+        actorId: childId as ActorInstanceId,
+        handler: "receive",
+        payload: { value },
+      });
+      ctx.state.sent = true;
+      return ack;
+    },
+  },
+});
 "#;
 
 pub const COMMUNICATION: &str = r#"
@@ -293,38 +324,6 @@ All sdk.* calls are synchronous — do NOT write `await` in front of them.
 
 Inbound — actors are called via the SDK. The function to use depends on the caller's
 unit type.
-
-From API, actor, or queue_worker units:
-
-  import { type ActorInstanceId } from "@sdk";
-  import type { IncrementInput, IncrementOutput } from "@units/ctx.mod.actor.name";
-
-  const actorKey = "actor-instance-id" as ActorInstanceId;
-
-  // Wait for result
-  const result = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>({
-    unitPath: "ctx.mod.actor.name",
-    actorId: actorKey,
-    handler: "increment",
-    payload: { by: 1 },
-  });
-
-  // Fire-and-forget (no result)
-  sdk.sendActorMessageSync<IncrementInput>({
-    unitPath: "ctx.mod.actor.name",
-    actorId: actorKey,
-    handler: "increment",
-    payload: { by: 1 },
-  });
-
-  // With a custom timeout (ms)
-  const result2 = sdk.callActorAndWaitForResultSync<IncrementInput, IncrementOutput>({
-    unitPath: "ctx.mod.actor.name",
-    actorId: actorKey,
-    handler: "increment",
-    payload: { by: 1 },
-    opts: { timeoutMs: 5000 },
-  });
 
 At runtime the actor key is any string the caller chooses; in TypeScript it is typed as
 `ActorInstanceId` so it is not confused with workflow instance IDs or queue run IDs.
@@ -335,44 +334,6 @@ Outbound (what THIS actor can do) — every sync-wait call blocks the handler un
 returns; handler execution is sequential per actor instance so long blocking calls
 stall the mailbox. Use `ActorInstanceId` / `WorkflowInstanceId` (`as T` from plain
 `string` when needed); `unitPath` strings must satisfy `ActorUnitPathOrId`, etc.
-
-  import { type ActorInstanceId, type WorkflowInstanceId } from "@sdk";
-
-  // Blocking actor call
-  const out = sdk.callActorAndWaitForResultSync<In, Out>({
-    unitPath: "ctx.mod.actor.other",
-    actorId: otherActorKey as ActorInstanceId,
-    handler: "handler",
-    payload,
-  });
-
-  // Fire-and-forget actor message
-  sdk.sendActorMessageSync<In>({
-    unitPath: "ctx.mod.actor.other",
-    actorId: otherActorKey as ActorInstanceId,
-    handler: "handler",
-    payload,
-  });
-
-  // Fire-and-forget background job
-  const { runId } = sdk.enqueueWorkerSync<In>({
-    unitPath: "ctx.mod.queue_worker.name",
-    data: payload,
-  });
-
-  // Start a workflow (fire-and-forget; preferred)
-  const { instanceId } = sdk.startWorkflowSync<WfInput>({
-    unitPath: "ctx.mod.workflow.name",
-    input,
-  });
-
-  // Signal a running workflow
-  const r = sdk.callWorkflowHandlerAndWaitForResultSync<HIn, HOut>({
-    unitPath: "ctx.mod.workflow.name",
-    instanceId: wfInstance as WorkflowInstanceId,
-    handler: "handlerName",
-    input,
-  });
 "#;
 
 pub const METADATA: &str = r#"
