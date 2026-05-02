@@ -265,6 +265,49 @@ async function pollWorker(
   return { status: "timeout" };
 }
 
+const VM_ACTOR_SLUG = "version-monotonic";
+
+function vmActorDeleteUrl(baseUrl: string, actorId: string, stageRuntimeId?: string): string {
+  if (stageRuntimeId != null && stageRuntimeId !== "") {
+    return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/stage/${stageRuntimeId}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}`;
+  }
+  return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}`;
+}
+
+function vmActorSnapshotPgUrl(baseUrl: string, actorId: string, stageRuntimeId?: string): string {
+  if (stageRuntimeId != null && stageRuntimeId !== "") {
+    return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/stage/${stageRuntimeId}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}/snapshot-pg`;
+  }
+  return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}/snapshot-pg`;
+}
+
+async function vmSnapshotPg(
+  baseUrl: string,
+  actorId: string,
+  stageRuntimeId?: string,
+): Promise<{ found: boolean; state?: { count?: number }; version?: number }> {
+  const r = await httpGetFull(vmActorSnapshotPgUrl(baseUrl, actorId, stageRuntimeId));
+  if (r.status !== 200) throw new Error(`snapshot-pg ${r.status}: ${JSON.stringify(r.body)}`);
+  return r.body;
+}
+
+async function vmWaitForPgVersion(
+  baseUrl: string,
+  actorId: string,
+  targetVersion: number,
+  stageRuntimeId?: string,
+  timeoutMs = 8000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { found: boolean; state?: { count?: number }; version?: number } = { found: false };
+  while (Date.now() < deadline) {
+    last = await vmSnapshotPg(baseUrl, actorId, stageRuntimeId);
+    if (last.found && last.version === targetVersion && last.state !== undefined) return;
+    await sleep(40);
+  }
+  throw new Error(`PG snapshot never reached version ${targetVersion} (last=${JSON.stringify(last)})`);
+}
+
 function validate(test: WorkerTestDef, output: any): TestResult {
   const label = `${test.category}: ${test.name}`;
   for (const check of test.checks) {
@@ -2121,6 +2164,73 @@ function allInlineTests(): WorkerInlineTestDef[] {
         const terminalStates = new Set(["cancelled", "completed", "dead_letter"]);
         if (!terminalSt(finalSt, terminalStates))
           throw new Error(`expected terminal state, got "${String(finalSt)}"`);
+      },
+    },
+    {
+      name: "sdk-actor-increments-from-queue-worker-persist-pg",
+      category: "cross-unit",
+      run: async (baseUrl) => {
+        const slug = "sdk-actor-pg-snapshot-worker";
+        const aid = `qw-vm-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+        await fetch(vmActorDeleteUrl(baseUrl, aid), { method: "DELETE" });
+        const enq = await httpPostFull(workerUrl(baseUrl, slug), { actorId: aid, stepCount: 3 });
+        if (enq.status !== 200 || !enq.body?.runId) throw new Error(`enqueue: ${enq.status}`);
+        const done = await pollWorker(baseUrl, slug, enq.body.runId as string, 120);
+        if (done.status !== "completed") throw new Error(`worker: ${done.status}`);
+        if (done.result?.lastCount !== 3 || done.result?.stepCount !== 3) {
+          throw new Error(`result: ${JSON.stringify(done.result)}`);
+        }
+        await vmWaitForPgVersion(baseUrl, aid, 3);
+        const pg = await vmSnapshotPg(baseUrl, aid);
+        if (pg.state?.count !== 3) throw new Error(`pg: ${JSON.stringify(pg)}`);
+      },
+    },
+    {
+      name: "sdk-actor-increments-from-queue-worker-pg-stage-isolation-triple",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const slug = "sdk-actor-pg-snapshot-worker";
+        const aid = `qw-vm3-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        await fetch(vmActorDeleteUrl(baseUrl, aid), { method: "DELETE" });
+        await fetch(vmActorDeleteUrl(baseUrl, aid, STAGE_RUNTIME_ID), { method: "DELETE" });
+        await fetch(vmActorDeleteUrl(baseUrl, aid, STAGE_B_RUNTIME_ID), { method: "DELETE" });
+        const enqP = await httpPostFull(workerUrl(baseUrl, slug), { actorId: aid, stepCount: 2 });
+        const enqA = await httpPostFull(workerStageUrl(baseUrl, slug, STAGE_RUNTIME_ID), {
+          actorId: aid,
+          stepCount: 1,
+        });
+        const enqB = await httpPostFull(workerStageUrl(baseUrl, slug, STAGE_B_RUNTIME_ID), {
+          actorId: aid,
+          stepCount: 4,
+        });
+        if (enqP.status !== 200 || !enqP.body?.runId) throw new Error(`prod: ${enqP.status}`);
+        if (enqA.status !== 200 || !enqA.body?.runId) throw new Error(`stage-a: ${enqA.status}`);
+        if (enqB.status !== 200 || !enqB.body?.runId) throw new Error(`stage-b: ${enqB.status}`);
+        const [p, a, b] = await Promise.all([
+          pollWorker(baseUrl, slug, enqP.body.runId as string, 120),
+          pollWorker(baseUrl, slug, enqA.body.runId as string, 120, PROJECT_ID, STAGE_RUNTIME_ID),
+          pollWorker(baseUrl, slug, enqB.body.runId as string, 120, PROJECT_ID, STAGE_B_RUNTIME_ID),
+        ]);
+        if (p.status !== "completed" || p.result?.lastCount !== 2) throw new Error(`prod qw: ${JSON.stringify(p)}`);
+        if (a.status !== "completed" || a.result?.lastCount !== 1) throw new Error(`stage-a qw: ${JSON.stringify(a)}`);
+        if (b.status !== "completed" || b.result?.lastCount !== 4) throw new Error(`stage-b qw: ${JSON.stringify(b)}`);
+        await vmWaitForPgVersion(baseUrl, aid, 2);
+        await vmWaitForPgVersion(baseUrl, aid, 1, STAGE_RUNTIME_ID);
+        await vmWaitForPgVersion(baseUrl, aid, 4, STAGE_B_RUNTIME_ID);
+        const [prodPg, pgA, pgB] = await Promise.all([
+          vmSnapshotPg(baseUrl, aid),
+          vmSnapshotPg(baseUrl, aid, STAGE_RUNTIME_ID),
+          vmSnapshotPg(baseUrl, aid, STAGE_B_RUNTIME_ID),
+        ]);
+        if (!prodPg.found || prodPg.version !== 2 || prodPg.state?.count !== 2) {
+          throw new Error(`prod pg: ${JSON.stringify(prodPg)}`);
+        }
+        if (!pgA.found || pgA.version !== 1 || pgA.state?.count !== 1) {
+          throw new Error(`stage-a pg: ${JSON.stringify(pgA)}`);
+        }
+        if (!pgB.found || pgB.version !== 4 || pgB.state?.count !== 4) {
+          throw new Error(`stage-b pg: ${JSON.stringify(pgB)}`);
+        }
       },
     },
 

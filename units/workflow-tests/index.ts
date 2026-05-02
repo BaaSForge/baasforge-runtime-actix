@@ -1520,6 +1520,49 @@ async function epPollStatus(instanceBase: string, target: string, maxIter = 120)
   throw new Error(`timed out waiting for '${target}' (saw: ${[...seen].join(", ")})`);
 }
 
+const VM_ACTOR_SLUG = "version-monotonic";
+
+function vmActorDeleteUrl(baseUrl: string, actorId: string, stageRuntimeId?: string): string {
+  if (stageRuntimeId != null && stageRuntimeId !== "") {
+    return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/stage/${stageRuntimeId}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}`;
+  }
+  return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}`;
+}
+
+function vmActorSnapshotPgUrl(baseUrl: string, actorId: string, stageRuntimeId?: string): string {
+  if (stageRuntimeId != null && stageRuntimeId !== "") {
+    return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/stage/${stageRuntimeId}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}/snapshot-pg`;
+  }
+  return `${baseUrl}/api/v1/trigger/actor/${PROJECT_ID}/test/actor-tests/${VM_ACTOR_SLUG}/${actorId}/snapshot-pg`;
+}
+
+async function vmSnapshotPg(
+  baseUrl: string,
+  actorId: string,
+  stageRuntimeId?: string,
+): Promise<{ found: boolean; state?: { count?: number }; version?: number }> {
+  const r = await httpGetFull(vmActorSnapshotPgUrl(baseUrl, actorId, stageRuntimeId));
+  if (r.status !== 200) throw new Error(`snapshot-pg ${r.status}: ${JSON.stringify(r.body)}`);
+  return r.body;
+}
+
+async function vmWaitForPgVersion(
+  baseUrl: string,
+  actorId: string,
+  targetVersion: number,
+  stageRuntimeId?: string,
+  timeoutMs = 8000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { found: boolean; state?: { count?: number }; version?: number } = { found: false };
+  while (Date.now() < deadline) {
+    last = await vmSnapshotPg(baseUrl, actorId, stageRuntimeId);
+    if (last.found && last.version === targetVersion && last.state !== undefined) return;
+    await sleep(40);
+  }
+  throw new Error(`PG snapshot never reached version ${targetVersion} (last=${JSON.stringify(last)})`);
+}
+
 function allEndpointTests(): EndpointTestDef[] {
   const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -2898,6 +2941,81 @@ function allEndpointTests(): EndpointTestDef[] {
         assertChain("prod", rp.body?.result, "prod", "prod", "p");
         assertChain("stage-a", ra.body?.result, "stage-a", "stage-a", "a");
         assertChain("stage-b", rb.body?.result, "stage-b", "stage-b", "b");
+      },
+    },
+    {
+      name: "sdk-actor-increments-from-workflow-persist-pg",
+      category: "integration",
+      run: async (baseUrl) => {
+        const slug = "sdk-actor-pg-snapshot-caller";
+        const aid = `wf-vm-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+        await fetch(vmActorDeleteUrl(baseUrl, aid), { method: "DELETE" });
+        const start = await httpPostFull(epWfUrl(baseUrl, slug), { actorId: aid, stepCount: 3 });
+        if (start.status !== 200 || !start.body?.instanceId) throw new Error(`start: ${start.status}`);
+        const base = `${epWfUrl(baseUrl, slug)}/${start.body.instanceId as string}`;
+        await epPollStatus(base, "completed");
+        const res = await httpGetFull(`${base}/result`);
+        const r = res.body?.result;
+        if (r?.lastCount !== 3 || r?.stepCount !== 3) throw new Error(`wf result: ${JSON.stringify(r)}`);
+        await vmWaitForPgVersion(baseUrl, aid, 3);
+        const pg = await vmSnapshotPg(baseUrl, aid);
+        if (pg.state?.count !== 3) throw new Error(`pg state: ${JSON.stringify(pg)}`);
+      },
+    },
+    {
+      name: "sdk-actor-increments-from-workflow-pg-stage-isolation-triple",
+      category: "endpoint_stage",
+      run: async (baseUrl) => {
+        const slug = "sdk-actor-pg-snapshot-caller";
+        const aid = `wf-vm3-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+        await fetch(vmActorDeleteUrl(baseUrl, aid), { method: "DELETE" });
+        await fetch(vmActorDeleteUrl(baseUrl, aid, STAGE_RUNTIME_ID), { method: "DELETE" });
+        await fetch(vmActorDeleteUrl(baseUrl, aid, STAGE_B_RUNTIME_ID), { method: "DELETE" });
+        const prodStart = await httpPostFull(epWfUrl(baseUrl, slug), { actorId: aid, stepCount: 2 });
+        const aStart = await httpPostFull(epWfStageUrl(baseUrl, slug, STAGE_RUNTIME_ID), {
+          actorId: aid,
+          stepCount: 1,
+        });
+        const bStart = await httpPostFull(epWfStageUrl(baseUrl, slug, STAGE_B_RUNTIME_ID), {
+          actorId: aid,
+          stepCount: 4,
+        });
+        if (prodStart.status !== 200 || !prodStart.body?.instanceId) throw new Error(`prod: ${prodStart.status}`);
+        if (aStart.status !== 200 || !aStart.body?.instanceId) throw new Error(`stage-a: ${aStart.status}`);
+        if (bStart.status !== 200 || !bStart.body?.instanceId) throw new Error(`stage-b: ${bStart.status}`);
+        const prodBase = `${epWfUrl(baseUrl, slug)}/${prodStart.body.instanceId as string}`;
+        const stageABase = `${epWfStageUrl(baseUrl, slug, STAGE_RUNTIME_ID)}/${aStart.body.instanceId as string}`;
+        const stageBBase = `${epWfStageUrl(baseUrl, slug, STAGE_B_RUNTIME_ID)}/${bStart.body.instanceId as string}`;
+        await Promise.all([
+          epPollStatus(prodBase, "completed"),
+          epPollStatus(stageABase, "completed"),
+          epPollStatus(stageBBase, "completed"),
+        ]);
+        const [rp, ra, rb] = await Promise.all([
+          httpGetFull(`${prodBase}/result`),
+          httpGetFull(`${stageABase}/result`),
+          httpGetFull(`${stageBBase}/result`),
+        ]);
+        if (rp.body?.result?.lastCount !== 2) throw new Error(`prod wf: ${JSON.stringify(rp.body)}`);
+        if (ra.body?.result?.lastCount !== 1) throw new Error(`stage-a wf: ${JSON.stringify(ra.body)}`);
+        if (rb.body?.result?.lastCount !== 4) throw new Error(`stage-b wf: ${JSON.stringify(rb.body)}`);
+        await vmWaitForPgVersion(baseUrl, aid, 2);
+        await vmWaitForPgVersion(baseUrl, aid, 1, STAGE_RUNTIME_ID);
+        await vmWaitForPgVersion(baseUrl, aid, 4, STAGE_B_RUNTIME_ID);
+        const [prodPg, pgA, pgB] = await Promise.all([
+          vmSnapshotPg(baseUrl, aid),
+          vmSnapshotPg(baseUrl, aid, STAGE_RUNTIME_ID),
+          vmSnapshotPg(baseUrl, aid, STAGE_B_RUNTIME_ID),
+        ]);
+        if (!prodPg.found || prodPg.version !== 2 || prodPg.state?.count !== 2) {
+          throw new Error(`prod pg: ${JSON.stringify(prodPg)}`);
+        }
+        if (!pgA.found || pgA.version !== 1 || pgA.state?.count !== 1) {
+          throw new Error(`stage-a pg: ${JSON.stringify(pgA)}`);
+        }
+        if (!pgB.found || pgB.version !== 4 || pgB.state?.count !== 4) {
+          throw new Error(`stage-b pg: ${JSON.stringify(pgB)}`);
+        }
       },
     },
     {
