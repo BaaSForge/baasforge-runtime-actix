@@ -16,40 +16,12 @@ An actor unit must have a default export produced by the `actor()` function:
 activation. Mutate `ctx.state` directly inside handlers; the updated state is persisted
 atomically after each successful handler execution.
 
-`handlers` — a record of named handler functions. Each receives (ctx, payload?):
-- ctx.id: ActorInstanceId (from `@sdk`) — the actor instance ID (supplied by the caller)
-- ctx.attempt: number — current attempt number, 1-based; increments on each retry
-- ctx.state: TState — mutable reference to this instance's persisted state
-- ctx.setAlarm(name: string, at: Date | number | Duration | { fireAfterMs: number }) — schedule a named alarm; use `{ fireAfterMs }` for a delay from host commit time
-- ctx.cancelAlarm(name: string) — cancel a pending alarm by name
-- ctx.TerminalError — throw an instance to skip retries and trigger onDeadLetter
-
 Handler return values are serialized and sent back to the caller.
 
 Error handling:
 - Throw any regular Error → handler is retried (ctx.attempt increments); state changes are
   rolled back to the pre-handler snapshot
 - Throw `new ctx.TerminalError(msg)` → skips remaining retries, triggers onDeadLetter
-
-`onAlarm(ctx, name)` — fired when a scheduled alarm's time arrives. `name` is the string
-passed to `ctx.setAlarm()`. Alarms can read and mutate `ctx.state` like normal handlers.
-
-`onDeadLetter(ctx, handler, payload, error)` — called after max retries are exhausted or
-on TerminalError. Must not throw. Use it to log, alert, or compensate.
-
-`metadata` (static config, all fields optional):
-- retry.maxAttempts: number — max total attempts including the first; default 3
-- retry.initialInterval: Duration — wait before first retry; default { seconds: 1 }
-- retry.backoffFactor: number — exponential backoff multiplier; default 2
-- retry.maxInterval: Duration — cap on retry interval; default { minutes: 5 }
-- timeout: number — handler execution timeout in milliseconds
-- maxIdleTime: string — duration string after which an idle actor is passivated (e.g. "1h")
-- stateLimit: string — maximum persisted state size (e.g. "512kb", "1mb"); enforced at write
-- mailboxBacklog: number — max queued handler calls before back-pressure
-- handlers: string[] — declare the list of valid handler names (for validation)
-- alarms: string[] — declare the list of valid alarm names (for validation)
-
-Duration object: { milliseconds?, seconds?, minutes?, hours?, days? }
 
 Key guarantees:
 - State isolation: ctx.state for instance "alice" is completely independent from "bob"
@@ -58,11 +30,12 @@ Key guarantees:
   pre-handler state
 - Durable alarms: alarms survive crashes and restarts
 
-Exported types (MANDATORY — used for automatic documentation generation and cross-unit type safety):
+Exports (MANDATORY — used for automatic documentation generation and cross-unit type safety):
 
 - export type State = { ... }               — the actor state shape (REQUIRED)
 - export type {HandlerName}Input = { ... }  — payload type for each handler that takes input (REQUIRED per handler)
 - export type {HandlerName}Output = { ... } — return type for each handler that returns a value (REQUIRED per handler)
+- export default actor<TState>(...)         — the actor definition (REQUIRED)
 
 Naming convention: PascalCase handler name + "Input" / "Output" suffix.
 Example: handler "increment" → IncrementInput, IncrementOutput.
@@ -322,8 +295,7 @@ export default actor<State>({
 pub const COMMUNICATION: &str = r#"
 All sdk.* calls are synchronous — do NOT write `await` in front of them.
 
-Inbound — actors are called via the SDK. The function to use depends on the caller's
-unit type.
+Inbound — actors are called via the SDK by calling the `sdk.callActorAndWaitForResultSync` (blocking) or `sdk.sendActorMessageSync` (non-blocking / Fire-and-forget).
 
 At runtime the actor key is any string the caller chooses; in TypeScript it is typed as
 `ActorInstanceId` so it is not confused with workflow instance IDs or queue run IDs.

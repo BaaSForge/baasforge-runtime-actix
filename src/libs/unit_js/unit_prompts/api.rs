@@ -22,29 +22,13 @@ is a separate unit. The platform routes all incoming requests to a specific unit
 the unit is expected to handle exactly one method.
 The platform checks the method before reaching to the unit's code so you don't need to check if the method or url is correct.
 
-Entry point — the following function MUST be exported with this exact signature:
-
-  import type { IncomingMessage, ServerResponse } from "node:http";
-  export function handleRequest(req: IncomingMessage, res: ServerResponse) { ... }
-
-Both parameter types MUST be annotated as `IncomingMessage` and `ServerResponse` and MUST be
-imported from `node:http`. No other signature is accepted.
-
-`req` and `res` follow the standard Node.js IncomingMessage / ServerResponse interface.
-Read the body with: import { text } from "node:stream/consumers"; const body = await text(req);
-
 Exported types (MANDATORY — used for automatic documentation generation and cross-unit type safety):
-The following three type exports are ALWAYS required:
+The following four exports are ALWAYS required:
 
-- export type RequestBody = { ... } | never  — request body shape; use `never` if no body
-- export type ResponseBody = { ... }         — response body shape; MUST be a concrete object type, `never` is not allowed
-- export type QueryParams = { ... } | never  — query parameter shape; use `never` if no query params
-
-No other exports are allowed. The only permitted exports are:
-  - export function handleRequest (the entry point)
-  - export type RequestBody
-  - export type ResponseBody
-  - export type QueryParams
+- export type RequestBody = { ... } | never  — request body shape; use `never` if no body (REQUIRED)
+- export type ResponseBody = { ... }         — response body shape; MUST be a concrete object type, `never` is not allowed (REQUIRED)
+- export type QueryParams = { ... } | never  — query parameter shape; use `never` if no query params (REQUIRED)
+- export function handleRequest              - the entry point (REQUIRED)
 
 Forbidden: any other type alias, `export const`, `export class`, `export default`,
 `export { … }`, `export * from '…'`.
