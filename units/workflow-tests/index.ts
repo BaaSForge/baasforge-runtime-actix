@@ -122,6 +122,46 @@ async function httpGetFull(url: string): Promise<{ status: number; body: any }> 
   return { status: resp.status, body: parsed };
 }
 
+function runtimeScopeWorkflowTargetDirectTripleDiag(
+  branch: "prod" | "stage-a" | "stage-b",
+  expected: { runtimeScope: string; marker: string },
+  parsedResult: any,
+  resultGet: { status: number; body: any; url: string },
+  instanceIds: { prod: string; stageA: string; stageB: string },
+  allResults: { prod: any; stageA: any; stageB: any },
+  allGets: {
+    prod: { status: number; body: any; url: string };
+    stageA: { status: number; body: any; url: string };
+    stageB: { status: number; body: any; url: string };
+  },
+): string {
+  const { runtimeScope: expScope, marker: expMarker } = expected;
+  const gotScope = parsedResult?.runtimeScope;
+  const gotMarker = parsedResult?.marker;
+  const scopeOk = gotScope === expScope;
+  const markerOk = gotMarker === expMarker;
+  const mismatchParts: string[] = [];
+  if (!scopeOk) {
+    mismatchParts.push(`runtimeScope expected ${JSON.stringify(expScope)} got ${JSON.stringify(gotScope)}`);
+  }
+  if (!markerOk) {
+    mismatchParts.push(`marker expected ${JSON.stringify(expMarker)} got ${JSON.stringify(gotMarker)}`);
+  }
+  const hint =
+    "If scope matches this branch but marker is another branch's input, suspect wrong result bound to instanceId " +
+    "(stale cache, wrong row, or cross-wiring). If both fields match a different branch, suspect routing/runtime selection.";
+  return [
+    `runtime-scope-workflow-target-direct-triple ${branch} assertion failed`,
+    mismatchParts.join("; "),
+    hint,
+    `parsed body.result=${JSON.stringify(parsedResult)}`,
+    `GET ${resultGet.url} status=${resultGet.status} fullBody=${JSON.stringify(resultGet.body)}`,
+    `correlation instanceIds prod=${instanceIds.prod} stageA=${instanceIds.stageA} stageB=${instanceIds.stageB}`,
+    `allParsedResults prod=${JSON.stringify(allResults.prod)} stageA=${JSON.stringify(allResults.stageA)} stageB=${JSON.stringify(allResults.stageB)}`,
+    `allResultGets prod(status=${allGets.prod.status} url=${allGets.prod.url}) stageA(status=${allGets.stageA.status} url=${allGets.stageA.url}) stageB(status=${allGets.stageB.status} url=${allGets.stageB.url})`,
+  ].join(" | ");
+}
+
 // ---------------------------------------------------------------------------
 // JSON path helper
 // ---------------------------------------------------------------------------
@@ -2534,30 +2574,73 @@ function allEndpointTests(): EndpointTestDef[] {
         if (stageBStart.status !== 200 || !stageBStart.body?.instanceId) {
           throw new Error(`stage-b start failed: ${stageBStart.status}`);
         }
-        const prodBase = `${epWfUrl(baseUrl, "runtime-scope-workflow-target")}/${prodStart.body.instanceId as string}`;
-        const stageABase = `${epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_RUNTIME_ID)}/${stageAStart.body.instanceId as string}`;
-        const stageBBase = `${epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_B_RUNTIME_ID)}/${stageBStart.body.instanceId as string}`;
+        const prodIid = prodStart.body.instanceId as string;
+        const stageAIid = stageAStart.body.instanceId as string;
+        const stageBIid = stageBStart.body.instanceId as string;
+        const instanceIds = { prod: prodIid, stageA: stageAIid, stageB: stageBIid };
+        const prodBase = `${epWfUrl(baseUrl, "runtime-scope-workflow-target")}/${prodIid}`;
+        const stageABase = `${epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_RUNTIME_ID)}/${stageAIid}`;
+        const stageBBase = `${epWfStageUrl(baseUrl, "runtime-scope-workflow-target", STAGE_B_RUNTIME_ID)}/${stageBIid}`;
         await Promise.all([
           epPollStatus(prodBase, "completed"),
           epPollStatus(stageABase, "completed"),
           epPollStatus(stageBBase, "completed"),
         ]);
+        const prodResultUrl = `${prodBase}/result`;
+        const stageAResultUrl = `${stageABase}/result`;
+        const stageBResultUrl = `${stageBBase}/result`;
         const [rp, ra, rb] = await Promise.all([
-          httpGetFull(`${prodBase}/result`),
-          httpGetFull(`${stageABase}/result`),
-          httpGetFull(`${stageBBase}/result`),
+          httpGetFull(prodResultUrl),
+          httpGetFull(stageAResultUrl),
+          httpGetFull(stageBResultUrl),
         ]);
         const pr = rp.body?.result;
         const sar = ra.body?.result;
         const sbr = rb.body?.result;
+        const allResults = { prod: pr, stageA: sar, stageB: sbr };
+        const allGets = {
+          prod: { status: rp.status, body: rp.body, url: prodResultUrl },
+          stageA: { status: ra.status, body: ra.body, url: stageAResultUrl },
+          stageB: { status: rb.status, body: rb.body, url: stageBResultUrl },
+        };
         if (pr?.runtimeScope !== "prod" || pr?.marker !== "p") {
-          throw new Error(`prod direct workflow wrong: ${JSON.stringify(pr)}`);
+          const msg = runtimeScopeWorkflowTargetDirectTripleDiag(
+            "prod",
+            { runtimeScope: "prod", marker: "p" },
+            pr,
+            { status: rp.status, body: rp.body, url: prodResultUrl },
+            instanceIds,
+            allResults,
+            allGets,
+          );
+          console.error(msg);
+          throw new Error(msg);
         }
         if (sar?.runtimeScope !== "stage-a" || sar?.marker !== "a") {
-          throw new Error(`stage-a direct workflow wrong: ${JSON.stringify(sar)}`);
+          const msg = runtimeScopeWorkflowTargetDirectTripleDiag(
+            "stage-a",
+            { runtimeScope: "stage-a", marker: "a" },
+            sar,
+            { status: ra.status, body: ra.body, url: stageAResultUrl },
+            instanceIds,
+            allResults,
+            allGets,
+          );
+          console.error(msg);
+          throw new Error(msg);
         }
         if (sbr?.runtimeScope !== "stage-b" || sbr?.marker !== "b") {
-          throw new Error(`stage-b direct workflow wrong: ${JSON.stringify(sbr)}`);
+          const msg = runtimeScopeWorkflowTargetDirectTripleDiag(
+            "stage-b",
+            { runtimeScope: "stage-b", marker: "b" },
+            sbr,
+            { status: rb.status, body: rb.body, url: stageBResultUrl },
+            instanceIds,
+            allResults,
+            allGets,
+          );
+          console.error(msg);
+          throw new Error(msg);
         }
       },
     },

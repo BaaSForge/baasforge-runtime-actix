@@ -25,6 +25,19 @@ fn workflow_dedup_name_key(project_id: &str, unit_path: &str, stage_runtime_id: 
     }
 }
 
+fn workflow_start_inputs_equivalent(stored: &str, incoming: &str) -> bool {
+    if stored == incoming {
+        return true;
+    }
+    match (
+        serde_json::from_str::<serde_json::Value>(stored),
+        serde_json::from_str::<serde_json::Value>(incoming),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Get or create the durable JetStream stream that captures all workflow wake subjects.
 /// The stream subject `wf.*.*.wake` matches every wake publish, including immediate
 /// core-NATS publishes (promise resolved, retry exhausted) which are auto-captured.
@@ -112,7 +125,7 @@ pub async fn prepare_workflow_instance_for_start(
                                 .query_async(&mut *conn)
                                 .await
                                 .unwrap_or(false);
-                            if lock_exists {
+                            if lock_exists && workflow_start_inputs_equivalent(&meta.input, input_json) {
                                 drop(conn);
                                 return Ok(eid);
                             }
