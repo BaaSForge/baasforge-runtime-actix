@@ -397,7 +397,7 @@ declare module "@sdk" {
 
   export interface ActorMetadata {
     handlers?: string[];
-    maxIdleTime?: string;
+    maxIdleTime?: string | number;
     alarms?: string[];
     stateLimit?: string;
     retry?: RetryPolicy;

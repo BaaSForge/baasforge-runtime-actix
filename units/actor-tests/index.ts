@@ -26,7 +26,7 @@
  * │ SDK reachability from all types  │ cross-unit/*, sdk-interface/* (`sendActorMessageSync` parent)        │
  * │ HTTP contract correctness        │ endpoints/* (inline)                                                  │
  * │ Project-id scoping invariants    │ sharding-seam/*                                                       │
- * │ Lifecycle events                 │ ws-tests.mjs, lifecycle/*                                             │
+ * │ Lifecycle / passivation          │ ws-tests.mjs, lifecycle/*, passivation/*                              │
  * └──────────────────────────────────┴──────────────────────────────────────────────────────────────────────┘
  */
 
@@ -41,6 +41,8 @@ const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
+
+const PASSIVATION_IDLE_SLEEP_MS = 11_500;
 
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
@@ -857,6 +859,39 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
     {
+      name: "passivate-twice-pg-stable",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-pass2-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const before = await getState(baseUrl, "version-monotonic", id);
+        await passivate(baseUrl, "version-monotonic", id);
+        await passivate(baseUrl, "version-monotonic", id);
+        const pg = await snapshotPg(baseUrl, "version-monotonic", id);
+        if (!pg.found) throw new Error("expected PG row after double passivate");
+        if (pg.version !== before.version || pg.state?.count !== before.state?.count)
+          throw new Error(`PG changed after second passivate: ${JSON.stringify(pg)} vs ${JSON.stringify(before)}`);
+      },
+    },
+    {
+      name: "passivate-thrice-pg-stable",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-pass3-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const before = await getState(baseUrl, "version-monotonic", id);
+        await passivate(baseUrl, "version-monotonic", id);
+        await passivate(baseUrl, "version-monotonic", id);
+        await passivate(baseUrl, "version-monotonic", id);
+        const pg = await snapshotPg(baseUrl, "version-monotonic", id);
+        if (!pg.found) throw new Error("expected PG row after triple passivate");
+        if (pg.version !== before.version || pg.state?.count !== before.state?.count)
+          throw new Error(`PG changed after third passivate: ${JSON.stringify(pg)} vs ${JSON.stringify(before)}`);
+      },
+    },
+    {
       name: "delete-clears-pg-snapshot",
       category: "snapshot-pg",
       run: async (baseUrl) => {
@@ -1448,8 +1483,15 @@ function allInlineTests(): ActorInlineTestDef[] {
     {
       name: "passivate-after-idle",
       category: "lifecycle",
-      skip: "maxIdleTime sweep interval too long for short test window; covered by ws-tests.mjs",
-      run: async (_baseUrl) => {},
+      run: async (baseUrl) => {
+        const id = `lc-idle-pv-${uid()}`;
+        await deleteActor(baseUrl, "passivate-after-idle", id);
+        await callActor(baseUrl, "passivate-after-idle", id, "increment");
+        await sleep(PASSIVATION_IDLE_SLEEP_MS);
+        const pg = await waitForPgVersion(baseUrl, "passivate-after-idle", id, 1, 16_000);
+        if (pg.state?.count !== 1)
+          throw new Error(`expected PG count=1 after idle passivation, got ${JSON.stringify(pg.state)}`);
+      },
     },
     {
       name: "reactivate-keeps-id",
@@ -1504,6 +1546,164 @@ function allInlineTests(): ActorInlineTestDef[] {
         const resp = await callActorFull(baseUrl, "lifecycle-events-broadcast", id, "increment");
         if (resp.status !== 200)
           throw new Error(`scaffold actor failed: ${resp.status}`);
+      },
+    },
+
+    // ---- passivation (idle sweep + HTTP passivate) ----
+    {
+      name: "numeric-max-idle-ms-flushes-pg",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-num-${uid()}`;
+        await deleteActor(baseUrl, "numeric-max-idle", id);
+        await callActor(baseUrl, "numeric-max-idle", id, "bump");
+        await sleep(10_000);
+        const pg = await waitForPgVersion(baseUrl, "numeric-max-idle", id, 1, 18_000);
+        if (pg.state?.n !== 1)
+          throw new Error(`expected PG n=1 after numeric maxIdle idle flush, got ${JSON.stringify(pg.state)}`);
+      },
+    },
+    {
+      name: "no-max-idle-long-sleep-still-mutable",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-nomax-${uid()}`;
+        await deleteActor(baseUrl, "no-max-idle", id);
+        await callActor(baseUrl, "no-max-idle", id, "bump");
+        const v1 = await getState(baseUrl, "no-max-idle", id);
+        await sleep(PASSIVATION_IDLE_SLEEP_MS + 3000);
+        const mid = await getState(baseUrl, "no-max-idle", id);
+        await callActor(baseUrl, "no-max-idle", id, "bump");
+        const v2 = await getState(baseUrl, "no-max-idle", id);
+        if ((v1?.state?.n ?? 0) !== 1) throw new Error(`expected n=1 after first bump, got ${JSON.stringify(v1)}`);
+        if ((mid?.state?.n ?? 0) !== 1)
+          throw new Error(`expected n=1 after long sleep without maxIdle (no idle eviction), got ${JSON.stringify(mid)}`);
+        if ((v2?.state?.n ?? 0) !== 2)
+          throw new Error(`expected n=2 after second bump, got ${JSON.stringify(v2)}`);
+        if (v1.version !== mid.version)
+          throw new Error(`version drift after long sleep without maxIdle: ${v1.version} vs ${mid.version}`);
+      },
+    },
+    {
+      name: "readonly-peeks-extend-idle-deadline",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-ro-${uid()}`;
+        await deleteActor(baseUrl, "readonly-extends-idle", id);
+        await callActor(baseUrl, "readonly-extends-idle", id, "write", { v: 7 });
+        await sleep(2000);
+        await callActor(baseUrl, "readonly-extends-idle", id, "peek");
+        await sleep(2000);
+        await callActor(baseUrl, "readonly-extends-idle", id, "peek");
+        await sleep(PASSIVATION_IDLE_SLEEP_MS);
+        const pg = await waitForPgVersion(baseUrl, "readonly-extends-idle", id, 1, 18_000);
+        if (pg.state?.v !== 7)
+          throw new Error(`expected PG v=7 after peeks + idle, got ${JSON.stringify(pg.state)}`);
+      },
+    },
+    {
+      name: "idle-flushes-two-increments-to-pg",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-2inc-${uid()}`;
+        await deleteActor(baseUrl, "passivate-after-idle", id);
+        await callActor(baseUrl, "passivate-after-idle", id, "increment");
+        await callActor(baseUrl, "passivate-after-idle", id, "increment");
+        await sleep(PASSIVATION_IDLE_SLEEP_MS);
+        const pg = await waitForPgVersion(baseUrl, "passivate-after-idle", id, 2, 18_000);
+        if (pg.state?.count !== 2)
+          throw new Error(`expected PG count=2 after two bumps + idle, got ${JSON.stringify(pg.state)}`);
+      },
+    },
+    {
+      name: "http-passivate-after-idle-pg-unchanged",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-http2-${uid()}`;
+        await deleteActor(baseUrl, "passivate-after-idle", id);
+        await callActor(baseUrl, "passivate-after-idle", id, "increment");
+        await sleep(PASSIVATION_IDLE_SLEEP_MS);
+        const pg1 = await waitForPgVersion(baseUrl, "passivate-after-idle", id, 1, 18_000);
+        const pv = await passivate(baseUrl, "passivate-after-idle", id);
+        if (pv.status !== 200) throw new Error(`second passivate failed: ${pv.status}`);
+        const pg2 = await snapshotPg(baseUrl, "passivate-after-idle", id);
+        if (pg2.version !== pg1.version || pg2.state?.count !== pg1.state?.count)
+          throw new Error(`PG drift after HTTP passivate post-idle: ${JSON.stringify(pg2)} vs ${JSON.stringify(pg1)}`);
+      },
+    },
+    {
+      name: "stage-idle-flushes-pg-snapshot",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-st-${uid()}`;
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "stage-idle-passivate", id));
+        const inc = await httpPostFull(
+          `${actorStageUrl(baseUrl, "stage-idle-passivate", id, "inc")}?await=true`,
+          {},
+        );
+        if (inc.status !== 200) throw new Error(`stage inc failed: ${inc.status}`);
+        await sleep(PASSIVATION_IDLE_SLEEP_MS);
+        const pg = await waitForPgVersion(baseUrl, "stage-idle-passivate", id, 1, 18_000, {
+          stageRuntimeId: STAGE_RUNTIME_ID,
+        });
+        if (pg.state?.c !== 1)
+          throw new Error(`expected stage PG c=1 after idle, got ${JSON.stringify(pg.state)}`);
+        const prod = await snapshotPg(baseUrl, "stage-idle-passivate", id);
+        if (prod.found)
+          throw new Error(`stage-only actor must not write prod actor_snapshots row; got ${JSON.stringify(prod)}`);
+      },
+    },
+    {
+      name: "increment-passivate-increment-chain",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-chain-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        await passivate(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const s = await getState(baseUrl, "version-monotonic", id);
+        if (s?.state?.count !== 2)
+          throw new Error(`expected count=2 after inc→passivate→inc, got ${JSON.stringify(s?.state)}`);
+      },
+    },
+    {
+      name: "parallel-http-passivate-same-actor",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-par-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const before = await getState(baseUrl, "version-monotonic", id);
+        const [a, b] = await Promise.all([
+          passivate(baseUrl, "version-monotonic", id),
+          passivate(baseUrl, "version-monotonic", id),
+        ]);
+        if (a.status !== 200 || b.status !== 200)
+          throw new Error(`parallel passivate statuses ${a.status} ${b.status}`);
+        const pg = await snapshotPg(baseUrl, "version-monotonic", id);
+        if (!pg.found) throw new Error("expected PG after parallel passivate");
+        if (pg.version !== before.version || pg.state?.count !== before.state?.count)
+          throw new Error(`PG unstable after parallel passivate: ${JSON.stringify(pg)} vs ${JSON.stringify(before)}`);
+      },
+    },
+    {
+      name: "passivate-after-getstate-hydrate-persists",
+      category: "passivation",
+      run: async (baseUrl) => {
+        const id = `pv-hydr-${uid()}`;
+        await deleteActor(baseUrl, "state-mutation", id);
+        await callActor(baseUrl, "state-mutation", id, "increment");
+        await testEvictActorRedis(baseUrl, "state-mutation", id);
+        const st = await getState(baseUrl, "state-mutation", id);
+        if ((st?.state?.count ?? 0) !== 1)
+          throw new Error(`expected hydrate count=1, got ${JSON.stringify(st)}`);
+        const before = await getState(baseUrl, "state-mutation", id);
+        await passivate(baseUrl, "state-mutation", id);
+        const pg = await snapshotPg(baseUrl, "state-mutation", id);
+        if (!pg.found) throw new Error("expected PG after passivate hydrated actor");
+        if (pg.version !== before.version || pg.state?.count !== before.state?.count)
+          throw new Error(`PG mismatch: ${JSON.stringify(pg)} vs redis ${JSON.stringify(before)}`);
       },
     },
 
@@ -2307,8 +2507,16 @@ function allInlineTests(): ActorInlineTestDef[] {
     {
       name: "max-idle-time-respected",
       category: "metadata-enforcement",
-      skip: "5s maxIdleTime sweep still requires waiting multiple seconds; use dedicated timing test",
-      run: async (_baseUrl) => {},
+      run: async (baseUrl) => {
+        const id = `meta-idle-${uid()}`;
+        await deleteActor(baseUrl, "max-idle-time-respected", id);
+        await callActor(baseUrl, "max-idle-time-respected", id, "increment");
+        await sleep(PASSIVATION_IDLE_SLEEP_MS);
+        await callActor(baseUrl, "max-idle-time-respected", id, "increment");
+        const s = await getState(baseUrl, "max-idle-time-respected", id);
+        if (s?.state?.count !== 2)
+          throw new Error(`expected count=2 after idle eviction and second message, got ${JSON.stringify(s?.state)}`);
+      },
     },
     {
       name: "retry-policy-applied",

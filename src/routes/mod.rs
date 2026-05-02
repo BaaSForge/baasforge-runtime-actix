@@ -6,6 +6,7 @@ pub mod ws;
 
 use crate::configs::Settings;
 use crate::database::{establish_pool, DbPool, SharedRedisConn};
+use crate::libs::unit_js::modules::sdk::SdkActorLocks;
 use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::services::workflow_engine::SharedRedis;
 use actix_web::Result;
@@ -44,7 +45,7 @@ pub struct AppContext {
     pub actor_locks: ActorLocks,
 }
 
-pub type ActorLocks = Arc<Mutex<HashMap<(String, String, String, Option<uuid::Uuid>), Arc<Mutex<()>>>>>;
+pub type ActorLocks = SdkActorLocks;
 
 impl AppContext {
     #[allow(clippy::too_many_arguments)]
@@ -365,6 +366,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 .unwrap_or_else(|| crate::services::actor_engine::ACTOR_NATS_CONSUMER.to_string());
             let locks = actor_locks.clone();
             let actor_pg_consumer = actor_pg.clone();
+            let actor_idle_sweep = std::time::Duration::from_secs(settings.actor_idle_sweep_secs.max(1));
             tracing::info!("[test_mode] starting inline actor mailbox consumer");
             tokio::spawn(async move {
                 if let Err(e) =
@@ -372,6 +374,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         ar, actor_js, actor_nc, p, rc,
                         wf_redis_for_actor, wf_nats_for_actor, wf_js_for_actor,
                         &stream_name, &consumer_name, actor_pg_consumer, locks,
+                        actor_idle_sweep,
                     )
                     .await
                 {

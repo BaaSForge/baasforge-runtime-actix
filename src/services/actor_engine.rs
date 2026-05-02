@@ -10,6 +10,7 @@ pub type ActorRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
 pub const ACTOR_NATS_STREAM: &str = "ACTOR_MAIL";
 pub const ACTOR_NATS_STREAM_SUBJECTS: &[&str] = &["actor.*.*.*.*.msg"];
 pub const ACTOR_NATS_CONSUMER: &str = "actor_mail_consumer";
+pub const ACTOR_IDLE_DUE_ZSET: &str = "actor:idle:due";
 
 fn actor_key(
     project_id: &str,
@@ -139,12 +140,96 @@ pub async fn load_hot_state(
 const COMMIT_STATE_LUA: &str = r#"
 local state_key = KEYS[1]
 local version_key = KEYS[2]
+local last_access_key = KEYS[3]
 local new_state = ARGV[1]
 local new_version = tonumber(ARGV[2])
+local last_access = ARGV[3]
 redis.call('SET', state_key, new_state)
 redis.call('SET', version_key, tostring(new_version))
+redis.call('SET', last_access_key, last_access)
 return new_version
 "#;
+
+pub fn idle_due_member(
+    stage_runtime_id: Option<Uuid>,
+    project_id: &str,
+    unit_path: &str,
+    actor_id: &str,
+) -> String {
+    match stage_runtime_id {
+        None => format!("prod\t{project_id}\t{unit_path}\t{actor_id}"),
+        Some(rid) => format!("stage\t{rid}\t{project_id}\t{unit_path}\t{actor_id}"),
+    }
+}
+
+pub async fn refresh_actor_idle_deadline(
+    redis: &ActorRedis,
+    project_id: &str,
+    stage_runtime_id: Option<Uuid>,
+    unit_path: &str,
+    actor_id: &str,
+    max_idle_ms: u64,
+) {
+    let last_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "last_access");
+    let mut conn = redis.lock().await;
+    let last_raw: Option<String> = conn.get(&last_key).await.unwrap_or(None);
+    let Some(last_s) = last_raw else {
+        return;
+    };
+    let Ok(ts) = last_s.parse::<i64>() else {
+        return;
+    };
+    let deadline = ts as f64 + max_idle_ms as f64;
+    let member = idle_due_member(stage_runtime_id, project_id, unit_path, actor_id);
+    let _: () = redis::cmd("ZADD")
+        .arg(ACTOR_IDLE_DUE_ZSET)
+        .arg(deadline)
+        .arg(&member)
+        .query_async(&mut *conn)
+        .await
+        .unwrap_or(());
+}
+
+pub async fn clear_actor_idle_deadline(
+    redis: &ActorRedis,
+    project_id: &str,
+    stage_runtime_id: Option<Uuid>,
+    unit_path: &str,
+    actor_id: &str,
+) {
+    let member = idle_due_member(stage_runtime_id, project_id, unit_path, actor_id);
+    let mut conn = redis.lock().await;
+    let _: () = redis::cmd("ZREM")
+        .arg(ACTOR_IDLE_DUE_ZSET)
+        .arg(&member)
+        .query_async(&mut *conn)
+        .await
+        .unwrap_or(());
+}
+
+pub async fn bump_actor_last_access_if_present(
+    redis: &ActorRedis,
+    project_id: &str,
+    stage_runtime_id: Option<Uuid>,
+    unit_path: &str,
+    actor_id: &str,
+) -> bool {
+    let state_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "state");
+    let last_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "last_access");
+    let mut conn = redis.lock().await;
+    let exists: bool = conn.exists(&state_key).await.unwrap_or(false);
+    if !exists {
+        return false;
+    }
+    let now = chrono::Utc::now().timestamp_millis();
+    let _: () = redis::cmd("SET")
+        .arg(&last_key)
+        .arg(now)
+        .query_async(&mut *conn)
+        .await
+        .unwrap_or(());
+    true
+}
 
 pub async fn commit_state(
     redis: &ActorRedis,
@@ -157,17 +242,42 @@ pub async fn commit_state(
 ) -> Result<i64, String> {
     let state_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "state");
     let version_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "version");
+    let last_access_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "last_access");
     let state_json = serde_json::to_string(new_state).map_err(|e| e.to_string())?;
+    let now_ms = chrono::Utc::now().timestamp_millis().to_string();
     let mut conn = redis.lock().await;
     let result: i64 = redis::Script::new(COMMIT_STATE_LUA)
         .key(&state_key)
         .key(&version_key)
+        .key(&last_access_key)
         .arg(&state_json)
         .arg(new_version)
+        .arg(&now_ms)
         .invoke_async(&mut *conn)
         .await
         .map_err(|e| format!("commit_state lua error: {e}"))?;
     Ok(result)
+}
+
+pub async fn evict_actor_hot_cache_keep_alarms(
+    redis: &ActorRedis,
+    project_id: &str,
+    stage_runtime_id: Option<Uuid>,
+    unit_path: &str,
+    actor_id: &str,
+) {
+    let keys: Vec<String> = ["state", "version", "lease", "last_access"]
+        .iter()
+        .map(|s| actor_key(project_id, stage_runtime_id, unit_path, actor_id, s))
+        .collect();
+    let mut conn = redis.lock().await;
+    for key in &keys {
+        let _: () = redis::cmd("DEL")
+            .arg(key)
+            .query_async(&mut *conn)
+            .await
+            .unwrap_or(());
+    }
 }
 
 pub async fn delete_actor_state(

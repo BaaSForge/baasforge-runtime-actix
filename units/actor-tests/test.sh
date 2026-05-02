@@ -86,6 +86,7 @@ echo "==> Starting server on port ${PORT} (TEST_MODE)…"
 TEST_MODE=1 \
 APP_ENV=production \
 PORT="$PORT" \
+ACTOR_IDLE_SWEEP_SECS=1 \
 TEST_UNIT_FILES="actor-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_ACTOR_DIR="$SCRIPT_DIR/dist" \
 TEST_WORKFLOW_DIR="$SCRIPT_DIR/dist/seed-workflows" \

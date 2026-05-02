@@ -2,12 +2,13 @@ use crate::libs::unit_js::actor_runner::{
     ActorCtxJson, ActorKind, ActorMetadata, ActorOutcome, actor_backoff_delay,
     extract_actor_metadata, run_actor_handler,
 };
-use crate::libs::unit_js::modules::sdk::SdkCommCtx;
+use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx};
 use crate::models::actor_store;
 use crate::models::projects::ProjectUnitType;
 use crate::services::actor_engine::{
-    ActorRedis, cancel_alarm, commit_state, delete_actor_state, load_hot_state,
-    publish_actor_event, set_alarm,
+    ActorRedis, bump_actor_last_access_if_present, cancel_alarm, clear_actor_idle_deadline, commit_state,
+    delete_actor_state, evict_actor_hot_cache_keep_alarms, idle_due_member, load_hot_state, publish_actor_event,
+    refresh_actor_idle_deadline, set_alarm, ACTOR_IDLE_DUE_ZSET,
 };
 use crate::services::project_release::load_unit_for_path_scoped;
 use chrono::Utc;
@@ -16,6 +17,21 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{error, warn};
 use uuid::Uuid;
+
+async fn sync_idle_tracker_after_touch(
+    redis: &ActorRedis,
+    metadata: &ActorMetadata,
+    project_id: &str,
+    stage_runtime_id: Option<Uuid>,
+    unit_path: &str,
+    actor_id: &str,
+) {
+    if let Some(ms) = metadata.max_idle_time_ms.filter(|m| *m > 0) {
+        refresh_actor_idle_deadline(redis, project_id, stage_runtime_id, unit_path, actor_id, ms).await;
+    } else {
+        clear_actor_idle_deadline(redis, project_id, stage_runtime_id, unit_path, actor_id).await;
+    }
+}
 
 pub struct ActorRunInput {
     pub project_id: String,
@@ -140,6 +156,15 @@ async fn run_actor_inner(
                                 v,
                             )
                             .await;
+                            sync_idle_tracker_after_touch(
+                                &actor_redis,
+                                &metadata,
+                                &input.project_id,
+                                comm.stage_runtime_id,
+                                &input.unit_path,
+                                &input.actor_id,
+                            )
+                            .await;
                             (Some(s), v)
                         }
                         Ok(None) => (None, 0),
@@ -201,6 +226,15 @@ async fn run_actor_inner(
                         new_version,
                     )
                     .await?;
+                    sync_idle_tracker_after_touch(
+                        &actor_redis,
+                        &metadata,
+                        &input.project_id,
+                        comm.stage_runtime_id,
+                        &input.unit_path,
+                        &input.actor_id,
+                    )
+                    .await;
                     if let Some(pool) = &comm.actor_pg {
                         let pool = pool.clone();
                         let pid = input.project_id.clone();
@@ -217,6 +251,24 @@ async fn run_actor_inner(
                             }
                         });
                     }
+                } else if bump_actor_last_access_if_present(
+                    &actor_redis,
+                    &input.project_id,
+                    comm.stage_runtime_id,
+                    &input.unit_path,
+                    &input.actor_id,
+                )
+                .await
+                {
+                    sync_idle_tracker_after_touch(
+                        &actor_redis,
+                        &metadata,
+                        &input.project_id,
+                        comm.stage_runtime_id,
+                        &input.unit_path,
+                        &input.actor_id,
+                    )
+                    .await;
                 }
 
                 let cancelled_names: HashSet<&str> =
@@ -473,11 +525,53 @@ pub async fn passivate_actor(
     unit_path: &str,
     actor_id: &str,
     stage_runtime_id: Option<Uuid>,
+    skip_if_idle_rescheduled: bool,
+    locks: Option<&SdkActorLocks>,
 ) {
-    if let Some(pool) = actor_pg {
-        if let Some((state, version)) =
-            load_hot_state(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await
-        {
+    let actor_exec_arc = if let Some(locks) = locks {
+        let lock_key = (
+            project_id.to_string(),
+            unit_path.to_string(),
+            actor_id.to_string(),
+            stage_runtime_id,
+        );
+        let mut map = locks.lock().await;
+        Some(
+            map.entry(lock_key)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone(),
+        )
+    } else {
+        None
+    };
+    let _actor_exec_guard = if let Some(ref arc) = actor_exec_arc {
+        Some(arc.lock().await)
+    } else {
+        None
+    };
+
+    if skip_if_idle_rescheduled {
+        let member = idle_due_member(stage_runtime_id, project_id, unit_path, actor_id);
+        let now_ms = chrono::Utc::now().timestamp_millis() as f64;
+        let mut conn = actor_redis.lock().await;
+        let score: Option<f64> = redis::cmd("ZSCORE")
+            .arg(ACTOR_IDLE_DUE_ZSET)
+            .arg(&member)
+            .query_async(&mut *conn)
+            .await
+            .ok()
+            .flatten();
+        if score.map(|s| s > now_ms).unwrap_or(true) {
+            return;
+        }
+    }
+
+    clear_actor_idle_deadline(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await;
+
+    if let Some((state, version)) =
+        load_hot_state(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await
+    {
+        if let Some(pool) = actor_pg {
             if let Err(e) =
                 actor_store::upsert_snapshot(pool, project_id, unit_path, actor_id, stage_runtime_id, &state, version)
                     .await
@@ -485,7 +579,9 @@ pub async fn passivate_actor(
                 error!(error = %e, "[actor_manager] passivate upsert_snapshot failed");
             }
         }
+        evict_actor_hot_cache_keep_alarms(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await;
     }
+
     publish_actor_event(
         nats,
         project_id,
@@ -506,6 +602,7 @@ pub async fn delete_actor(
     unit_path: &str,
     actor_id: &str,
 ) {
+    clear_actor_idle_deadline(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await;
     if let Some(pool) = actor_pg {
         let _ = actor_store::delete_snapshot(pool, project_id, unit_path, actor_id, stage_runtime_id).await;
     }

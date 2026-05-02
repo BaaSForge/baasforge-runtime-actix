@@ -151,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         run_alarm_sweeper(alarm_comm).await;
     });
 
+    let actor_idle_sweep = std::time::Duration::from_secs(settings.actor_idle_sweep_secs.max(1));
     tokio::spawn(async move {
         if let Err(e) = baal_runtime_actix::services::actor_worker::runner::run_actor_consumer(
             actor_redis,
@@ -165,6 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             &consumer_name,
             actor_pg,
             locks,
+            actor_idle_sweep,
         )
         .await
         {

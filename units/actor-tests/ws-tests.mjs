@@ -99,6 +99,10 @@ async function deleteActor(unit, actorId) {
   return httpDelete(`${ACTOR_BASE}/${unit}/${actorId}`);
 }
 
+async function passivateActor(unit, actorId) {
+  return httpPost(`${ACTOR_BASE}/${unit}/${actorId}/passivate`, {});
+}
+
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -208,8 +212,22 @@ const WS_LIFECYCLE = [
   },
   {
     name: "ws-passivated-event",
-    skip: "passivation timing depends on maxIdleTime sweep; difficult in short test window",
-    run: async () => {},
+    run: async () => {
+      const actorId = `ws-passivated-${uid()}`;
+      await deleteActor("lifecycle-events-broadcast", actorId);
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 6_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "actor" }));
+        await sleep(200);
+        await callActor("lifecycle-events-broadcast", actorId, "increment");
+        const pv = await passivateActor("lifecycle-events-broadcast", actorId);
+        if (pv.status !== 200)
+          throw new Error(`passivate returned ${pv.status}: ${JSON.stringify(pv.body)}`);
+      });
+      const forActor = msgs.filter((m) => m.parsed?.actor_id === actorId);
+      const events = wsEvents(forActor);
+      if (!events.includes("passivated"))
+        throw new Error(`missing passivated event; got ${JSON.stringify(events)}`);
+    },
   },
   {
     name: "ws-failed-event",

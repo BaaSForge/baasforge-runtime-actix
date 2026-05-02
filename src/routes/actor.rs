@@ -228,6 +228,8 @@ async fn actor_post_inner(
                 &unit_path,
                 &parsed.actor_id,
                 stage_runtime_id,
+                false,
+                Some(&ctx.actor_locks),
             )
             .await;
             HttpResponse::Ok().json(json!({ "passivated": true }))

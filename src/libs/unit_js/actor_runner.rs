@@ -353,11 +353,25 @@ if (typeof __actorExport !== "undefined" && __actorExport && __actorExport.__act
 if (__actorDef) {
   var meta = __actorDef.__metadata || {};
   var handlers = Object.keys(__actorDef.__handlers || {});
+  function __maxIdleToMs(v) {
+    if (v == null || v === "") return null;
+    if (typeof v === "number" && !isNaN(v)) return v;
+    if (typeof v !== "string") return null;
+    var m = String(v).trim().toLowerCase().match(/^(\d+)\s*(ms|s|m|h)$/);
+    if (!m) return null;
+    var n = parseInt(m[1], 10);
+    var u = m[2];
+    if (u === "ms") return n;
+    if (u === "s") return n * 1000;
+    if (u === "m") return n * 60 * 1000;
+    if (u === "h") return n * 60 * 60 * 1000;
+    return null;
+  }
   JSON.stringify({
     handlers: (meta.handlers && Array.isArray(meta.handlers)) ? meta.handlers : handlers,
     retry: meta.retry || null,
     timeout: meta.timeout || null,
-    maxIdleTime: meta.maxIdleTime || null,
+    maxIdleTimeMs: __maxIdleToMs(meta.maxIdleTime),
     stateLimitBytes: meta.stateLimitBytes || null,
   });
 } else {
@@ -377,8 +391,8 @@ pub struct ActorMetadata {
     pub handlers: Vec<String>,
     pub retry: Option<ActorRetryPolicy>,
     pub timeout: Option<u64>,
-    #[serde(rename = "maxIdleTime")]
-    pub max_idle_time: Option<u64>,
+    #[serde(rename = "maxIdleTimeMs")]
+    pub max_idle_time_ms: Option<u64>,
     #[serde(rename = "stateLimitBytes")]
     pub state_limit_bytes: Option<u64>,
 }

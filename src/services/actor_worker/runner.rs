@@ -1,6 +1,7 @@
 use async_nats::jetstream;
 use futures::StreamExt;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{error, info, warn};
 
 use crate::database::DbPool;
@@ -9,6 +10,7 @@ use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::models::actor_store::ActorPgPool;
 use crate::routes::ActorLocks;
 use crate::services::actor_engine::{ActorRedis, ACTOR_NATS_STREAM_SUBJECTS};
+use crate::services::actor_worker::idle::run_actor_idle_sweep;
 use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock};
 use crate::services::workflow_engine::SharedRedis as WfRedis;
 
@@ -25,6 +27,7 @@ pub async fn run_actor_consumer(
     consumer_name: &str,
     actor_pg: Option<ActorPgPool>,
     locks: ActorLocks,
+    idle_sweep_interval: Duration,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(js) = actor_js else {
         info!("[actor_consumer] no JetStream context; mailbox consumer exiting");
@@ -66,6 +69,30 @@ pub async fn run_actor_consumer(
     let mut messages = consumer.messages().await?;
 
     let actor_js_for_comm = Some(js);
+
+    let idle_comm = Arc::new(SdkCommCtx {
+        pool: pool.clone(),
+        redis_conn: redis_conn.clone(),
+        wf_redis: None,
+        wf_nats: None,
+        wf_js: None,
+        wq_redis: None,
+        wq_nats: None,
+        wq_js: None,
+        actor_redis: Some(actor_redis.clone()),
+        actor_nats: actor_nats.clone(),
+        actor_js: actor_js_for_comm.clone(),
+        actor_pg: actor_pg.clone(),
+        actor_locks: locks.clone(),
+        project_id: String::new(),
+        source_unit_path: String::new(),
+        source_instance_id: None,
+        stage_runtime_id: None,
+    });
+    let idle_interval = idle_sweep_interval.max(Duration::from_secs(1));
+    tokio::spawn(async move {
+        run_actor_idle_sweep(idle_comm, idle_interval).await;
+    });
 
     while let Some(result) = messages.next().await {
         match result {
