@@ -513,6 +513,43 @@ function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
+function diagActorWfHomonymousTripleLeg(params: {
+  leg: "prod" | "stage-a" | "stage-b";
+  actorId: string;
+  url: string;
+  res: { status: number; body: any };
+  expectedPath: string;
+  expectedScope: string;
+  elapsedMs: number;
+}): string {
+  const { res, expectedPath, expectedScope, leg, actorId, url, elapsedMs } = params;
+  const pr = res.body?.result;
+  const embedded =
+    pr && typeof pr === "object" && "error" in pr ? String((pr as { error?: unknown }).error) : undefined;
+  const statusOk = res.status === 200;
+  const scopeOk = pr?.scopeFromHandler === expectedScope;
+  const pathOk = pr?.unitPathFromHandler === expectedPath;
+  const lines = [
+    `[sdk-same-unit-path-actor-wf-handler-homonymous-triple] leg=${leg} actorId=${actorId} parallelElapsedMs=${elapsedMs}`,
+    `  requestUrl: ${url}`,
+    `  httpStatus: ${res.status}`,
+    `  expected: scopeFromHandler=${JSON.stringify(expectedScope)} unitPathFromHandler=${JSON.stringify(expectedPath)}`,
+    `  actual: scopeFromHandler=${JSON.stringify(pr?.scopeFromHandler)} unitPathFromHandler=${JSON.stringify(pr?.unitPathFromHandler)}`,
+    `  checks: httpOk=${statusOk} scopeMatch=${scopeOk} pathMatch=${pathOk}`,
+    `  body.result: ${JSON.stringify(pr ?? null)}`,
+    `  body (first 4000 chars): ${JSON.stringify(res.body).slice(0, 4000)}`,
+  ];
+  if (embedded !== undefined) lines.push(`  actorHandlerEmbeddedError: ${embedded}`);
+  lines.push(
+    `  interpretation: "workflow instance not found" → likely TRUE NEGATIVE (race): startWorkflowSync returned an instanceId but ` +
+      `callWorkflowHandlerAndWaitForResultSync hit the workflow API before that instance is readable on the path used by handler RPC ` +
+      `(persistence / worker / cache ordering). Intermittent pass → classic eventual-consistency flake. ` +
+      `If scope or unitPath is wrong while HTTP 200, homonymous routing bug (FALSE NEGATIVE worth fixing). ` +
+      `If httpStatus≠200, inspect actor/workflow trigger layer.`,
+  );
+  return lines.join("\n");
+}
+
 function fail(name: string, msg: string): TestResult {
   return { name, pass: false, error: msg };
 }
@@ -2442,29 +2479,83 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const expectedPath = "test.wf.workflow.http-same-path-wf-handler-isolation";
         const bridge = "sdk-actor-calls-homonymous-wf-handler-isolation";
+        const tag = uid();
+        const aidP = `hf-p-${tag}`;
+        const aidA = `hf-a-${tag}`;
+        const aidB = `hf-b-${tag}`;
+        const urlP = `${actorUrl(baseUrl, bridge, aidP, "runHandlerProbe")}?await=true`;
+        const urlA = `${actorStageUrl(baseUrl, bridge, aidA, "runHandlerProbe", STAGE_RUNTIME_ID)}?await=true`;
+        const urlB = `${actorStageUrl(baseUrl, bridge, aidB, "runHandlerProbe", STAGE_B_RUNTIME_ID)}?await=true`;
+        console.error(
+          "[diag] sdk-same-unit-path-actor-wf-handler-homonymous-triple: parallel start",
+          JSON.stringify({ tag, aidP, aidA, aidB, bridge, expectedPath, baseUrl }, null, 0),
+        );
+        const t0 = Date.now();
         const [rp, ra, rb] = await Promise.all([
-          httpPostFull(`${actorUrl(baseUrl, bridge, `hf-${uid()}`, "runHandlerProbe")}?await=true`, {}),
-          httpPostFull(
-            `${actorStageUrl(baseUrl, bridge, `hf-${uid()}`, "runHandlerProbe", STAGE_RUNTIME_ID)}?await=true`,
-            {},
-          ),
-          httpPostFull(
-            `${actorStageUrl(baseUrl, bridge, `hf-${uid()}`, "runHandlerProbe", STAGE_B_RUNTIME_ID)}?await=true`,
-            {},
-          ),
+          httpPostFull(urlP, {}),
+          httpPostFull(urlA, {}),
+          httpPostFull(urlB, {}),
         ]);
+        const elapsed = Date.now() - t0;
+        console.error(
+          "[diag] sdk-same-unit-path-actor-wf-handler-homonymous-triple: parallel done",
+          JSON.stringify(
+            {
+              elapsedMs: elapsed,
+              prod: { status: rp.status, err: rp.body?.result?.error ?? null },
+              stageA: { status: ra.status, err: ra.body?.result?.error ?? null },
+              stageB: { status: rb.status, err: rb.body?.result?.error ?? null },
+            },
+            null,
+            0,
+          ),
+        );
         const pr = rp.body?.result;
         const ar = ra.body?.result;
         const br = rb.body?.result;
         if (rp.status !== 200 || pr?.scopeFromHandler !== "prod" || pr?.unitPathFromHandler !== expectedPath) {
-          throw new Error(`actor prod start+handler homonymous wf: ${JSON.stringify(rp.body)}`);
+          const msg = diagActorWfHomonymousTripleLeg({
+            leg: "prod",
+            actorId: aidP,
+            url: urlP,
+            res: rp,
+            expectedPath,
+            expectedScope: "prod",
+            elapsedMs: elapsed,
+          });
+          console.error(msg);
+          throw new Error(msg);
         }
         if (ra.status !== 200 || ar?.scopeFromHandler !== "stage-a" || ar?.unitPathFromHandler !== expectedPath) {
-          throw new Error(`actor stage-a start+handler homonymous wf: ${JSON.stringify(ra.body)}`);
+          const msg = diagActorWfHomonymousTripleLeg({
+            leg: "stage-a",
+            actorId: aidA,
+            url: urlA,
+            res: ra,
+            expectedPath,
+            expectedScope: "stage-a",
+            elapsedMs: elapsed,
+          });
+          console.error(msg);
+          throw new Error(msg);
         }
         if (rb.status !== 200 || br?.scopeFromHandler !== "stage-b" || br?.unitPathFromHandler !== expectedPath) {
-          throw new Error(`actor stage-b start+handler homonymous wf: ${JSON.stringify(rb.body)}`);
+          const msg = diagActorWfHomonymousTripleLeg({
+            leg: "stage-b",
+            actorId: aidB,
+            url: urlB,
+            res: rb,
+            expectedPath,
+            expectedScope: "stage-b",
+            elapsedMs: elapsed,
+          });
+          console.error(msg);
+          throw new Error(msg);
         }
+        console.error(
+          "[diag] sdk-same-unit-path-actor-wf-handler-homonymous-triple: all legs ok",
+          JSON.stringify({ tag, elapsedMs: elapsed }, null, 0),
+        );
       },
     },
     {

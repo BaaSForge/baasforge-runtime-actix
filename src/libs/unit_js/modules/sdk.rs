@@ -545,7 +545,7 @@ fn host_start_workflow_fire_forget(
 ) -> rquickjs::Result<String> {
     use crate::models::projects::ProjectUnitType;
     use crate::services::project_release::load_unit_for_path_scoped;
-    use crate::services::workflow_engine::start_workflow;
+    use crate::services::workflow_engine::{drive_workflow, prepare_workflow_instance_for_start};
 
     let res: Result<String, String> = with_comm_ctx(|comm| {
         let wf_redis = comm.wf_redis.clone()
@@ -584,31 +584,50 @@ fn host_start_workflow_fire_forget(
             let instance_id = crate::libs::ids::new_uuid().to_string();
             let callee_comm = comm_arc.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
 
-            let wf_redis_bg = wf_redis.clone();
-            let wf_nats_bg = wf_nats.clone();
-            let wf_js_bg = wf_js.clone();
-            let project_id_bg = project_id.clone();
-            let unit_path_bg = unit_path.clone();
-            let instance_id_bg = instance_id.clone();
-            let input_json_bg = input_json.clone();
-            let source_bg = source.clone();
-            tokio::spawn(async move {
-                if let Err(e) = start_workflow(
-                    &wf_redis_bg,
-                    &wf_nats_bg,
-                    &wf_js_bg,
-                    &project_id_bg,
-                    &unit_path_bg,
-                    &instance_id_bg,
-                    &input_json_bg,
-                    &source_bg,
-                    callee_comm,
-                ).await {
-                    tracing::error!(error = %e, unit_path = %unit_path_bg, instance_id = %instance_id_bg, "fire-and-forget workflow start failed");
-                }
-            });
+            let effective_id = prepare_workflow_instance_for_start(
+                &wf_redis,
+                &wf_nats,
+                &wf_js,
+                &project_id,
+                &unit_path,
+                &instance_id,
+                &input_json,
+                &source,
+                callee_comm.clone(),
+            )
+            .await?;
 
-            Ok(serde_json::json!({ "instanceId": instance_id }).to_string())
+            if effective_id == instance_id {
+                let wf_redis_bg = wf_redis.clone();
+                let wf_nats_bg = wf_nats.clone();
+                let wf_js_bg = wf_js.clone();
+                let project_id_bg = project_id.clone();
+                let unit_path_bg = unit_path.clone();
+                let instance_id_bg = instance_id.clone();
+                let input_json_bg = input_json.clone();
+                let source_bg = source.clone();
+                let comm_bg = callee_comm;
+                tokio::spawn(async move {
+                    if let Err(e) = drive_workflow(
+                        &wf_redis_bg,
+                        &wf_nats_bg,
+                        &wf_js_bg,
+                        &project_id_bg,
+                        &instance_id_bg,
+                        &input_json_bg,
+                        &source_bg,
+                        None,
+                        None,
+                        comm_bg,
+                    )
+                    .await
+                    {
+                        tracing::error!(error = %e, unit_path = %unit_path_bg, instance_id = %instance_id_bg, "fire-and-forget workflow drive failed");
+                    }
+                });
+            }
+
+            Ok(serde_json::json!({ "instanceId": effective_id }).to_string())
         })
     });
     res.map_err(|e| Exception::throw_message(&ctx, &e))

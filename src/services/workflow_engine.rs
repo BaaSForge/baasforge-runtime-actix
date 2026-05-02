@@ -67,9 +67,10 @@ pub struct WorkflowMeta {
     pub stage_runtime_id: Option<Uuid>,
 }
 
-/// Start a new workflow instance.
-/// Returns the instance ID on success.
-pub async fn start_workflow(
+/// Name-key resolution, optional resume, and Redis meta + `workflow.started` for a new instance.
+/// Returns the instance id callers must use for `drive_workflow` / handler RPC (may differ from
+/// `instance_id` when dedup returns an existing execution).
+pub async fn prepare_workflow_instance_for_start(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
     js: &Option<jetstream::Context>,
@@ -80,10 +81,6 @@ pub async fn start_workflow(
     source: &str,
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
-    // Workflow-name dedup: only return an existing instance if it is still
-    // actively running or suspended. Completed/failed/cancelled instances are
-    // NOT reused so that subsequent triggers always start a fresh execution.
-    // SET NX atomically claims the name_key so concurrent starts can't both pass.
     let name_key = workflow_dedup_name_key(project_id, unit_path, comm.stage_runtime_id);
     {
         let mut conn = redis.lock().await;
@@ -109,10 +106,6 @@ pub async fn start_workflow(
                             return Ok(eid);
                         }
                         if meta.status == "running" {
-                            // Only treat as active if the exec_lock is still held.
-                            // No exec_lock means the previous execution crashed or the
-                            // status was never advanced — treat it as stale and create
-                            // a fresh instance.
                             let lock_key = format!("wf:{project_id}:{eid}:exec_lock");
                             let lock_exists: bool = redis::cmd("EXISTS")
                                 .arg(&lock_key)
@@ -123,11 +116,9 @@ pub async fn start_workflow(
                                 drop(conn);
                                 return Ok(eid);
                             }
-                            // Stale — fall through to overwrite name_key with new instance
                         }
                     }
                 }
-                // Existing instance is terminal -- overwrite name_key with new instance
                 let _: () =
                     conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
             }
@@ -163,9 +154,28 @@ pub async fn start_workflow(
     )
     .await;
 
-    let _ = drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, comm).await;
-
     Ok(instance_id.to_string())
+}
+
+/// Start a new workflow instance.
+/// Returns the instance ID on success.
+pub async fn start_workflow(
+    redis: &SharedRedis,
+    nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
+    project_id: &str,
+    unit_path: &str,
+    instance_id: &str,
+    input_json: &str,
+    source: &str,
+    comm: Arc<SdkCommCtx>,
+) -> Result<String, String> {
+    let effective_id =
+        prepare_workflow_instance_for_start(redis, nats, js, project_id, unit_path, instance_id, input_json, source, comm.clone()).await?;
+    if effective_id == instance_id {
+        let _ = drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, comm).await;
+    }
+    Ok(effective_id)
 }
 
 /// Resume a workflow after a wake signal (timer or promise resolution).
@@ -630,7 +640,7 @@ pub async fn launch_callee_workflow(
     Ok(())
 }
 
-async fn drive_workflow(
+pub(crate) async fn drive_workflow(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
     js: &Option<jetstream::Context>,
