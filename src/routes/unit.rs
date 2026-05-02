@@ -200,6 +200,7 @@ async fn respond_trigger_unit(
         actor_redis: ctx.actor_redis.clone(),
         actor_nats: ctx.actor_nats_client.clone(),
         actor_js: ctx.actor_jetstream.clone(),
+        actor_pg: ctx.actor_pg.clone(),
         actor_locks: ctx.actor_locks.clone(),
         project_id: project_id_str.to_string(),
         source_unit_path: unit_path.to_string(),

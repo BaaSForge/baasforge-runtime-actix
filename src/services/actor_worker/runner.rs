@@ -6,6 +6,7 @@ use tracing::{error, info, warn};
 use crate::database::DbPool;
 use crate::libs::unit_js::actor_runner::ActorKind;
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
+use crate::models::actor_store::ActorPgPool;
 use crate::routes::ActorLocks;
 use crate::services::actor_engine::{ActorRedis, ACTOR_NATS_STREAM_SUBJECTS};
 use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock};
@@ -22,6 +23,7 @@ pub async fn run_actor_consumer(
     wf_js: Option<jetstream::Context>,
     stream_name: &str,
     consumer_name: &str,
+    actor_pg: Option<ActorPgPool>,
     locks: ActorLocks,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(js) = actor_js else {
@@ -78,10 +80,11 @@ pub async fn run_actor_consumer(
                 let wf_js = wf_js.clone();
                 let locks = locks.clone();
 
+                let actor_pg = actor_pg.clone();
                 tokio::spawn(async move {
                     handle_actor_message(
                         msg, actor_redis, actor_js, actor_nats, pool, redis_conn,
-                        wf_redis, wf_nats, wf_js, locks,
+                        wf_redis, wf_nats, wf_js, actor_pg, locks,
                     )
                     .await;
                 });
@@ -106,6 +109,7 @@ async fn handle_actor_message(
     wf_redis: Option<WfRedis>,
     wf_nats: Option<async_nats::Client>,
     wf_js: Option<async_nats::jetstream::Context>,
+    actor_pg: Option<ActorPgPool>,
     locks: ActorLocks,
 ) {
     let payload: Option<serde_json::Value> = serde_json::from_slice(&msg.payload).ok();
@@ -177,6 +181,7 @@ async fn handle_actor_message(
         actor_redis: Some(actor_redis.clone()),
         actor_nats: actor_nats.clone(),
         actor_js,
+        actor_pg,
         actor_locks: locks,
         project_id: project_id.clone(),
         source_unit_path: unit_path.clone(),

@@ -10,6 +10,13 @@ use uuid::Uuid;
 
 pub type ActorPgPool = Arc<Pool<ConnectionManager<PgConnection>>>;
 
+pub fn actor_snapshot_stage_key(stage_runtime_id: Option<Uuid>) -> Uuid {
+    match stage_runtime_id {
+        Some(id) => id,
+        None => Uuid::parse_str("00000000-0000-0000-0000-000000000000").expect("actor snapshot prod stage key"),
+    }
+}
+
 pub fn build_actor_pg_pool(database_url: &str, pool_size: u32, timeout_secs: u64) -> ActorPgPool {
     let manager = ConnectionManager::<PgConnection>::new(database_url);
     let pool = Pool::builder()
@@ -26,6 +33,7 @@ struct NewSnapshot {
     project_id: Uuid,
     unit_path: String,
     actor_id: String,
+    stage_runtime_id: Uuid,
     state: Value,
     version: i64,
     updated_at: DateTime<Utc>,
@@ -47,6 +55,7 @@ pub async fn upsert_snapshot(
     project_id: &str,
     unit_path: &str,
     actor_id: &str,
+    stage_runtime_id: Option<Uuid>,
     state: &Value,
     version: i64,
 ) -> Result<(), String> {
@@ -54,17 +63,27 @@ pub async fn upsert_snapshot(
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
+    let stage_key = actor_snapshot_stage_key(stage_runtime_id);
     let state = state.clone();
     let now = Utc::now();
     tokio::task::spawn_blocking(move || {
         let mut conn = pool.get().map_err(|e| e.to_string())?;
-        let row = NewSnapshot { project_id, unit_path, actor_id, state, version, updated_at: now };
+        let row = NewSnapshot {
+            project_id,
+            unit_path,
+            actor_id,
+            stage_runtime_id: stage_key,
+            state,
+            version,
+            updated_at: now,
+        };
         diesel::insert_into(actor_snapshots::table)
             .values(&row)
             .on_conflict((
                 actor_snapshots::project_id,
                 actor_snapshots::unit_path,
                 actor_snapshots::actor_id,
+                actor_snapshots::stage_runtime_id,
             ))
             .do_update()
             .set((
@@ -85,17 +104,20 @@ pub async fn load_snapshot(
     project_id: &str,
     unit_path: &str,
     actor_id: &str,
+    stage_runtime_id: Option<Uuid>,
 ) -> Result<Option<(Value, i64)>, String> {
     let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
+    let stage_key = actor_snapshot_stage_key(stage_runtime_id);
     tokio::task::spawn_blocking(move || {
         let mut conn = pool.get().map_err(|e| e.to_string())?;
         actor_snapshots::table
             .filter(actor_snapshots::project_id.eq(project_id))
             .filter(actor_snapshots::unit_path.eq(&unit_path))
             .filter(actor_snapshots::actor_id.eq(&actor_id))
+            .filter(actor_snapshots::stage_runtime_id.eq(stage_key))
             .select((actor_snapshots::state, actor_snapshots::version))
             .first::<(Value, i64)>(&mut conn)
             .optional()
@@ -110,18 +132,21 @@ pub async fn delete_snapshot(
     project_id: &str,
     unit_path: &str,
     actor_id: &str,
+    stage_runtime_id: Option<Uuid>,
 ) -> Result<(), String> {
     let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
+    let stage_key = actor_snapshot_stage_key(stage_runtime_id);
     tokio::task::spawn_blocking(move || {
         let mut conn = pool.get().map_err(|e| e.to_string())?;
         diesel::delete(
             actor_snapshots::table
                 .filter(actor_snapshots::project_id.eq(project_id))
                 .filter(actor_snapshots::unit_path.eq(&unit_path))
-                .filter(actor_snapshots::actor_id.eq(&actor_id)),
+                .filter(actor_snapshots::actor_id.eq(&actor_id))
+                .filter(actor_snapshots::stage_runtime_id.eq(stage_key)),
         )
         .execute(&mut conn)
         .map(|_| ())

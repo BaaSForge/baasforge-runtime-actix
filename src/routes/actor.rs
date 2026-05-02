@@ -2,8 +2,9 @@ use crate::libs::api_response::api_error;
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::routes::AppContext;
+use crate::models::actor_store;
 use crate::services::actor_engine::{
-    ActorRedis, get_actor_state_and_version, publish_actor_message,
+    commit_state, delete_actor_state, get_actor_state_and_version, publish_actor_message, ActorRedis,
 };
 use crate::services::actor_worker::manager::{
     ActorRunInput, delete_actor, passivate_actor, run_actor_with_lock,
@@ -45,7 +46,9 @@ struct ParsedActorTail {
 enum ActorOperation {
     CallHandler(String),
     GetState,
+    SnapshotPg,
     Passivate,
+    TestEvictRedis,
     Delete,
 }
 
@@ -66,7 +69,9 @@ fn parse_actor_tail(tail: &str, method: &str) -> Option<ParsedActorTail> {
 
             let operation = match (method, op) {
                 ("POST", "passivate") => ActorOperation::Passivate,
+                ("POST", "test-evict-redis") => ActorOperation::TestEvictRedis,
                 ("GET", "state") => ActorOperation::GetState,
+                ("GET", "snapshot-pg") => ActorOperation::SnapshotPg,
                 ("POST", handler) => {
                     if !is_valid_handler_name(handler) {
                         return None;
@@ -217,6 +222,7 @@ async fn actor_post_inner(
         ActorOperation::Passivate => {
             passivate_actor(
                 &actor_redis,
+                ctx.actor_pg.as_ref(),
                 &ctx.actor_nats_client,
                 &project_id_str,
                 &unit_path,
@@ -225,6 +231,22 @@ async fn actor_post_inner(
             )
             .await;
             HttpResponse::Ok().json(json!({ "passivated": true }))
+        }
+
+        ActorOperation::TestEvictRedis => {
+            if !ctx.settings.test_mode {
+                return HttpResponse::NotFound()
+                    .json(api_error("not found", json!({})));
+            }
+            delete_actor_state(
+                &actor_redis,
+                &project_id_str,
+                stage_runtime_id,
+                &unit_path,
+                &parsed.actor_id,
+            )
+            .await;
+            HttpResponse::Ok().json(json!({ "evicted": true }))
         }
 
         ActorOperation::CallHandler(handler_name) => {
@@ -254,6 +276,7 @@ async fn actor_post_inner(
                     actor_redis: Some(actor_redis.clone()),
                     actor_nats: ctx.actor_nats_client.clone(),
                     actor_js: ctx.actor_jetstream.clone(),
+                    actor_pg: ctx.actor_pg.clone(),
                     actor_locks: ctx.actor_locks.clone(),
                     project_id: project_id_str.clone(),
                     source_unit_path: unit_path.clone(),
@@ -386,8 +409,73 @@ async fn actor_get_inner(
                 Some((state, version)) => {
                     HttpResponse::Ok().json(json!({ "state": state, "version": version }))
                 }
-                None => HttpResponse::NotFound()
-                    .json(api_error("actor state not found", json!({}))),
+                None => {
+                    if let Some(pool) = &ctx.actor_pg {
+                        match actor_store::load_snapshot(
+                            pool,
+                            &project_id_str,
+                            &unit_path,
+                            &parsed.actor_id,
+                            stage_runtime_id,
+                        )
+                        .await
+                        {
+                            Ok(Some((state, version))) => {
+                                let _ = commit_state(
+                                    &actor_redis,
+                                    &project_id_str,
+                                    stage_runtime_id,
+                                    &unit_path,
+                                    &parsed.actor_id,
+                                    &state,
+                                    version,
+                                )
+                                .await;
+                                HttpResponse::Ok().json(json!({ "state": state, "version": version }))
+                            }
+                            Ok(None) => HttpResponse::NotFound()
+                                .json(api_error("actor state not found", json!({}))),
+                            Err(e) => {
+                                tracing::error!(error = %e, "[actor_route] load_snapshot failed");
+                                HttpResponse::InternalServerError()
+                                    .json(api_error("actor snapshot load failed", json!({})))
+                            }
+                        }
+                    } else {
+                        HttpResponse::NotFound()
+                            .json(api_error("actor state not found", json!({})))
+                    }
+                }
+            }
+        }
+
+        ActorOperation::SnapshotPg => {
+            if !ctx.settings.test_mode {
+                return HttpResponse::NotFound()
+                    .json(api_error("not found", json!({})));
+            }
+            let Some(pool) = ctx.actor_pg.as_ref() else {
+                return HttpResponse::ServiceUnavailable()
+                    .json(api_error("actor postgres not configured", json!({})));
+            };
+            match actor_store::load_snapshot(
+                pool,
+                &project_id_str,
+                &unit_path,
+                &parsed.actor_id,
+                stage_runtime_id,
+            )
+            .await
+            {
+                Ok(Some((state, version))) => {
+                    HttpResponse::Ok().json(json!({ "found": true, "state": state, "version": version }))
+                }
+                Ok(None) => HttpResponse::Ok().json(json!({ "found": false })),
+                Err(e) => {
+                    tracing::error!(error = %e, "[actor_route] snapshot-pg load failed");
+                    HttpResponse::InternalServerError()
+                        .json(api_error("actor snapshot load failed", json!({})))
+                }
             }
         }
         _ => HttpResponse::MethodNotAllowed().json(api_error("method not allowed", json!({}))),
@@ -445,6 +533,7 @@ async fn actor_delete_inner(
         ActorOperation::Delete => {
             delete_actor(
                 &actor_redis,
+                ctx.actor_pg.as_ref(),
                 &ctx.actor_nats_client,
                 &project_id_str,
                 stage_runtime_id,

@@ -1,5 +1,6 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::establish_pool;
+use baal_runtime_actix::models::actor_store::build_actor_pg_pool;
 use baal_runtime_actix::init_tracing;
 use baal_runtime_actix::libs::unit_js::modules::sdk::SdkCommCtx;
 use baal_runtime_actix::routes::ActorLocks;
@@ -64,6 +65,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let actor_nats = baal_runtime_actix::configs::connect_nats(actor_nats_url).await?;
     info!("[nats_actor] connected for actor mailbox consumer");
     let actor_js = Some(async_nats::jetstream::new(actor_nats.clone()));
+
+    let actor_pg = settings.actor_database_url.as_ref().map(|url| {
+        build_actor_pg_pool(
+            url,
+            settings.actor_database_pool_size.max(1),
+            settings.actor_database_connection_timeout_secs.max(1),
+        )
+    });
 
     let wf_redis_url = settings.wf_redis_url.as_deref();
     let wf_nats_url = settings.wf_nats_url.as_deref();
@@ -131,6 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         actor_redis: Some(actor_redis.clone()),
         actor_nats: Some(actor_nats.clone()),
         actor_js: actor_js.clone(),
+        actor_pg: actor_pg.clone(),
         actor_locks: locks.clone(),
         project_id: String::new(),
         source_unit_path: String::new(),
@@ -153,6 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             wf_js,
             &stream_name,
             &consumer_name,
+            actor_pg,
             locks,
         )
         .await

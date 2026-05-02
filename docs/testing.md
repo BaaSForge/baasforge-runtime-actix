@@ -17,6 +17,14 @@ Similar entrypoints:
 - `./units/actor-tests/test.sh` — actor SDK + API runner
 - `./units/queue-worker-tests/test.sh` — queue worker SDK + API runner
 
+## Unit runtime tests (prefer `units/` over Rust integration tests)
+
+Behavioral coverage for **workflow**, **queue-worker**, and **actor** runtimes (HTTP triggers, real consumers in `TEST_MODE`, Redis/NATS/Postgres where applicable) should live in **`units/workflow-tests`**, **`units/queue-worker-tests`**, and **`units/actor-tests`** (TypeScript, end-to-end).
+
+Do **not** add Rust integration tests for the same product-level behaviors unless there is a concrete reason (for example pure logic with no I/O). This keeps one obvious place for suite runners and matches how CI invokes `./units/*/test.sh`.
+
+Actor durable state in **Actor Postgres** (`actor_snapshots`) is described in [`docs/actors-internals.md`](actors-internals.md); schema is under [`migrations/actors/`](../migrations/actors/). In `TEST_MODE`, actor trigger routes expose introspection used only by the actor test runner (`GET .../snapshot-pg` and the same path under `.../stage/{runtimeId}/...`, plus matching `POST .../test-evict-redis`).
+
 ## `units/*` integration layout (isolation)
 
 The three trees **`units/actor-tests`**, **`units/workflow-tests`**, and **`units/queue-worker-tests`** are **self-contained**: their `test.sh` scripts do not compile or seed from a sibling `units/` folder. Homonymous-path and cross-type checks still use the same runtime unit paths (`test.actor-tests.*`, `test.wf.*`, `test.queue-worker.*`) where the product expects them.

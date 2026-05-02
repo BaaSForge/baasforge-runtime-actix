@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::database::DbPool;
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
+use crate::models::actor_store::ActorPgPool;
 use crate::libs::unit_js::queue_worker_runner::{
     BatchConfig, QueueWorkerRunContext, QueueWorkerRunOutcome,
     extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler,
@@ -30,6 +31,7 @@ pub async fn run_work_consumer(
     actor_redis: Option<SharedRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
+    actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
@@ -86,6 +88,7 @@ pub async fn run_work_consumer(
                 let actor_redis = actor_redis.clone();
                 let actor_nats = actor_nats.clone();
                 let actor_js = actor_js.clone();
+                let actor_pg = actor_pg.clone();
                 let actor_locks = actor_locks.clone();
 
                 tokio::spawn(async move {
@@ -102,6 +105,7 @@ pub async fn run_work_consumer(
                         actor_redis,
                         actor_nats,
                         actor_js,
+                        actor_pg,
                         actor_locks,
                     )
                     .await;
@@ -130,6 +134,7 @@ async fn handle_work_message(
     actor_redis: Option<SharedRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
+    actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
 ) {
     let subject = msg.subject.to_string();
@@ -267,6 +272,7 @@ async fn handle_work_message(
             actor_redis: actor_redis.clone(),
             actor_nats: actor_nats.clone(),
             actor_js: actor_js.clone(),
+            actor_pg: actor_pg.clone(),
             actor_locks: actor_locks.clone(),
             project_id: project_id.clone(),
             source_unit_path: unit_path.clone(),
@@ -346,6 +352,7 @@ async fn handle_work_message(
         actor_redis: actor_redis.clone(),
         actor_nats: actor_nats.clone(),
         actor_js: actor_js.clone(),
+        actor_pg: actor_pg.clone(),
         actor_locks: actor_locks.clone(),
         project_id: project_id.clone(),
         source_unit_path: unit_path.clone(),

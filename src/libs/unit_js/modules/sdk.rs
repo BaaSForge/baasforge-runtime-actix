@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::database::{DbPool, SharedRedisConn};
+use crate::models::actor_store::ActorPgPool;
 use uuid::Uuid;
 
 pub type SharedRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
@@ -31,6 +32,7 @@ pub struct SdkCommCtx {
     pub wq_js: Option<jetstream::Context>,
     pub actor_nats: Option<async_nats::Client>,
     pub actor_js: Option<jetstream::Context>,
+    pub actor_pg: Option<ActorPgPool>,
     pub actor_locks: SdkActorLocks,
     pub project_id: String,
     pub source_unit_path: String,

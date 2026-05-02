@@ -168,7 +168,7 @@ invocation end (success)
   → serialize state
   → Redis MULTI: SET state, INCR version, SET last_access
   → ack JetStream message
-  → schedule async flush to Actor PG (batched, debounced)
+  → spawn async `upsert_snapshot` to Actor PG (same invocation; not batched in current code)
 ```
 
 Persistence tiers:
@@ -177,22 +177,26 @@ Persistence tiers:
 |---|---|---|---|
 | 1. In-memory | Pod RAM | Every mutation (free) | Sub-ms hot path |
 | 2. Redis | `actor:pid:unit:id:state` | End of successful invocation | Survives pod crash within the lease window; fast reactivation |
-| 3. Actor PG | `actor_snapshots` row | Async batched flush + on passivation + periodic (e.g. every 30s) | Durable cold storage; survives Redis loss |
+| 3. Actor PG | `actor_snapshots` row | Async upsert after successful handler commit + synchronous flush on passivation (+ DLQ path) | Durable cold storage; survives Redis loss |
 
-If Redis is lost but PG survived, actors re-hydrate from PG (slower cold start but zero data loss beyond the last PG flush interval).
+**Snapshot primary key:** `(project_id, unit_path, actor_id, stage_runtime_id)`. Production snapshots use `stage_runtime_id = 00000000-0000-0000-0000-000000000000`; each stage runtime (A/B, etc.) uses its own UUID so prod and stage rows never collide.
+
+End-to-end coverage for snapshots is in **`units/actor-tests`** (`snapshot-pg` and related cases). In **`TEST_MODE` only**, the HTTP trigger surface exposes `GET …/snapshot-pg` and `GET …/stage/{runtimeId}/…/snapshot-pg` (read PG row for production or that stage, without writing Redis) and matching `…/test-evict-redis` routes (delete this actor’s hot Redis keys only).
+
+If Redis is lost but PG survived, actors re-hydrate from PG (slower cold start). With the current per-success async upsert, PG usually matches Redis within a short window after each commit; a crash between Redis write and PG upsert completion can still leave PG one version behind until the next successful upsert or passivation.
 
 Failure semantics:
 
 - Handler throws **before** state commit → no state written, NAK → retry sees prior state.
-- Handler completes, Redis write succeeds, PG flush pending, pod crashes → new pod acquires lease, reads Redis (newer) over PG (older) — still correct.
-- Handler completes, Redis write succeeds, PG flush pending, **Redis node lost** → new pod reads last PG snapshot. Data loss = invocations since last PG flush (bounded by flush interval).
+- Handler completes, Redis write succeeds, PG upsert not yet applied, pod crashes → new pod may read Redis if keys survived, else PG (possibly one commit behind if upsert never ran).
+- Handler completes, Redis write succeeds, **Redis keys lost** before PG caught up → new pod reads last PG snapshot; bounded loss equals commits not yet visible in PG.
 
 Tuning knobs:
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `ACTOR_PG_FLUSH_INTERVAL_SECS` | `30` | Periodic async flush from Redis→PG |
-| `ACTOR_PG_FLUSH_BATCH_SIZE` | `100` | Max snapshots per PG batch insert |
+| `ACTOR_PG_FLUSH_INTERVAL_SECS` | `30` | Reserved env (not used by current actor PG write path) |
+| `ACTOR_PG_FLUSH_BATCH_SIZE` | `100` | Reserved env (not used by current actor PG write path) |
 | `ACTOR_IDLE_SWEEP_SECS` | `60` | How often passivation sweeper runs |
 | `ACTOR_LEASE_TTL_SECS` | `30` | Lease duration, renewed every `TTL/3` |
 

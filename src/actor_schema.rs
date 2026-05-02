@@ -12,13 +12,14 @@ diesel::table! {
 }
 
 diesel::table! {
-    actor_snapshots (project_id, unit_path, actor_id) {
+    actor_snapshots (project_id, unit_path, actor_id, stage_runtime_id) {
         project_id -> Uuid,
         unit_path -> Text,
         actor_id -> Text,
         state -> Jsonb,
         version -> Int8,
         updated_at -> Timestamptz,
+        stage_runtime_id -> Uuid,
     }
 }
 

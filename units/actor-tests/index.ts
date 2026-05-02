@@ -17,7 +17,8 @@
  * │ Retry uses stored pre-handler    │ retry-and-dlq/pre-handler-state-on-retry                              │
  * │ State durability: timeout        │ durability/no-commit-on-timeout, timeouts/timeout-no-state-commit     │
  * │ State durability: pod kill       │ durability/no-commit-on-pod-kill-mid-run, crash-recovery/*            │
- * │ State durability: redis loss     │ state-persistence/survive-redis-flush, crash-recovery/*               │
+ * │ State durability: redis loss     │ snapshot-pg/*, state-persistence/survive-redis-flush, crash-recovery/* │
+ * │ Actor PG snapshot durability     │ snapshot-pg/*                                                         │
  * │ Bounded data loss on crash       │ crash-recovery/graceful-shutdown-flush                                │
  * │ Project / unit / instance iso.   │ isolation/*                                                           │
  * │ Alarm semantics                  │ alarms/*                                                              │
@@ -66,6 +67,34 @@ function actorPassivateUrl(baseUrl: string, unit: string, actorId: string, proje
 
 function actorDeleteUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
   return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}`;
+}
+
+function actorSnapshotPgUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}/snapshot-pg`;
+}
+
+function actorTestEvictRedisUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}/test-evict-redis`;
+}
+
+function actorStageSnapshotPgUrl(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/snapshot-pg`;
+}
+
+function actorStageTestEvictRedisUrl(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  runtimeId = STAGE_RUNTIME_ID,
+  projectId = PROJECT_ID,
+): string {
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/test-evict-redis`;
 }
 
 function actorStageUrl(
@@ -251,6 +280,76 @@ async function deleteActor(
   projectId = PROJECT_ID,
 ): Promise<{ status: number; body: any }> {
   return httpDeleteFull(actorDeleteUrl(baseUrl, unit, actorId, projectId));
+}
+
+type ActorPgSnapshotOpts = { projectId?: string; stageRuntimeId?: string };
+
+async function snapshotPg(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  opts?: ActorPgSnapshotOpts,
+): Promise<{ found: boolean; state?: any; version?: number }> {
+  const projectId = opts?.projectId ?? PROJECT_ID;
+  const stage = opts?.stageRuntimeId;
+  const url =
+    stage != null && stage !== ""
+      ? actorStageSnapshotPgUrl(baseUrl, unit, actorId, stage, projectId)
+      : actorSnapshotPgUrl(baseUrl, unit, actorId, projectId);
+  const r = await httpGetFull(url);
+  if (r.status !== 200)
+    throw new Error(`snapshot-pg HTTP ${r.status}: ${JSON.stringify(r.body)}`);
+  return r.body;
+}
+
+async function testEvictActorRedis(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  opts?: ActorPgSnapshotOpts,
+): Promise<void> {
+  const projectId = opts?.projectId ?? PROJECT_ID;
+  const stage = opts?.stageRuntimeId;
+  const url =
+    stage != null && stage !== ""
+      ? actorStageTestEvictRedisUrl(baseUrl, unit, actorId, stage, projectId)
+      : actorTestEvictRedisUrl(baseUrl, unit, actorId, projectId);
+  const r = await httpPostFull(url, {});
+  if (r.status !== 200)
+    throw new Error(`test-evict-redis HTTP ${r.status}: ${JSON.stringify(r.body)}`);
+}
+
+async function callActorStage(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  handler: string,
+  payload?: any,
+  runtimeId = STAGE_RUNTIME_ID,
+): Promise<any> {
+  const url = `${actorStageUrl(baseUrl, unit, actorId, handler, runtimeId)}?await=true`;
+  return httpPost(url, payload ?? {});
+}
+
+async function waitForPgVersion(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  targetVersion: number,
+  timeoutMs = 4000,
+  opts?: ActorPgSnapshotOpts,
+): Promise<{ state: any; version: number }> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { found: boolean; state?: any; version?: number } = { found: false };
+  while (Date.now() < deadline) {
+    last = await snapshotPg(baseUrl, unit, actorId, opts);
+    if (last.found && last.version === targetVersion && last.state !== undefined)
+      return { state: last.state, version: last.version };
+    await sleep(40);
+  }
+  throw new Error(
+    `PG snapshot never reached version ${targetVersion} (last=${JSON.stringify(last)})`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -692,7 +791,7 @@ function allInlineTests(): ActorInlineTestDef[] {
     {
       name: "survive-redis-flush",
       category: "state-persistence",
-      skip: "requires integration hook to flush Actor Redis mid-test",
+      skip: "full DB flush unsafe; use snapshot-pg/reactivate-from-pg-when-redis-cold for selective eviction",
       run: async (_baseUrl) => {},
     },
     {
@@ -711,6 +810,107 @@ function allInlineTests(): ActorInlineTestDef[] {
         const v2: number = s2?.version ?? -1;
         if (!(v1 > v0)) throw new Error(`version not increasing: ${v0} → ${v1}`);
         if (!(v2 > v1)) throw new Error(`version not increasing: ${v1} → ${v2}`);
+      },
+    },
+
+    // ---- snapshot-pg (Actor Postgres actor_snapshots) ----
+    {
+      name: "pg-snapshot-row-after-write",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-write-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const redis = await getState(baseUrl, "version-monotonic", id);
+        const pg = await waitForPgVersion(baseUrl, "version-monotonic", id, redis.version);
+        if (pg.state?.count !== redis.state?.count)
+          throw new Error(`PG state ${JSON.stringify(pg.state)} vs redis ${JSON.stringify(redis.state)}`);
+      },
+    },
+    {
+      name: "pg-snapshot-matches-redis-after-multi-increment",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-multi-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        for (let i = 0; i < 5; i++) await callActor(baseUrl, "version-monotonic", id, "increment");
+        const redis = await getState(baseUrl, "version-monotonic", id);
+        const pg = await waitForPgVersion(baseUrl, "version-monotonic", id, redis.version);
+        if (pg.state?.count !== 5 || redis.state?.count !== 5)
+          throw new Error(`expected count=5 redis=${JSON.stringify(redis.state)} pg=${JSON.stringify(pg.state)}`);
+      },
+    },
+    {
+      name: "pg-snapshot-flushed-on-passivate",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-pass-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const before = await getState(baseUrl, "version-monotonic", id);
+        await passivate(baseUrl, "version-monotonic", id);
+        const pg = await snapshotPg(baseUrl, "version-monotonic", id);
+        if (!pg.found) throw new Error("expected PG row after passivate");
+        if (pg.version !== before.version || pg.state?.count !== before.state?.count)
+          throw new Error(`PG ${JSON.stringify(pg)} vs pre-passivate redis ${JSON.stringify(before)}`);
+      },
+    },
+    {
+      name: "delete-clears-pg-snapshot",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-del-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        await waitForPgVersion(baseUrl, "version-monotonic", id, 1);
+        const del = await deleteActor(baseUrl, "version-monotonic", id);
+        if (del.status !== 200) throw new Error(`delete failed ${del.status}`);
+        const pg = await snapshotPg(baseUrl, "version-monotonic", id);
+        if (pg.found) throw new Error("expected PG snapshot absent after delete");
+        const st = await httpGetFull(actorStateUrl(baseUrl, "version-monotonic", id));
+        if (st.status !== 404) throw new Error(`expected state 404 after delete, got ${st.status}`);
+      },
+    },
+    {
+      name: "stage-pg-snapshot-isolated-from-prod",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-stage-${uid()}`;
+        await callActorStage(baseUrl, "version-monotonic", id, "increment");
+        await waitForPgVersion(baseUrl, "version-monotonic", id, 1, 4000, {
+          stageRuntimeId: STAGE_RUNTIME_ID,
+        });
+        const prodPg = await snapshotPg(baseUrl, "version-monotonic", id);
+        if (prodPg.found)
+          throw new Error("stage-only mutation must not write production actor_snapshots row");
+        const stagePg = await snapshotPg(baseUrl, "version-monotonic", id, {
+          stageRuntimeId: STAGE_RUNTIME_ID,
+        });
+        if (!stagePg.found || stagePg.state?.count !== 1)
+          throw new Error(`expected stage PG row count=1, got ${JSON.stringify(stagePg)}`);
+        await httpDeleteFull(actorStageDeleteUrl(baseUrl, "version-monotonic", id));
+        const stagePgAfter = await snapshotPg(baseUrl, "version-monotonic", id, {
+          stageRuntimeId: STAGE_RUNTIME_ID,
+        });
+        if (stagePgAfter.found)
+          throw new Error("expected stage PG row removed after stage delete");
+      },
+    },
+    {
+      name: "throw-does-not-advance-pg-snapshot",
+      category: "snapshot-pg",
+      run: async (baseUrl) => {
+        const id = `snap-throw-${uid()}`;
+        await deleteActor(baseUrl, "no-commit-on-handler-throw", id);
+        await callActor(baseUrl, "no-commit-on-handler-throw", id, "setBase", { value: 10 });
+        await waitForPgVersion(baseUrl, "no-commit-on-handler-throw", id, 1);
+        try {
+          await callActor(baseUrl, "no-commit-on-handler-throw", id, "mutateAndThrow");
+        } catch { /* expected */ }
+        const pg = await snapshotPg(baseUrl, "no-commit-on-handler-throw", id);
+        if (!pg.found || pg.state?.value !== 10 || pg.version !== 1)
+          throw new Error(`PG should stay at value=10 v=1, got ${JSON.stringify(pg)}`);
       },
     },
 
@@ -778,7 +978,7 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
 
-    // ---- crash-recovery (5 — all skip in single-process) ----
+    // ---- crash-recovery (multi-pod cases skipped; reactivate-from-pg runs in TEST_MODE) ----
     {
       name: "lease-expiry-failover",
       category: "crash-recovery",
@@ -794,8 +994,24 @@ function allInlineTests(): ActorInlineTestDef[] {
     {
       name: "reactivate-from-pg-when-redis-cold",
       category: "crash-recovery",
-      skip: "requires integration hook to flush Actor Redis cold",
-      run: async (_baseUrl) => {},
+      run: async (baseUrl) => {
+        const id = `pg-cold-${uid()}`;
+        await deleteActor(baseUrl, "version-monotonic", id);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const before = await getState(baseUrl, "version-monotonic", id);
+        await waitForPgVersion(baseUrl, "version-monotonic", id, before.version);
+        await testEvictActorRedis(baseUrl, "version-monotonic", id);
+        const coldGet = await httpGetFull(actorStateUrl(baseUrl, "version-monotonic", id));
+        if (coldGet.status !== 200)
+          throw new Error(`getState after redis evict expected 200, got ${coldGet.status}`);
+        if (coldGet.body?.state?.count !== before.state?.count)
+          throw new Error(`rehydrated state wrong: ${JSON.stringify(coldGet.body)} vs ${JSON.stringify(before)}`);
+        await callActor(baseUrl, "version-monotonic", id, "increment");
+        const after = await getState(baseUrl, "version-monotonic", id);
+        if (after.state?.count !== before.state.count + 1)
+          throw new Error(`handler after PG rehydrate broken: ${JSON.stringify(after)}`);
+      },
     },
     {
       name: "reactivate-from-redis-when-pg-stale",

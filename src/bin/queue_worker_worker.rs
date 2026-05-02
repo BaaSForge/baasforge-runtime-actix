@@ -1,5 +1,6 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::establish_pool;
+use baal_runtime_actix::models::actor_store::build_actor_pg_pool;
 use baal_runtime_actix::init_tracing;
 use baal_runtime_actix::routes::ActorLocks;
 use baal_runtime_actix::services::queue_worker_engine::{WQ_NATS_WORK_CONSUMER, WQ_NATS_WORK_STREAM};
@@ -123,6 +124,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .as_ref()
         .map(|nc| async_nats::jetstream::new(nc.clone()));
 
+    let actor_pg = settings.actor_database_url.as_ref().map(|url| {
+        build_actor_pg_pool(
+            url,
+            settings.actor_database_pool_size.max(1),
+            settings.actor_database_connection_timeout_secs.max(1),
+        )
+    });
+
     let actor_locks: ActorLocks = Arc::new(Mutex::new(HashMap::new()));
 
     let stream_name = WQ_NATS_WORK_STREAM.to_string();
@@ -141,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             actor_redis,
             actor_nats,
             actor_js,
+            actor_pg,
             actor_locks,
         )
         .await

@@ -6,6 +6,7 @@ pub mod ws;
 
 use crate::configs::Settings;
 use crate::database::{establish_pool, DbPool, SharedRedisConn};
+use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::services::workflow_engine::SharedRedis;
 use actix_web::Result;
 use actix_web::web;
@@ -38,6 +39,7 @@ pub struct AppContext {
     pub actor_nats_client: Option<async_nats::Client>,
     /// JetStream context for publishing actor mailbox messages.
     pub actor_jetstream: Option<async_nats::jetstream::Context>,
+    pub actor_pg: Option<ActorPgPool>,
     /// Per-actor execution locks: (project_id, unit_path, actor_id, stage_runtime_id) → mutex.
     pub actor_locks: ActorLocks,
 }
@@ -59,6 +61,7 @@ impl AppContext {
         actor_redis: Option<SharedRedis>,
         actor_nats_client: Option<async_nats::Client>,
         actor_jetstream: Option<async_nats::jetstream::Context>,
+        actor_pg: Option<ActorPgPool>,
         actor_locks: ActorLocks,
     ) -> Self {
         Self {
@@ -74,6 +77,7 @@ impl AppContext {
             actor_redis,
             actor_nats_client,
             actor_jetstream,
+            actor_pg,
             actor_locks,
         }
     }
@@ -239,6 +243,17 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     let actor_jetstream: Option<async_nats::jetstream::Context> =
         actor_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
 
+    let actor_pg: Option<ActorPgPool> = settings.actor_database_url.as_ref().map(|url| {
+        build_actor_pg_pool(
+            url,
+            settings.actor_database_pool_size.max(1),
+            settings.actor_database_connection_timeout_secs.max(1),
+        )
+    });
+    if actor_pg.is_some() {
+        tracing::info!("[actor_pg] ACTOR_DATABASE_URL configured; actor snapshots will persist to Actor Postgres");
+    }
+
     let actor_locks: ActorLocks = Arc::new(Mutex::new(HashMap::new()));
 
     // In test mode, run the JetStream consumers in-process (normally handled
@@ -267,6 +282,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let wq_redis_wake = wq_redis.clone();
             let wq_nats_wake = wq_nats_client.clone();
             let wq_js_wake = wq_jetstream.clone();
+            let actor_pg_wake = actor_pg.clone();
             tokio::spawn(async move {
                 if let Err(e) = crate::services::workflow_worker::runner::run_wake_consumer(
                     wr,
@@ -278,6 +294,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     actor_redis_wake,
                     actor_nats_wake,
                     actor_js_wake,
+                    actor_pg_wake,
                     actor_locks_wake,
                     wq_redis_wake,
                     wq_nats_wake,
@@ -301,6 +318,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let actor_nats_for_wq = actor_nats_client.clone();
             let actor_js_for_wq = actor_jetstream.clone();
             let actor_locks_for_wq = actor_locks.clone();
+            let actor_pg_for_wq = actor_pg.clone();
             let stream_name = crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM.to_string();
             let consumer_name = crate::services::queue_worker_engine::WQ_NATS_WORK_CONSUMER.to_string();
             tracing::info!("[test_mode] starting inline JetStream queue_worker work consumer");
@@ -318,6 +336,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         actor_redis_for_wq,
                         actor_nats_for_wq,
                         actor_js_for_wq,
+                        actor_pg_for_wq,
                         actor_locks_for_wq,
                     )
                     .await
@@ -345,13 +364,14 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 .clone()
                 .unwrap_or_else(|| crate::services::actor_engine::ACTOR_NATS_CONSUMER.to_string());
             let locks = actor_locks.clone();
+            let actor_pg_consumer = actor_pg.clone();
             tracing::info!("[test_mode] starting inline actor mailbox consumer");
             tokio::spawn(async move {
                 if let Err(e) =
                     crate::services::actor_worker::runner::run_actor_consumer(
                         ar, actor_js, actor_nc, p, rc,
                         wf_redis_for_actor, wf_nats_for_actor, wf_js_for_actor,
-                        &stream_name, &consumer_name, locks,
+                        &stream_name, &consumer_name, actor_pg_consumer, locks,
                     )
                     .await
                 {
@@ -365,6 +385,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let p2 = pool.clone();
             let rc2 = redis_conn.clone();
             let locks2 = actor_locks.clone();
+            let actor_pg_alarm = actor_pg.clone();
             tracing::info!("[test_mode] starting inline actor alarm sweeper");
             tokio::spawn(async move {
                 use std::sync::Arc;
@@ -380,6 +401,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     actor_redis: Some(ar2),
                     actor_nats: actor_nc2,
                     actor_js: actor_js2,
+                    actor_pg: actor_pg_alarm,
                     actor_locks: locks2,
                     project_id: String::new(),
                     source_unit_path: String::new(),
@@ -432,6 +454,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         actor_redis,
         actor_nats_client,
         actor_jetstream,
+        actor_pg,
         actor_locks,
     );
 

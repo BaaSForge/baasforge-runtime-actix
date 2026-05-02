@@ -3,6 +3,7 @@ use crate::configs::Settings;
 use crate::database::establish_pool;
 use crate::init_tracing;
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
+use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::load_unit_for_path_scoped;
 use crate::services::workflow_engine;
@@ -117,6 +118,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .as_ref()
         .map(|nc| jetstream::new(nc.clone()));
 
+    let actor_pg: Option<ActorPgPool> = settings.actor_database_url.as_ref().map(|url| {
+        build_actor_pg_pool(
+            url,
+            settings.actor_database_pool_size.max(1),
+            settings.actor_database_connection_timeout_secs.max(1),
+        )
+    });
+
     let wq_redis: Option<SharedRedis> = if let Some(url) = &settings.wq_redis_url {
         match redis::Client::open(url.as_str()) {
             Ok(client) => match client.get_multiplexed_async_connection().await {
@@ -178,6 +187,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let actor_redis = actor_redis.clone();
         let actor_nats = actor_nats.clone();
         let actor_js = actor_js.clone();
+        let actor_pg = actor_pg.clone();
         let actor_locks = actor_locks.clone();
         let wq_redis = wq_redis.clone();
         let wq_nats = wq_nats.clone();
@@ -196,6 +206,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 actor_redis,
                 actor_nats,
                 actor_js,
+                actor_pg,
                 actor_locks,
                 wq_redis,
                 wq_nats,
@@ -226,6 +237,7 @@ pub async fn run_wake_consumer(
     actor_redis: Option<SharedRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
+    actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
     wq_redis: Option<SharedRedis>,
     wq_nats: Option<async_nats::Client>,
@@ -287,6 +299,7 @@ pub async fn run_wake_consumer(
                     let actor_redis = actor_redis.clone();
                     let actor_nats = actor_nats.clone();
                     let actor_js = actor_js.clone();
+                    let actor_pg = actor_pg.clone();
                     let actor_locks = actor_locks.clone();
                     let wq_redis = wq_redis.clone();
                     let wq_nats = wq_nats.clone();
@@ -319,6 +332,7 @@ pub async fn run_wake_consumer(
                         actor_redis,
                         actor_nats,
                         actor_js,
+                        actor_pg,
                         actor_locks,
                         wq_redis,
                         wq_nats,
@@ -368,6 +382,7 @@ pub async fn run_wake_consumer(
                 let actor_redis = actor_redis.clone();
                 let actor_nats = actor_nats.clone();
                 let actor_js = actor_js.clone();
+                let actor_pg = actor_pg.clone();
                 let actor_locks = actor_locks.clone();
                 let wq_redis = wq_redis.clone();
                 let wq_nats = wq_nats.clone();
@@ -400,6 +415,7 @@ pub async fn run_wake_consumer(
                     actor_redis,
                     actor_nats,
                     actor_js,
+                    actor_pg,
                     actor_locks,
                     wq_redis,
                     wq_nats,
@@ -441,6 +457,7 @@ async fn handle_start(
     actor_redis: Option<SharedRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
+    actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
     wq_redis: Option<SharedRedis>,
     wq_nats: Option<async_nats::Client>,
@@ -517,6 +534,7 @@ async fn handle_start(
         actor_redis,
         actor_nats,
         actor_js,
+        actor_pg,
         actor_locks,
         project_id: project_id.to_string(),
         source_unit_path: unit_path.clone(),
@@ -560,6 +578,7 @@ async fn handle_wake(
     actor_redis: Option<SharedRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
+    actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
     wq_redis: Option<SharedRedis>,
     wq_nats: Option<async_nats::Client>,
@@ -694,6 +713,7 @@ async fn handle_wake(
         actor_redis,
         actor_nats,
         actor_js,
+        actor_pg,
         actor_locks,
         project_id: project_id.to_string(),
         source_unit_path: unit_path.to_string(),

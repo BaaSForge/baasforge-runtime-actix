@@ -3,6 +3,7 @@ use crate::libs::unit_js::actor_runner::{
     extract_actor_metadata, run_actor_handler,
 };
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
+use crate::models::actor_store;
 use crate::models::projects::ProjectUnitType;
 use crate::services::actor_engine::{
     ActorRedis, cancel_alarm, commit_state, delete_actor_state, load_hot_state,
@@ -117,7 +118,37 @@ async fn run_actor_inner(
         .await
         {
             Some((s, v)) => (Some(s), v),
-            None => (None, 0),
+            None => {
+                if let Some(pool) = &comm.actor_pg {
+                    match actor_store::load_snapshot(
+                        pool,
+                        &input.project_id,
+                        &input.unit_path,
+                        &input.actor_id,
+                        comm.stage_runtime_id,
+                    )
+                    .await
+                    {
+                        Ok(Some((s, v))) => {
+                            let _ = commit_state(
+                                &actor_redis,
+                                &input.project_id,
+                                comm.stage_runtime_id,
+                                &input.unit_path,
+                                &input.actor_id,
+                                &s,
+                                v,
+                            )
+                            .await;
+                            (Some(s), v)
+                        }
+                        Ok(None) => (None, 0),
+                        Err(e) => return Err(e),
+                    }
+                } else {
+                    (None, 0)
+                }
+            }
         };
 
     let mut attempt: u32 = 1;
@@ -170,6 +201,22 @@ async fn run_actor_inner(
                         new_version,
                     )
                     .await?;
+                    if let Some(pool) = &comm.actor_pg {
+                        let pool = pool.clone();
+                        let pid = input.project_id.clone();
+                        let up = input.unit_path.clone();
+                        let aid = input.actor_id.clone();
+                        let st = new_state.clone();
+                        let stage = comm.stage_runtime_id;
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                actor_store::upsert_snapshot(&pool, &pid, &up, &aid, stage, &st, new_version)
+                                    .await
+                            {
+                                error!(error = %e, "[actor_manager] upsert_snapshot failed");
+                            }
+                        });
+                    }
                 }
 
                 let cancelled_names: HashSet<&str> =
@@ -385,6 +432,20 @@ async fn run_dead_letter(
                 .await
                 {
                     error!(error = %e, "[actor_manager] dead_letter state commit failed");
+                } else if let Some(pool) = &comm.actor_pg {
+                    let pool = pool.clone();
+                    let pid = input.project_id.clone();
+                    let up = input.unit_path.clone();
+                    let aid = input.actor_id.clone();
+                    let st = new_state.clone();
+                    let stage = comm.stage_runtime_id;
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            actor_store::upsert_snapshot(&pool, &pid, &up, &aid, stage, &st, new_version).await
+                        {
+                            error!(error = %e, "[actor_manager] dead_letter upsert_snapshot failed");
+                        }
+                    });
                 }
             }
         }
@@ -406,12 +467,25 @@ async fn run_dead_letter(
 
 pub async fn passivate_actor(
     actor_redis: &ActorRedis,
+    actor_pg: Option<&actor_store::ActorPgPool>,
     nats: &Option<async_nats::Client>,
     project_id: &str,
     unit_path: &str,
     actor_id: &str,
     stage_runtime_id: Option<Uuid>,
 ) {
+    if let Some(pool) = actor_pg {
+        if let Some((state, version)) =
+            load_hot_state(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await
+        {
+            if let Err(e) =
+                actor_store::upsert_snapshot(pool, project_id, unit_path, actor_id, stage_runtime_id, &state, version)
+                    .await
+            {
+                error!(error = %e, "[actor_manager] passivate upsert_snapshot failed");
+            }
+        }
+    }
     publish_actor_event(
         nats,
         project_id,
@@ -421,17 +495,20 @@ pub async fn passivate_actor(
         stage_runtime_id,
     )
     .await;
-    let _ = actor_redis;
 }
 
 pub async fn delete_actor(
     actor_redis: &ActorRedis,
+    actor_pg: Option<&actor_store::ActorPgPool>,
     nats: &Option<async_nats::Client>,
     project_id: &str,
     stage_runtime_id: Option<Uuid>,
     unit_path: &str,
     actor_id: &str,
 ) {
+    if let Some(pool) = actor_pg {
+        let _ = actor_store::delete_snapshot(pool, project_id, unit_path, actor_id, stage_runtime_id).await;
+    }
     delete_actor_state(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await;
     let _ = nats;
 }
