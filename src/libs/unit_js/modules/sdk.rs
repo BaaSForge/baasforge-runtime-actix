@@ -129,9 +129,10 @@ where
 
 fn block_async<F, R>(future: F) -> Result<R, String>
 where
-    F: std::future::Future<Output = Result<R, String>>,
+    F: std::future::Future<Output = Result<R, String>> + Send,
 {
-    tokio::runtime::Handle::current().block_on(future)
+    let cx = crate::telemetry::otel_context_current();
+    tokio::runtime::Handle::current().block_on(future.with_context(cx))
 }
 
 const MAX_SDK_TRACE_CHARS: usize = 8192;

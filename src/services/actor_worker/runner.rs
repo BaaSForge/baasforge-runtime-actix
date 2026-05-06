@@ -165,6 +165,21 @@ async fn handle_actor_message(
         Some("production")
     };
     let corr = crate::telemetry::trigger_correlation_from_payload(&payload);
+    let subject = msg.subject.to_string();
+    let unit_path_ref = payload
+        .get("unitPath")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let actor_id_ref = payload
+        .get("actorId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let extras = crate::telemetry::AsyncConsumerSpanExtras {
+        messaging_destination: Some(subject.as_str()),
+        baal_unit_path: unit_path_ref,
+        baal_actor_instance_id: actor_id_ref,
+        ..Default::default()
+    };
     let consumer_cx = crate::telemetry::async_consumer_context(
         &corr,
         "baal.consumer.actor_mailbox",
@@ -172,6 +187,7 @@ async fn handle_actor_message(
         pid_o.as_deref(),
         trigger_runtime,
         rid_o.as_deref(),
+        Some(&extras),
     );
 
     (async move {

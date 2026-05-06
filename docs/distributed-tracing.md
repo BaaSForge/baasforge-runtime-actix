@@ -99,7 +99,7 @@ flowchart LR
   - Pick one canonical header name for your API docs; avoid inventing a second id scheme—header value must match the span’s `trace_id`.
 - **In-process SDK calls** ([`sdk.rs`](src/libs/unit_js/modules/sdk.rs)): parent `Context` is whatever is active when the host function runs; each `host_*` creates a **child span** (name = SDK operation + target unit path). No JS changes: context is whatever Tokio/blocking task already carries (today you use `block_async` / async paths—attach context at spawn boundaries).
 - **Cross-process / cross-runtime `fetch`** ([`fetch.rs`](src/libs/unit_js/modules/fetch.rs)): **inject** W3C `traceparent` (and optional `tracestate`) into outgoing headers in Rust before `ureq` sends; optionally parse response for server-driven context if you control the callee.
-- **Async hops (NATS, Redis workflow metadata, internal subjects)**: when the parent span cannot stay on the same task, **serialize** W3C headers or OTel `TraceContext` into message metadata (OpenTelemetry has **messaging** semantic conventions for propagation). Resume with `Context::map_remote_parent` / link spans where true parent is lost (durable workflow semantics).
+- **Async hops (NATS, Redis workflow metadata, internal subjects)**: **serialize** W3C `traceparent` (and optional `tracestate`) into message JSON where the runtime controls the publisher ([`workflow_engine`](src/services/workflow_engine.rs) wake payloads, SDK NATS payloads, etc.). The consumer uses OpenTelemetry **remote parent** so the consumer span continues the **same** `trace_id` when propagation is present. See [Durable workflows and correlation](#durable-workflows-and-correlation).
 
 ## Automatic logging without unit code
 
@@ -134,7 +134,7 @@ flowchart LR
 ## Key risks to decide explicitly (not implementation detail, but policy)
 
 - **PII / payload logging**: default to size + type + ids; opt-in redaction lists or “never log body” for production.
-- **Context across durable workflow suspend/resume**: may require **span links** instead of a strict parent chain when the executing process changes.
+- **Context across durable workflow suspend/resume**: Baal’s default is **same trace** via `traceparent` on wake messages. If you need a **separate** consumer trace (e.g. cap tree size), set `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` — consumer becomes a new root with an OTel **link** to the producer span; the dashboard must pass `links` when explaining causality to an LLM.
 - **Multi-binary deployment** ([`src/bin/actor_worker.rs`](src/bin/actor_worker.rs), [`queue_worker_worker.rs`](src/bin/queue_worker_worker.rs), etc.): each binary initializes the same OTel resource (`service.name` per binary) + shared attribute `baal.project_id` so traces stitch in the backend.
 
 ## Summary decision
@@ -144,22 +144,56 @@ flowchart LR
 **Operations**: OTLP endpoint (collector or SaaS); **docker-compose** with official Collector + Tempo/Jaeger (+ optional Grafana/Loki) for local dev; query with **their** APIs for a flexible UI.  
 **Non-goals**: defining a custom trace/log schema; implementing exporters in QuickJS; blocking user handlers on telemetry I/O.
 
-## Async unit triggers (NATS): separate consumer traces + queryable trigger
+## Durable workflows and correlation
 
-HTTP `/api/v1/...` and the publisher’s in-process span stay on **one trace**. When work is delivered over NATS (actor mailbox, queue worker run, workflow start/wake), the consumer starts a **new trace root** (`SpanKind::Consumer`, tracer `baal.async_consumer`) so retries and long runs do not inflate the HTTP trace.
+Industry practice (OpenTelemetry, Temporal-style systems):
 
-**Span attributes (searchable everywhere):**
+| Approach | Use when | Baal default |
+|----------|----------|----------------|
+| **Same `trace_id` + parent/child** | You propagate W3C context across async delivery (HTTP → JetStream wake → `drive_workflow` → SDK). One narrative for humans and **LLM** tools. | **Yes** — wake/start payloads include `traceparent` when the publisher had an active context. |
+| **Span links** (`links[]` in OTLP) | Producer span ended, fan-in batches, or you **choose** a new consumer trace but need causality to the producer. | **Optional** — set `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` (see below). |
+| **Custom “related trace id” only** | Legacy stacks. | **Avoid** — prefer standard `trace_id` / `parent_span_id` / `links`. |
+
+Workflow sleeps/resumes: the engine injects `traceparent` onto scheduled **wake** messages ([`wake_jetstream_payload_in_trace_carrier`](src/services/workflow_engine.rs)) so a timer resume stays on the **same** trace as the original `/api/v1/trigger/...` request when possible.
+
+## Async unit triggers (NATS): consumer spans and propagation
+
+HTTP `/api/v1/...` and in-process SDK work stay on **one trace** when context is attached. For JetStream deliveries (actor mailbox, queue worker run, workflow `start` / `wake`), the runtime builds a **`SpanKind::Consumer`** span (tracer `baal.async_consumer`):
+
+- **Default (`BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE` unset or not `split`)**: if the message JSON contains a valid W3C `traceparent`, the consumer span uses OpenTelemetry **remote parent** — it is a **child** of that producer span and shares the **same `trace_id`**. This matches durable-orchestration expectations (Temporal-style “one trace for the logical run”).
+- **`BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split`**: the consumer span is a **new trace root** and includes an OTel **span link** to the producer `SpanContext` when `traceparent` was present. Duplicate search tags (`baal.trigger.trace_id`, `baal.trigger.span_id`) still record the producer ids. Use when you want to **isolate** consumer duration in a separate trace tree (dashboards / LLM prompts must include `links` to explain cross-trace causality).
+
+**Span attributes (search / LLM-friendly):**
 
 | Attribute | Meaning |
 |-----------|---------|
 | `baal.trigger.source` | `actor_mailbox`, `queue_worker`, `workflow_start`, `workflow_wake`, `internal_alarm`, etc. |
-| `baal.trigger.trace_id` | 32-hex trace id of the **producer** (from W3C `traceparent` in the JSON payload when present). |
-| `baal.trigger.span_id` | 16-hex parent span id from that `traceparent` when valid. |
+| `baal.trigger.trace_id` | 32-hex trace id from the producer’s `traceparent` when present (stable across NATS redeliveries). |
+| `baal.trigger.span_id` | 16-hex span id from that `traceparent` when valid. |
+| `baal.otel.async_consumer.trace_mode` | `split` only when split mode is enabled. |
+| `messaging.system` | `nats` when the message subject is known. |
+| `messaging.operation` | `receive` for consumers. |
+| `messaging.destination.name` | JetStream subject (e.g. `wf.{project}.{instance}.wake`). |
+| `baal.unit.path` | Workflow / actor / queue worker unit path when known. |
+| `baal.workflow.instance_id` | Workflow instance id for `workflow_start` / `workflow_wake`. |
+| `baal.workflow.wake.reason` | Wake JSON `reason` when present (`sleep_elapsed`, `promise_resolved`, …). |
+| `baal.actor.instance_id` | Actor instance id when known. |
+| `baal.queue_worker.run_id` | Queue worker run id when known. |
 
-**Links:** when `traceparent` parses to a valid `SpanContext`, the consumer root span includes an OTel **link** to that producer span (UI “related trace” / cross-trace navigation where supported).
+**Internal alarms** (no NATS payload): new root consumer span with `baal.trigger.source = internal_alarm`; optional `baal.unit.path` / `baal.actor.instance_id` on the span.
 
-**Internal alarms** (no NATS payload): same consumer root pattern with `baal.trigger.source = internal_alarm` and no trigger ids/links.
-
-**NATS redelivery:** payload still carries the original publisher’s `traceparent`, so `baal.trigger.trace_id` is stable across attempts; each delivery can still be a **new** consumer `trace_id` if you start a new root per attempt (current behavior).
+**NATS redelivery:** payload should keep the original `traceparent`; `baal.trigger.trace_id` stays stable across attempts. With default mode, redelivered work remains the **same** trace.
 
 **Example queries:** TraceQL-style `baal.trigger.trace_id == "<32-hex>"`; Jaeger tag `baal.trigger.trace_id=<hex>`.
+
+## LLM / dashboard export contract
+
+When the dashboard sends trace data to an **LLM** for debugging, prefer a **deterministic, low-noise** projection of OTLP/Jaeger data (not a second bespoke telemetry schema):
+
+1. **Order spans** by start time; include `trace_id`, `span_id`, `parent_span_id`, span `name`, duration, and **status**.
+2. **Sort attribute keys** alphabetically in JSON objects sent to the model to reduce run-to-run ambiguity.
+3. **Token safety**: strip or truncate large attributes (e.g. HTTP body previews from [`http_trace`](src/middlewares/http_trace.rs)); keep **lengths**, **status codes**, and **stable ids** (`baal.workflow.instance_id`, `baal.unit.path`, `baal.trigger.source`).
+4. **Prefer standard OTel names** (`http.*`, `messaging.*`, `server.*`) plus the **`baal.*`** keys above so models grounded on OpenTelemetry docs infer meaning.
+5. **Optional digest line** (dashboard-generated): one short sentence built from ordered span names — e.g. `http.server.request → baal.consumer.workflow.wake → sdk.callActor` — as a **preamble** before span JSON improves LLM answers without changing the runtime.
+
+References: [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/), [W3C Trace Context](https://www.w3.org/TR/trace-context/), Temporal observability (context via headers for workflow/activity continuity).

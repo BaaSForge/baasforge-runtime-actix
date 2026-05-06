@@ -115,6 +115,8 @@ OTEL_SERVICE_NAME=baal-runtime-actix
 
 Optional: `DEPLOYMENT_ENVIRONMENT=staging`, `OTEL_SERVICE_NAME` overrides the default per-binary name. An example OpenTelemetry Collector config that forwards OTLP to Jaeger is in `deploy/otel-collector.yaml` if you run the collector separately.
 
+Correlation for workflows, NATS consumers, and LLM-friendly export (same trace vs split + links, attribute vocabulary, dashboard JSON guidance): [distributed-tracing.md](distributed-tracing.md). Optional: `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` — new trace per async consumer with an OTel link to the producer span.
+
 Jaeger UI: `http://127.0.0.1:16686`. Search for service `baal-runtime-actix` (or your `OTEL_SERVICE_NAME`). API unit triggers emit a child span **`unit.invoke`** under `http.server.request`; `/api/v1/trigger/wf|actor|workerQueue|…` requests set `baal.trigger.entry` on the HTTP span.
 
 **HTTP span attributes for `/api/v1/*`:** These live on the root **`http.server.request`** span (not on `unit.invoke` / `sdk.host` children). Fields include `http.url` (reconstructed with `http://`), `url.query`, `baal.path_params`, `baal.request.headers` (truncated; `authorization` / `cookie` / `set-cookie` redacted), `http.request.header.content_type`, `user_agent.original`, `baal.request.body.bytes` / `preview` / `note`, `http.response.status_code`, `http.response.header.content_type`, `baal.response.body.bytes` / `preview` / `note`. Bodies are captured only when `Content-Length` is present and ≤256 KiB (see notes above). Previews are capped (~8k chars).

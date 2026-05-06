@@ -1,7 +1,7 @@
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::global;
 use opentelemetry::trace::{
-    Span as OtelSdkSpanTrait, SpanContext, SpanKind, TraceContextExt, Tracer, TracerProvider as _,
+    Link, Span as OtelSdkSpanTrait, SpanContext, SpanKind, TraceContextExt, Tracer, TracerProvider as _,
 };
 use opentelemetry::Context;
 use opentelemetry::KeyValue;
@@ -12,7 +12,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::resource::Resource;
 use opentelemetry_sdk::trace::{Sampler, Span, SpanProcessor, TracerProvider};
 use std::collections::HashMap;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::layer::SubscriberExt;
@@ -386,9 +386,31 @@ pub fn extract_context_from_string_map(
     global::get_text_map_propagator(|prop| prop.extract(carrier))
 }
 
+/// Optional low-cardinality attributes for NATS-backed async consumers (LLM- and search-friendly).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AsyncConsumerSpanExtras<'a> {
+    pub messaging_destination: Option<&'a str>,
+    pub baal_unit_path: Option<&'a str>,
+    pub baal_actor_instance_id: Option<&'a str>,
+    pub baal_workflow_instance_id: Option<&'a str>,
+    pub baal_queue_run_id: Option<&'a str>,
+    pub baal_wake_reason: Option<&'a str>,
+}
+
+fn async_consumer_split_trace_mode() -> bool {
+    static SPLIT: OnceLock<bool> = OnceLock::new();
+    *SPLIT.get_or_init(|| {
+        std::env::var("BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE")
+            .map(|v| v.eq_ignore_ascii_case("split"))
+            .unwrap_or(false)
+    })
+}
+
 /// HTTP and in-process SDK calls stay on one trace. When `traceparent` is present on the NATS
-/// payload, consumer spans **continue that trace** as children of the producer; otherwise they
-/// start a new root trace. `baal.trigger.*` attributes are always set when correlation is present.
+/// payload, consumer spans **continue that trace** as children of the producer by default; set
+/// `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` for a new trace root plus an OTel **link** to the
+/// producer span. Without `traceparent`, consumers start a new root trace. `baal.trigger.*`
+/// attributes are set when correlation is present.
 #[derive(Clone, Debug)]
 pub struct TriggerCorrelation {
     pub trace_id_hex: Option<String>,
@@ -449,14 +471,22 @@ pub fn async_consumer_context(
     project_id: Option<&str>,
     trigger_runtime: Option<&'static str>,
     stage_runtime_id: Option<&str>,
+    extras: Option<&AsyncConsumerSpanExtras<'_>>,
 ) -> Context {
     let tracer = global::tracer("baal.async_consumer");
-    let parent_cx = correlation
+    let producer_sc = correlation
         .producer_span_context
         .as_ref()
-        .filter(|sc| sc.is_valid())
-        .map(|sc| Context::new().with_remote_span_context(sc.clone()))
-        .unwrap_or_default();
+        .filter(|sc| sc.is_valid());
+    let split = async_consumer_split_trace_mode();
+    let (parent_cx, links): (Context, Option<Vec<Link>>) = match (split, producer_sc) {
+        (true, Some(sc)) => (
+            Context::new(),
+            Some(vec![Link::with_context(sc.clone())]),
+        ),
+        (false, Some(sc)) => (Context::new().with_remote_span_context(sc.clone()), None),
+        (_, None) => (Context::new(), None),
+    };
     let mut attrs: Vec<KeyValue> = vec![KeyValue::new("baal.trigger.source", trigger_source.to_string())];
     if let Some(ref t) = correlation.trace_id_hex {
         attrs.push(KeyValue::new("baal.trigger.trace_id", t.clone()));
@@ -464,10 +494,41 @@ pub fn async_consumer_context(
     if let Some(ref s) = correlation.span_id_hex {
         attrs.push(KeyValue::new("baal.trigger.span_id", s.clone()));
     }
-    let builder = tracer
+    if split {
+        attrs.push(KeyValue::new(
+            "baal.otel.async_consumer.trace_mode",
+            "split",
+        ));
+    }
+    if let Some(x) = extras {
+        if let Some(dest) = x.messaging_destination.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("messaging.system", "nats"));
+            attrs.push(KeyValue::new("messaging.operation", "receive"));
+            attrs.push(KeyValue::new("messaging.destination.name", dest.to_string()));
+        }
+        if let Some(p) = x.baal_unit_path.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("baal.unit.path", p.to_string()));
+        }
+        if let Some(a) = x.baal_actor_instance_id.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("baal.actor.instance_id", a.to_string()));
+        }
+        if let Some(w) = x.baal_workflow_instance_id.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("baal.workflow.instance_id", w.to_string()));
+        }
+        if let Some(r) = x.baal_queue_run_id.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("baal.queue_worker.run_id", r.to_string()));
+        }
+        if let Some(r) = x.baal_wake_reason.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("baal.workflow.wake.reason", r.to_string()));
+        }
+    }
+    let mut builder = tracer
         .span_builder(span_name)
         .with_kind(SpanKind::Consumer)
         .with_attributes(attrs);
+    if let Some(ls) = links {
+        builder = builder.with_links(ls);
+    }
     let span = builder.start_with_context(&tracer, &parent_cx);
     let cx = Context::current_with_span(span);
     context_with_telemetry_baggage(cx, project_id, trigger_runtime, stage_runtime_id)

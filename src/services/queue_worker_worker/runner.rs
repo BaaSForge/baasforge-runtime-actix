@@ -155,6 +155,8 @@ async fn handle_work_message(
         return;
     };
 
+    let messaging_subject = subject.clone();
+
     (async move {
     let run_id = payload
         .get("runId")
@@ -212,6 +214,12 @@ async fn handle_work_message(
         "production"
     };
     let corr = crate::telemetry::trigger_correlation_from_payload(&payload);
+    let extras = crate::telemetry::AsyncConsumerSpanExtras {
+        messaging_destination: Some(messaging_subject.as_str()),
+        baal_unit_path: Some(unit_path.as_str()),
+        baal_queue_run_id: Some(run_id.as_str()),
+        ..Default::default()
+    };
     let consumer_cx = crate::telemetry::async_consumer_context(
         &corr,
         "baal.consumer.queue_worker.run",
@@ -219,6 +227,7 @@ async fn handle_work_message(
         Some(project_id.as_str()),
         Some(inner_rt),
         rid_owned.as_deref(),
+        Some(&extras),
     );
     (async move {
     let nats_opt = Some(nats.clone());

@@ -507,6 +507,13 @@ async fn handle_start(
     let corr = crate::telemetry::trigger_correlation_from_payload(
         trace_payload.as_ref().unwrap_or(&serde_json::Value::Null),
     );
+    let messaging_dest = format!("wf.{project_id}.{instance_id}.start");
+    let extras = crate::telemetry::AsyncConsumerSpanExtras {
+        messaging_destination: Some(messaging_dest.as_str()),
+        baal_unit_path: Some(unit_path.as_str()),
+        baal_workflow_instance_id: Some(instance_id.as_str()),
+        ..Default::default()
+    };
     let consumer_cx = crate::telemetry::async_consumer_context(
         &corr,
         "baal.consumer.workflow.start",
@@ -514,6 +521,7 @@ async fn handle_start(
         Some(project_id.as_str()),
         Some(inner_rt),
         rid_owned.as_deref(),
+        Some(&extras),
     );
     (async move {
     let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
@@ -673,6 +681,19 @@ async fn handle_wake(
             .as_ref()
             .unwrap_or(&serde_json::Value::Null),
     );
+    let wake_reason = wake_payload
+        .as_ref()
+        .and_then(|p| p.get("reason"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let messaging_dest = format!("wf.{project_id}.{instance_id}.wake");
+    let extras = crate::telemetry::AsyncConsumerSpanExtras {
+        messaging_destination: Some(messaging_dest.as_str()),
+        baal_unit_path: Some(meta.name.as_str()),
+        baal_workflow_instance_id: Some(instance_id.as_str()),
+        baal_wake_reason: wake_reason.as_deref(),
+        ..Default::default()
+    };
     let consumer_cx = crate::telemetry::async_consumer_context(
         &corr,
         "baal.consumer.workflow.wake",
@@ -680,6 +701,7 @@ async fn handle_wake(
         Some(project_id.as_str()),
         Some(inner_rt),
         rid_owned.as_deref(),
+        Some(&extras),
     );
     (async move {
     if meta.status == "completed" || meta.status == "failed" || meta.status == "cancelled" {
