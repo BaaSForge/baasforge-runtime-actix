@@ -4,7 +4,7 @@ use rustls::crypto::ring::default_provider;
 
 #[actix_web::main]
 async fn main() -> Result<(), actix_web::Error> {
-    init_tracing();
+    init_tracing("baal-runtime-actix");
 
     default_provider()
         .install_default()

@@ -1,4 +1,6 @@
+use opentelemetry::{global, Context};
 use rquickjs::{Ctx, Exception, Object, Value, function::Func};
+use std::collections::HashMap;
 
 use crate::libs::unit_js::modules::helpers;
 
@@ -23,6 +25,26 @@ fn normalize_url(url: &str) -> String {
         .replace("://localhost?", "://127.0.0.1?")
 }
 
+fn merge_outbound_trace_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    let has_tp = headers
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("traceparent"));
+    if has_tp {
+        return headers.to_vec();
+    }
+    let mut out = headers.to_vec();
+    let mut carrier = HashMap::<String, String>::new();
+    global::get_text_map_propagator(|p| {
+        p.inject_context(&Context::current(), &mut carrier);
+    });
+    for (k, v) in carrier {
+        if k.eq_ignore_ascii_case("traceparent") || k.eq_ignore_ascii_case("tracestate") {
+            out.push((k, v));
+        }
+    }
+    out
+}
+
 fn do_request(
     raw_url: &str,
     method: &str,
@@ -31,6 +53,15 @@ fn do_request(
 ) -> Result<(u16, Vec<(String, String)>, Vec<u8>), String> {
     let url = normalize_url(raw_url);
     let url = url.as_str();
+    let headers = merge_outbound_trace_headers(headers);
+    let url_for_trace = raw_url.split('?').next().unwrap_or(raw_url);
+    let span = tracing::debug_span!(
+        "http.client.request",
+        http.request.method = %method,
+        http.url = %url_for_trace,
+        http.response.status_code = tracing::field::Empty,
+    );
+    let _g = span.enter();
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .http_status_as_error(false)
@@ -40,7 +71,7 @@ fn do_request(
     macro_rules! no_body {
         ($req:expr) => {{
             let mut r = $req;
-            for (n, v) in headers { r = r.header(n, v); }
+            for (n, v) in &headers { r = r.header(n, v); }
             r.call().map_err(|e| format!("{e}"))
         }};
     }
@@ -48,7 +79,7 @@ fn do_request(
     macro_rules! with_body {
         ($req:expr) => {{
             let mut r = $req;
-            for (n, v) in headers { r = r.header(n, v); }
+            for (n, v) in &headers { r = r.header(n, v); }
             r.send(body.as_bytes()).map_err(|e| format!("{e}"))
         }};
     }
@@ -65,6 +96,10 @@ fn do_request(
     }?;
 
     let status = resp.status();
+    span.record(
+        "http.response.status_code",
+        u16::from(status) as u64,
+    );
 
     let mut resp_headers: Vec<(String, String)> = Vec::new();
     for (name, value) in resp.headers() {

@@ -88,6 +88,8 @@ pub struct Settings {
     pub actor_lease_ttl_secs: u64,
     pub actor_idle_sweep_secs: u64,
     pub actor_pg_flush_interval_secs: u64,
+
+    pub otel_exporter_otlp_endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +250,12 @@ impl Settings {
             .ok()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(30);
+
+        let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Ok(Settings {
             port,
             app_environment,
@@ -280,6 +288,7 @@ impl Settings {
             actor_lease_ttl_secs,
             actor_idle_sweep_secs,
             actor_pg_flush_interval_secs,
+            otel_exporter_otlp_endpoint,
         })
     }
 }

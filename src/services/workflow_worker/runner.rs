@@ -1,20 +1,21 @@
 use async_nats::jetstream;
 use crate::configs::Settings;
 use crate::database::establish_pool;
-use crate::init_tracing;
+use crate::{init_tracing, shutdown_telemetry};
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
 use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::load_unit_for_path_scoped;
 use crate::services::workflow_engine;
 use futures::StreamExt;
+use opentelemetry::trace::FutureExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    init_tracing();
+    init_tracing("workflow_worker");
 
     let settings = Settings::new()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
@@ -223,6 +224,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("workflow_worker running, press Ctrl+C to stop");
     tokio::signal::ctrl_c().await?;
     info!("workflow_worker shutting down");
+    shutdown_telemetry();
 
     Ok(())
 }
@@ -463,6 +465,24 @@ async fn handle_start(
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
 ) -> Result<(), String> {
+    let trace_payload = _payload.cloned();
+
+    let wf_redis = wf_redis.clone();
+    let nats_client = nats_client.clone();
+    let pool = pool.clone();
+    let redis_conn = redis_conn.clone();
+    let project_id = project_id.to_string();
+    let instance_id = instance_id.to_string();
+    let actor_redis = actor_redis.clone();
+    let actor_nats = actor_nats.clone();
+    let actor_js = actor_js.clone();
+    let actor_pg = actor_pg.clone();
+    let actor_locks = actor_locks.clone();
+    let wq_redis = wq_redis.clone();
+    let wq_nats = wq_nats.clone();
+    let wq_js = wq_js.clone();
+
+    (async move {
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
     let meta_json: String = {
         let mut conn = wf_redis.lock().await;
@@ -478,13 +498,30 @@ async fn handle_start(
     let unit_path = wf_meta.name.clone();
     let input_json = wf_meta.input.clone();
     let stage_runtime_id = wf_meta.stage_runtime_id;
-
-    let project_uuid = uuid::Uuid::parse_str(project_id)
+    let rid_owned = stage_runtime_id.map(|u| u.to_string());
+    let inner_rt = if stage_runtime_id.is_some() {
+        "stage"
+    } else {
+        "production"
+    };
+    let corr = crate::telemetry::trigger_correlation_from_payload(
+        trace_payload.as_ref().unwrap_or(&serde_json::Value::Null),
+    );
+    let consumer_cx = crate::telemetry::async_consumer_context(
+        &corr,
+        "baal.consumer.workflow.start",
+        "workflow_start",
+        Some(project_id.as_str()),
+        Some(inner_rt),
+        rid_owned.as_deref(),
+    );
+    (async move {
+    let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
         .map_err(|e| format!("invalid project_id: {e}"))?;
 
     let unit = load_unit_for_path_scoped(
-        pool,
-        redis_conn,
+        &pool,
+        &redis_conn,
         project_uuid,
         stage_runtime_id,
         ProjectUnitType::Workflow,
@@ -536,18 +573,20 @@ async fn handle_start(
         actor_js,
         actor_pg,
         actor_locks,
-        project_id: project_id.to_string(),
+        project_id: project_id.clone(),
         source_unit_path: unit_path.clone(),
-        source_instance_id: Some(instance_id.to_string()),
+        source_instance_id: Some(instance_id.clone()),
         stage_runtime_id,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
 
     let result = workflow_engine::launch_callee_workflow(
-        wf_redis,
-        nats_client,
+        &wf_redis,
+        &nats_client,
         &js,
-        project_id,
-        instance_id,
+        project_id.as_str(),
+        instance_id.as_str(),
         &input_json,
         &source,
         &unit_path,
@@ -565,6 +604,11 @@ async fn handle_start(
     }
 
     result
+    })
+    .with_context(consumer_cx)
+    .await
+    })
+    .await
 }
 
 async fn handle_wake(
@@ -584,6 +628,26 @@ async fn handle_wake(
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
 ) -> Result<(), String> {
+    let wake_payload = payload.cloned();
+
+    let wf_redis = wf_redis.clone();
+    let nats_client = nats_client.clone();
+    let pool = pool.clone();
+    let redis_conn = redis_conn.clone();
+    let project_id = project_id.to_string();
+    let instance_id = instance_id.to_string();
+    let actor_redis = actor_redis.clone();
+    let actor_nats = actor_nats.clone();
+    let actor_js = actor_js.clone();
+    let actor_pg = actor_pg.clone();
+    let actor_locks = actor_locks.clone();
+    let wq_redis = wq_redis.clone();
+    let wq_nats = wq_nats.clone();
+    let wq_js = wq_js.clone();
+
+    (async move {
+    let payload = wake_payload.as_ref();
+
     // Load the workflow meta to get the unit path
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
     let meta_json: String = {
@@ -598,7 +662,26 @@ async fn handle_wake(
     let meta: workflow_engine::WorkflowMeta =
         serde_json::from_str(&meta_json).map_err(|e| format!("parse meta: {e}"))?;
     let stage_runtime_id = meta.stage_runtime_id;
-
+    let rid_owned = stage_runtime_id.map(|u| u.to_string());
+    let inner_rt = if stage_runtime_id.is_some() {
+        "stage"
+    } else {
+        "production"
+    };
+    let corr = crate::telemetry::trigger_correlation_from_payload(
+        wake_payload
+            .as_ref()
+            .unwrap_or(&serde_json::Value::Null),
+    );
+    let consumer_cx = crate::telemetry::async_consumer_context(
+        &corr,
+        "baal.consumer.workflow.wake",
+        "workflow_wake",
+        Some(project_id.as_str()),
+        Some(inner_rt),
+        rid_owned.as_deref(),
+    );
+    (async move {
     if meta.status == "completed" || meta.status == "failed" || meta.status == "cancelled" {
         return Ok(());
     }
@@ -658,12 +741,12 @@ async fn handle_wake(
         return Err(format!("invalid unit path in meta: {unit_path}"));
     }
 
-    let project_uuid = uuid::Uuid::parse_str(project_id)
+    let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
         .map_err(|e| format!("invalid project_id: {e}"))?;
 
     let unit = load_unit_for_path_scoped(
-        pool,
-        redis_conn,
+        &pool,
+        &redis_conn,
         project_uuid,
         stage_runtime_id,
         ProjectUnitType::Workflow,
@@ -715,15 +798,24 @@ async fn handle_wake(
         actor_js,
         actor_pg,
         actor_locks,
-        project_id: project_id.to_string(),
+        project_id: project_id.clone(),
         source_unit_path: unit_path.to_string(),
-        source_instance_id: Some(instance_id.to_string()),
+        source_instance_id: Some(instance_id.clone()),
         stage_runtime_id,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
 
-    let result =
-        workflow_engine::resume_workflow(wf_redis, nats_client, &js, project_id, instance_id, &source, comm)
-            .await;
+    let result = workflow_engine::resume_workflow(
+        &wf_redis,
+        &nats_client,
+        &js,
+        project_id.as_str(),
+        instance_id.as_str(),
+        &source,
+        comm,
+    )
+    .await;
 
     {
         let mut conn = wf_redis.lock().await;
@@ -735,4 +827,9 @@ async fn handle_wake(
     }
 
     result
+    })
+    .with_context(consumer_cx)
+    .await
+    })
+    .await
 }

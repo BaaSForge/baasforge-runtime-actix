@@ -89,12 +89,15 @@ pub async fn enqueue_queue_worker_run(
     .await;
 
     let work_subject = format!("wq.{project_id}.{WQ_NATS_WORK_SUBJECT_PER_PROJECT}.work");
-    let work_payload = serde_json::json!({
+    let mut work_val = serde_json::json!({
         "runId": run_id,
         "data": data_json,
         "unitPath": unit_path,
-    })
-    .to_string();
+    });
+    if let Some(obj) = work_val.as_object_mut() {
+        crate::telemetry::inject_traceparent_json_field(obj);
+    }
+    let work_payload = work_val.to_string();
 
     if let Some(js_ctx) = js {
         js_ctx

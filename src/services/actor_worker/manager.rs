@@ -199,9 +199,26 @@ async fn run_actor_inner(
             input.unit_path.clone(),
             None,
         );
+        let rid = comm.stage_runtime_id.map(|u| u.to_string());
+        let trigger_runtime = if comm.stage_runtime_id.is_some() {
+            Some("stage")
+        } else {
+            Some("production")
+        };
+        let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+            crate::telemetry::otel_context_current(),
+            Some(input.project_id.as_str()),
+            trigger_runtime,
+            rid.as_deref(),
+        );
+        let caller_span = tracing::Span::current();
 
         let outcome =
-            tokio::task::spawn_blocking(move || run_actor_handler(&src, &ctx_json, comm_for_spawn, limit, timeout))
+            tokio::task::spawn_blocking(move || {
+                let _trace = caller_span.enter();
+                let _otel = parent_ctx.attach();
+                run_actor_handler(&src, &ctx_json, comm_for_spawn, limit, timeout)
+            })
                 .await
                 .map_err(|e| format!("spawn_blocking panicked: {e}"))?
                 .map_err(|e| format!("actor JS error: {e}"))?;
@@ -462,8 +479,23 @@ async fn run_dead_letter(
         input.unit_path.clone(),
         None,
     );
+    let rid = comm.stage_runtime_id.map(|u| u.to_string());
+    let trigger_runtime = if comm.stage_runtime_id.is_some() {
+        Some("stage")
+    } else {
+        Some("production")
+    };
+    let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+        crate::telemetry::otel_context_current(),
+        Some(input.project_id.as_str()),
+        trigger_runtime,
+        rid.as_deref(),
+    );
+    let caller_span = tracing::Span::current();
 
     let outcome = tokio::task::spawn_blocking(move || {
+        let _trace = caller_span.enter();
+        let _otel = parent_ctx.attach();
         run_actor_handler(&src, &dl_ctx, comm_for_spawn, limit, None)
     })
     .await;

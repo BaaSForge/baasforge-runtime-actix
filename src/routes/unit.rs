@@ -177,6 +177,38 @@ async fn respond_trigger_unit(
     unit_path: &str,
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
+    invoke_api_unit(
+        unit,
+        http_req.clone(),
+        body,
+        server_port,
+        ctx.clone(),
+        project_id_str.to_string(),
+        unit_path.to_string(),
+        stage_runtime_id,
+    )
+    .await
+}
+
+#[tracing::instrument(
+    name = "unit.invoke",
+    skip(unit, http_req, body, ctx),
+    fields(
+        baal.unit.path = %unit_path,
+        baal.unit.id = %unit.id,
+        baal.unit.revision = unit.revision,
+    ),
+)]
+async fn invoke_api_unit(
+    unit: ProjectUnitRow,
+    http_req: HttpRequest,
+    body: web::Bytes,
+    server_port: u16,
+    ctx: AppContext,
+    project_id_str: String,
+    unit_path: String,
+    stage_runtime_id: Option<Uuid>,
+) -> HttpResponse {
     let code = match unit.compiled_code.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(c) => c.to_string(),
         None => {
@@ -184,10 +216,17 @@ async fn respond_trigger_unit(
                 .json(api_error("unit has no executable compiled code", json!({})));
         }
     };
-    let snapshot = match trigger_http_snapshot(http_req, &body, server_port) {
+    let snapshot = match trigger_http_snapshot(&http_req, &body, server_port) {
         Ok(s) => s,
         Err(msg) => return HttpResponse::PayloadTooLarge().json(api_error(msg, json!({}))),
     };
+    let sdk_public_host = http_req
+        .headers()
+        .get(actix_web::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_owned())
+        .unwrap_or_else(|| "localhost".to_string());
+    let sdk_trigger_base_path = snapshot.trigger_path.clone();
     let comm = Arc::new(SdkCommCtx {
         pool: ctx.pool.clone(),
         redis_conn: ctx.redis_conn.clone(),
@@ -202,14 +241,35 @@ async fn respond_trigger_unit(
         actor_js: ctx.actor_jetstream.clone(),
         actor_pg: ctx.actor_pg.clone(),
         actor_locks: ctx.actor_locks.clone(),
-        project_id: project_id_str.to_string(),
-        source_unit_path: unit_path.to_string(),
+        project_id: project_id_str.clone(),
+        source_unit_path: unit_path.clone(),
         source_instance_id: None,
         stage_runtime_id,
+        sdk_public_host,
+        sdk_trigger_base_path,
     });
     let unit_id = unit.id.clone();
     let revision = unit.revision;
-    let run_result = match tokio::task::spawn_blocking(move || unit_js::run_unit_handler(&code, &snapshot, Some(comm))).await {
+    let parent_span = tracing::Span::current();
+    let rid = stage_runtime_id.map(|u| u.to_string());
+    let trigger_runtime = if stage_runtime_id.is_some() {
+        Some("stage")
+    } else {
+        Some("production")
+    };
+    let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+        crate::telemetry::otel_context_current(),
+        Some(project_id_str.as_str()),
+        trigger_runtime,
+        rid.as_deref(),
+    );
+    let run_result = match tokio::task::spawn_blocking(move || {
+        let _span_enter = parent_span.enter();
+        let _otel = parent_ctx.attach();
+        unit_js::run_unit_handler(&code, &snapshot, Some(comm))
+    })
+    .await
+    {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             tracing::error!(

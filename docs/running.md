@@ -94,6 +94,31 @@ cargo run --release --bin release_listener
 - **Keys are never auto-deleted.** There is no TTL or cleanup job. Redis will grow over time. See [workflow-internals.md](workflow-internals.md#redis-cleanup) for cleanup options.
 - **Do not set `maxmemory-policy allkeys-lru`** on the workflow Redis — evicting a suspended workflow's keys breaks resume.
 
+## OpenTelemetry (optional)
+
+Local trace backend (Jaeger all-in-one, OTLP gRPC on `4317`):
+
+```sh
+docker compose -f docker-compose.telemetry.yml up -d
+```
+
+If `OTEL_EXPORTER_OTLP_ENDPOINT` is **unset**, the API and workers default to `http://127.0.0.1:4317` (no env needed for local Jaeger). Override or disable when needed:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` (or your collector URL)
+- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — used if the generic endpoint is unset
+- `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` — no OTLP export (stderr `tracing` only)
+- `CI=true` — skips the default endpoint so tests do not open OTLP connections
+
+```
+OTEL_SERVICE_NAME=baal-runtime-actix
+```
+
+Optional: `DEPLOYMENT_ENVIRONMENT=staging`, `OTEL_SERVICE_NAME` overrides the default per-binary name. An example OpenTelemetry Collector config that forwards OTLP to Jaeger is in `deploy/otel-collector.yaml` if you run the collector separately.
+
+Jaeger UI: `http://127.0.0.1:16686`. Search for service `baal-runtime-actix` (or your `OTEL_SERVICE_NAME`). API unit triggers emit a child span **`unit.invoke`** under `http.server.request`; `/api/v1/trigger/wf|actor|workerQueue|…` requests set `baal.trigger.entry` on the HTTP span.
+
+**HTTP span attributes for `/api/v1/*`:** These live on the root **`http.server.request`** span (not on `unit.invoke` / `sdk.host` children). Fields include `http.url` (reconstructed with `http://`), `url.query`, `baal.path_params`, `baal.request.headers` (truncated; `authorization` / `cookie` / `set-cookie` redacted), `http.request.header.content_type`, `user_agent.original`, `baal.request.body.bytes` / `preview` / `note`, `http.response.status_code`, `http.response.header.content_type`, `baal.response.body.bytes` / `preview` / `note`. Bodies are captured only when `Content-Length` is present and ≤256 KiB (see notes above). Previews are capped (~8k chars).
+
 ## Stopping
 
 ```sh

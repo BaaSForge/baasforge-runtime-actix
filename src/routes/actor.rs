@@ -284,6 +284,8 @@ async fn actor_post_inner(
                     source_unit_path: unit_path.clone(),
                     source_instance_id: None,
                     stage_runtime_id,
+                    sdk_public_host: "localhost".to_string(),
+                    sdk_trigger_base_path: String::new(),
                 });
 
                 let run_future = run_actor_with_lock(input, comm);

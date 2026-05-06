@@ -1,7 +1,7 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::establish_pool;
 use baal_runtime_actix::models::actor_store::build_actor_pg_pool;
-use baal_runtime_actix::init_tracing;
+use baal_runtime_actix::{init_tracing, shutdown_telemetry};
 use baal_runtime_actix::routes::ActorLocks;
 use baal_runtime_actix::services::queue_worker_engine::{WQ_NATS_WORK_CONSUMER, WQ_NATS_WORK_STREAM};
 use std::collections::HashMap;
@@ -11,7 +11,7 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    init_tracing();
+    init_tracing("queue_worker_worker");
 
     let settings = Settings::new().map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
         e.to_string().into()
@@ -162,6 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("queue_worker_worker running, press Ctrl+C to stop");
     tokio::signal::ctrl_c().await?;
     info!("queue_worker_worker shutting down");
+    shutdown_telemetry();
 
     Ok(())
 }

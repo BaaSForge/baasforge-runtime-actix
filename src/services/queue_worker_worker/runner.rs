@@ -1,8 +1,9 @@
 use async_nats::jetstream;
 use futures::StreamExt;
+use opentelemetry::trace::FutureExt;
 use redis::AsyncCommands;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info, warn, Instrument};
 use uuid::Uuid;
 
 use crate::database::DbPool;
@@ -148,20 +149,24 @@ async fn handle_work_message(
 
     let payload: Option<serde_json::Value> = serde_json::from_slice(&msg.payload).ok();
 
+    let Some(payload) = payload else {
+        warn!("[queue_worker_consumer] invalid json payload, acking");
+        let _ = msg.ack().await;
+        return;
+    };
+
+    (async move {
     let run_id = payload
-        .as_ref()
-        .and_then(|p| p.get("runId"))
+        .get("runId")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let data_json = payload
-        .as_ref()
-        .and_then(|p| p.get("data"))
+        .get("data")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| "{}".to_string());
     let unit_path = payload
-        .as_ref()
-        .and_then(|p| p.get("unitPath"))
+        .get("unitPath")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
@@ -200,6 +205,22 @@ async fn handle_work_message(
     let attempt = meta.attempt;
     let enqueued_at = meta.enqueued_at;
     let wq_stage = meta.stage_runtime_id;
+    let rid_owned = wq_stage.map(|u| u.to_string());
+    let inner_rt = if wq_stage.is_some() {
+        "stage"
+    } else {
+        "production"
+    };
+    let corr = crate::telemetry::trigger_correlation_from_payload(&payload);
+    let consumer_cx = crate::telemetry::async_consumer_context(
+        &corr,
+        "baal.consumer.queue_worker.run",
+        "queue_worker",
+        Some(project_id.as_str()),
+        Some(inner_rt),
+        rid_owned.as_deref(),
+    );
+    (async move {
     let nats_opt = Some(nats.clone());
 
     let project_uuid = match uuid::Uuid::parse_str(&project_id) {
@@ -278,6 +299,8 @@ async fn handle_work_message(
             source_unit_path: unit_path.clone(),
             source_instance_id: None,
             stage_runtime_id: wq_stage,
+            sdk_public_host: "localhost".to_string(),
+            sdk_trigger_base_path: String::new(),
         });
         handle_batch_item(
             wq_redis, nats_opt, project_id, unit_path,
@@ -358,9 +381,28 @@ async fn handle_work_message(
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
         stage_runtime_id: wq_stage,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
 
-    let run_future = tokio::task::spawn_blocking(move || run_worker_handler(&source, &run_ctx, comm));
+    let rid = wq_stage.map(|u| u.to_string());
+    let trigger_runtime = if wq_stage.is_some() {
+        Some("stage")
+    } else {
+        Some("production")
+    };
+    let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+        crate::telemetry::otel_context_current(),
+        Some(project_id.as_str()),
+        trigger_runtime,
+        rid.as_deref(),
+    );
+    let caller_span = tracing::Span::current();
+    let run_future = tokio::task::spawn_blocking(move || {
+        let _trace = caller_span.enter();
+        let _otel = parent_ctx.attach();
+        run_worker_handler(&source, &run_ctx, comm)
+    });
 
     let run_result = if let Some(timeout_ms) = timeout_ms {
         match tokio::time::timeout(
@@ -494,6 +536,11 @@ async fn handle_work_message(
             let _ = msg.ack().await;
         }
     }
+    })
+    .with_context(consumer_cx)
+    .await
+    })
+    .await;
 }
 
 async fn check_cancelled(wq_redis: &QueueWorkerRedis, meta_key: &str) -> bool {
@@ -683,14 +730,31 @@ async fn handle_batch_item(
         let source_t = source.clone();
         let comm_t = comm.clone();
         let timeout_ms = batch_cfg.timeout_ms;
+        let rid_t = comm_t.stage_runtime_id.map(|u| u.to_string());
+        let trigger_rt_t = if comm_t.stage_runtime_id.is_some() {
+            Some("stage")
+        } else {
+            Some("production")
+        };
+        let parent_ctx_t = crate::telemetry::context_with_telemetry_baggage(
+            crate::telemetry::otel_context_current(),
+            Some(project_id_t.as_str()),
+            trigger_rt_t,
+            rid_t.as_deref(),
+        );
+        let batch_span = tracing::Span::current();
 
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
-            let items = batch_pop_all(&wq_redis_t, &format!("wq:{project_id_t}:{unit_path_t}:batch_items")).await;
-            if !items.is_empty() {
-                dispatch_batch(wq_redis_t, nats_t, project_id_t, unit_path_t, source_t, items, 1, comm_t).await;
+        tokio::spawn(
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)).await;
+                let items = batch_pop_all(&wq_redis_t, &format!("wq:{project_id_t}:{unit_path_t}:batch_items")).await;
+                if !items.is_empty() {
+                    dispatch_batch(wq_redis_t, nats_t, project_id_t, unit_path_t, source_t, items, 1, comm_t).await;
+                }
             }
-        });
+            .instrument(batch_span)
+            .with_context(parent_ctx_t),
+        );
     }
 }
 
@@ -754,7 +818,25 @@ async fn dispatch_batch(
         };
         let src = source.clone();
         let comm_first = comm.clone();
-        let first_result = tokio::task::spawn_blocking(move || run_worker_handler(&src, &run_ctx, comm_first)).await;
+        let rid = wq_stage.map(|u| u.to_string());
+        let trigger_runtime = if wq_stage.is_some() {
+            Some("stage")
+        } else {
+            Some("production")
+        };
+        let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+            crate::telemetry::otel_context_current(),
+            Some(project_id.as_str()),
+            trigger_runtime,
+            rid.as_deref(),
+        );
+        let caller_span = tracing::Span::current();
+        let first_result = tokio::task::spawn_blocking(move || {
+            let _trace = caller_span.enter();
+            let _otel = parent_ctx.attach();
+            run_worker_handler(&src, &run_ctx, comm_first)
+        })
+        .await;
         match first_result {
             Ok(Ok(r)) => {
                 let max = r.retry_policy.max_attempts;
@@ -805,7 +887,25 @@ async fn dispatch_batch(
 
         batch_mark_processing(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, wq_stage).await;
 
-        let run_result = tokio::task::spawn_blocking(move || run_worker_handler(&src, &run_ctx, comm_retry)).await;
+        let rid = wq_stage.map(|u| u.to_string());
+        let trigger_runtime = if wq_stage.is_some() {
+            Some("stage")
+        } else {
+            Some("production")
+        };
+        let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+            crate::telemetry::otel_context_current(),
+            Some(project_id.as_str()),
+            trigger_runtime,
+            rid.as_deref(),
+        );
+        let caller_span = tracing::Span::current();
+        let run_result = tokio::task::spawn_blocking(move || {
+            let _trace = caller_span.enter();
+            let _otel = parent_ctx.attach();
+            run_worker_handler(&src, &run_ctx, comm_retry)
+        })
+        .await;
 
         match run_result {
             Ok(Ok(r)) => match r.outcome {

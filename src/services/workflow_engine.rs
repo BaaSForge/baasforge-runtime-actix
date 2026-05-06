@@ -1,5 +1,6 @@
 use async_nats::jetstream;
 use async_nats::jetstream::stream;
+use opentelemetry::Context;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -359,11 +360,14 @@ pub async fn resolve_promise(
     }
 
     let subject = format!("wf.{project_id}.{instance_id}.wake");
-    let payload = serde_json::json!({
+    let mut wake = serde_json::json!({
         "reason": "promise_resolved",
         "promise": promise_name,
-    })
-    .to_string();
+    });
+    if let Some(obj) = wake.as_object_mut() {
+        crate::telemetry::inject_traceparent_json_field(obj);
+    }
+    let payload = wake.to_string();
     if let Some(js_ctx) = js {
         js_ctx
             .publish(subject, bytes::Bytes::from(payload))
@@ -438,6 +442,19 @@ async fn publish_wf_event(
 
 // -- Internal helpers --
 
+fn wake_jetstream_payload(body: serde_json::Value) -> String {
+    let mut v = body;
+    if let Some(obj) = v.as_object_mut() {
+        crate::telemetry::inject_traceparent_json_field(obj);
+    }
+    v.to_string()
+}
+
+fn wake_jetstream_payload_in_trace_carrier(body: serde_json::Value, carrier: &Context) -> String {
+    let _g = carrier.clone().attach();
+    wake_jetstream_payload(body)
+}
+
 /// Resolve the caller workflow's durable promise after a callee completes.
 /// Writes the promise state to Redis then publishes a wake signal to the caller.
 async fn resolve_caller_promise(
@@ -495,11 +512,14 @@ pub(crate) async fn reject_caller_promise(
     }
 
     let subject = format!("wf.{project_id}.{caller_instance_id}.wake");
-    let payload = serde_json::json!({
+    let mut wake = serde_json::json!({
         "reason": "promise_rejected",
         "promise": promise_name,
-    })
-    .to_string();
+    });
+    if let Some(obj) = wake.as_object_mut() {
+        crate::telemetry::inject_traceparent_json_field(obj);
+    }
+    let payload = wake.to_string();
     if let Some(js_ctx) = js {
         if let Err(e) = js_ctx.publish(subject, bytes::Bytes::from(payload)).await {
             tracing::warn!(error = %e, "reject_caller_promise: jetstream publish failed");
@@ -686,8 +706,24 @@ pub(crate) async fn drive_workflow(
     let nats_clone = nats.clone();
     let source_owned = source.to_string();
     let comm_for_spawn = comm.for_unit(pid.clone(), String::new(), Some(iid.clone()));
+    let rid = comm_for_spawn.stage_runtime_id.map(|u| u.to_string());
+    let trigger_runtime = if comm_for_spawn.stage_runtime_id.is_some() {
+        Some("stage")
+    } else {
+        Some("production")
+    };
+    let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+        crate::telemetry::otel_context_current(),
+        Some(comm_for_spawn.project_id.as_str()),
+        trigger_runtime,
+        rid.as_deref(),
+    );
+    let parent_ctx_blocking = parent_ctx.clone();
+    let caller_span_blocking = tracing::Span::current();
 
     let result = tokio::task::spawn_blocking(move || {
+        let _trace = caller_span_blocking.enter();
+        let _otel = parent_ctx_blocking.attach();
         run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn)
     })
     .await
@@ -786,11 +822,14 @@ pub(crate) async fn drive_workflow(
                     if let Some(js_ctx) = js {
                         let subject = format!("wf.{pid}.{iid}.wake");
                         let fire_at = chrono::Utc::now().timestamp_millis() + delay_ms as i64;
-                        let payload = serde_json::json!({
+                        let payload = wake_jetstream_payload_in_trace_carrier(
+                            serde_json::json!({
                             "reason": "step_retry",
                             "step": name,
                             "fire_at": fire_at,
-                        }).to_string();
+                            }),
+                            &parent_ctx,
+                        );
                         js_ctx
                             .publish(subject, bytes::Bytes::from(payload))
                             .await
@@ -823,17 +862,23 @@ pub(crate) async fn drive_workflow(
                     // Wake via JetStream so replay is durable even if the worker restarts
                     if let Some(js_ctx) = js {
                         let subject = format!("wf.{pid}.{iid}.wake");
-                        let payload = serde_json::json!({
+                        let payload = wake_jetstream_payload_in_trace_carrier(
+                            serde_json::json!({
                             "reason": "step_retry_exhausted",
                             "step": name,
-                        }).to_string();
+                            }),
+                            &parent_ctx,
+                        );
                         let _ = js_ctx.publish(subject, bytes::Bytes::from(payload)).await;
                     } else if let Some(nats_client) = nats {
                         let subject = format!("wf.{pid}.{iid}.wake");
-                        let payload = serde_json::json!({
+                        let payload = wake_jetstream_payload_in_trace_carrier(
+                            serde_json::json!({
                             "reason": "step_retry_exhausted",
                             "step": name,
-                        }).to_string();
+                            }),
+                            &parent_ctx,
+                        );
                         let _ = nats_client.publish(subject, bytes::Bytes::from(payload)).await;
                     }
 
@@ -889,12 +934,14 @@ pub(crate) async fn drive_workflow(
                 if let Some(js_ctx) = js {
                     let subject = format!("wf.{pid}.{iid}.wake");
                     let fire_at = chrono::Utc::now().timestamp_millis() + duration_ms as i64;
-                    let payload = serde_json::json!({
+                    let payload = wake_jetstream_payload_in_trace_carrier(
+                        serde_json::json!({
                         "reason": "sleep_elapsed",
                         "sleep": name,
                         "fire_at": fire_at,
-                    })
-                    .to_string();
+                        }),
+                        &parent_ctx,
+                    );
                     js_ctx
                         .publish(subject, bytes::Bytes::from(payload))
                         .await
@@ -910,12 +957,14 @@ pub(crate) async fn drive_workflow(
                             let subject = format!("wf.{pid}.{iid}.wake");
                             let fire_at =
                                 chrono::Utc::now().timestamp_millis() + timeout_ms as i64;
-                            let payload = serde_json::json!({
+                            let payload = wake_jetstream_payload_in_trace_carrier(
+                                serde_json::json!({
                                 "reason": "promise_timed_out",
                                 "promise": name,
                                 "fire_at": fire_at,
-                            })
-                            .to_string();
+                                }),
+                                &parent_ctx,
+                            );
                             js_ctx
                                 .publish(subject, bytes::Bytes::from(payload))
                                 .await

@@ -80,6 +80,9 @@ pub async fn publish_actor_message(
     if let Some(s) = stage_runtime_id {
         msg_payload["stageRuntimeId"] = serde_json::json!(s);
     }
+    if let Some(obj) = msg_payload.as_object_mut() {
+        crate::telemetry::inject_traceparent_json_field(obj);
+    }
     js.publish(subject, bytes::Bytes::from(msg_payload.to_string()))
         .await
         .map_err(|e| format!("actor mailbox publish failed: {e}"))?;

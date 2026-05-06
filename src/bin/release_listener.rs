@@ -1,13 +1,13 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::{establish_pool, SharedRedisConn};
-use baal_runtime_actix::init_tracing;
+use baal_runtime_actix::{init_tracing, shutdown_telemetry};
 use baal_runtime_actix::services::release_listener::run_release_deploy_listener;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    init_tracing();
+    init_tracing("release_listener");
 
     let settings = Settings::new().map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
         e.to_string().into()
@@ -70,5 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         jetstream_stream,
         jetstream_consumer,
     )
-    .await
+    .await?;
+
+    shutdown_telemetry();
+    Ok(())
 }

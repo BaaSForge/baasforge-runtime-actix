@@ -2,6 +2,8 @@ use crate::libs::unit_js::actor_runner::ActorKind;
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::services::actor_engine::pop_due_alarms;
 use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock};
+use crate::telemetry::{async_consumer_context, TriggerCorrelation};
+use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -30,8 +32,26 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
             };
 
             let comm_for_alarm = comm.with_stage_runtime(stage_runtime_id);
+            let rid_owned = stage_runtime_id.map(|u| u.to_string());
+            let inner_rt = if stage_runtime_id.is_some() {
+                "stage"
+            } else {
+                "production"
+            };
+            let corr = TriggerCorrelation::empty();
+            let consumer_cx = async_consumer_context(
+                &corr,
+                "baal.consumer.actor.alarm",
+                "internal_alarm",
+                Some(project_id.as_str()),
+                Some(inner_rt),
+                rid_owned.as_deref(),
+            );
 
-            if let Err(e) = run_actor_with_lock(input, comm_for_alarm).await {
+            if let Err(e) = (async move { run_actor_with_lock(input, comm_for_alarm).await })
+                .with_context(consumer_cx)
+                .await
+            {
                 warn!(
                     project_id = %project_id,
                     unit_path = %unit_path,

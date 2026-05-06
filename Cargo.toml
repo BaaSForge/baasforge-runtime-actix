@@ -105,7 +105,7 @@ dotenvy = "0.15"
 # Structured logging framework (highly recommended)
 tracing = "0.1.44"
 # Configure tracing output (stdout, stderr)
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "registry"] }
 tracing-log = "0.2"
 # Alternatively:
 # (simpler logging, but less structured)
@@ -138,6 +138,10 @@ aes = "0.8.4"
 aes-gcm = "0.10.3"
 scrypt = "0.11.0"
 bytes = "1.11.1"
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = "0.27"
+tracing-opentelemetry = "0.28"
 
 [lints.clippy]
 disallowed_methods = "deny"

@@ -143,6 +143,8 @@ async fn do_start_workflow(
         source_unit_path: unit_path.to_string(),
         source_instance_id: Some(instance_id.clone()),
         stage_runtime_id,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
 
     match workflow_engine::start_workflow(
@@ -208,6 +210,8 @@ async fn do_call_handler(
         source_unit_path: String::new(),
         source_instance_id: Some(instance_id.to_string()),
         stage_runtime_id,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
 
     match workflow_engine::call_handler(

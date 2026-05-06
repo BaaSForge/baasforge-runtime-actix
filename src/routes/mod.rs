@@ -87,8 +87,6 @@ impl AppContext {
 pub async fn start_server() -> Result<(), Box<dyn Error>> {
     use actix_web::{App, HttpServer};
 
-    crate::init_tracing();
-
     let settings = Settings::new()?;
     let port = settings
         .port
@@ -410,6 +408,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     source_unit_path: String::new(),
                     source_instance_id: None,
                     stage_runtime_id: None,
+                    sdk_public_host: "localhost".to_string(),
+                    sdk_trigger_base_path: String::new(),
                 });
                 crate::services::actor_worker::alarms::run_alarm_sweeper(comm).await;
             });
@@ -465,10 +465,12 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
 
     use actix_cors::Cors;
     use actix_web::guard;
-    use actix_web::middleware::Condition;
+    use actix_web::http::header::HeaderName;
+    use actix_web::middleware::{from_fn, Condition};
 
     HttpServer::new(move || {
         App::new()
+            .wrap(from_fn(crate::middlewares::trace_request_middleware))
             .wrap(Condition::new(
                 enable_dev_cors,
                 Cors::default()
@@ -479,7 +481,12 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         )
                     })
                     .allow_any_method()
-                    .allow_any_header(),
+                    .allow_any_header()
+                    .expose_headers([
+                        HeaderName::from_static("traceparent"),
+                        HeaderName::from_static("tracestate"),
+                        HeaderName::from_static("x-trace-id"),
+                    ]),
             ))
             .app_data(web::Data::new(app_context.clone()))
             .route(
@@ -606,6 +613,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     .bind(("127.0.0.1", port))?
     .run()
     .await?;
+
+    crate::shutdown_telemetry();
 
     if let Some(td) = test_mode_teardown {
         td.run().await;

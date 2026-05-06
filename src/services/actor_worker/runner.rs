@@ -1,5 +1,6 @@
 use async_nats::jetstream;
 use futures::StreamExt;
+use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -88,6 +89,8 @@ pub async fn run_actor_consumer(
         source_unit_path: String::new(),
         source_instance_id: None,
         stage_runtime_id: None,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
     let idle_interval = idle_sweep_interval.max(Duration::from_secs(1));
     tokio::spawn(async move {
@@ -140,12 +143,38 @@ async fn handle_actor_message(
     locks: ActorLocks,
 ) {
     let payload: Option<serde_json::Value> = serde_json::from_slice(&msg.payload).ok();
-    let Some(ref payload) = payload else {
+    let Some(payload) = payload else {
         warn!("[actor_consumer] invalid payload, acking");
         let _ = msg.ack().await;
         return;
     };
 
+    let pid_o = payload
+        .get("projectId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let rid_o = payload
+        .get("stageRuntimeId")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let trigger_runtime = if rid_o.is_some() {
+        Some("stage")
+    } else {
+        Some("production")
+    };
+    let corr = crate::telemetry::trigger_correlation_from_payload(&payload);
+    let consumer_cx = crate::telemetry::async_consumer_context(
+        &corr,
+        "baal.consumer.actor_mailbox",
+        "actor_mailbox",
+        pid_o.as_deref(),
+        trigger_runtime,
+        rid_o.as_deref(),
+    );
+
+    (async move {
     let project_id = payload
         .get("projectId")
         .and_then(|v| v.as_str())
@@ -214,6 +243,8 @@ async fn handle_actor_message(
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
         stage_runtime_id,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
 
     let result = run_actor_with_lock(input, comm).await;
@@ -251,4 +282,7 @@ async fn handle_actor_message(
     }
 
     let _ = msg.ack().await;
+    })
+    .with_context(consumer_cx)
+    .await;
 }

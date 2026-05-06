@@ -1,7 +1,7 @@
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::establish_pool;
 use baal_runtime_actix::models::actor_store::build_actor_pg_pool;
-use baal_runtime_actix::init_tracing;
+use baal_runtime_actix::{init_tracing, shutdown_telemetry};
 use baal_runtime_actix::libs::unit_js::modules::sdk::SdkCommCtx;
 use baal_runtime_actix::routes::ActorLocks;
 use baal_runtime_actix::services::actor_engine::{ACTOR_NATS_CONSUMER, ACTOR_NATS_STREAM};
@@ -13,7 +13,7 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    init_tracing();
+    init_tracing("actor_worker");
 
     let settings = Settings::new().map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
         e.to_string().into()
@@ -146,6 +146,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         source_unit_path: String::new(),
         source_instance_id: None,
         stage_runtime_id: None,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
     });
     tokio::spawn(async move {
         run_alarm_sweeper(alarm_comm).await;
@@ -177,6 +179,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("actor_worker running, press Ctrl+C to stop");
     tokio::signal::ctrl_c().await?;
     info!("actor_worker shutting down");
+    shutdown_telemetry();
 
     Ok(())
 }

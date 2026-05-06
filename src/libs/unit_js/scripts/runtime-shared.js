@@ -142,28 +142,10 @@ var sdk = {
   },
 
   getApiUnitTriggerUrl: function (args) {
-    var unitPathOrId = args.unitPathOrId;
-    var parts = String(unitPathOrId).split('.');
-    if (parts.length === 5) {
-      var rev = parseInt(parts[4], 10);
-      if (isNaN(rev) || rev < 1) throw new Error('sdk.getApiUnitTriggerUrl: invalid revision in unit id');
-      parts = parts.slice(0, 4);
-    }
-    if (parts.length !== 4) throw new Error('sdk.getApiUnitTriggerUrl: expected 4-segment unit path or 5-segment unit id');
-    if (parts[2] !== 'api') throw new Error('sdk.getApiUnitTriggerUrl: unit type "' + parts[2] + '" is not an API unit');
-    var projectId = (typeof __baal_project_id !== 'undefined') ? __baal_project_id : '';
-    if (!projectId) throw new Error('sdk.getApiUnitTriggerUrl: project id not available');
-    var host = (typeof __selfHost !== 'undefined') ? __selfHost : 'localhost';
-    var triggerBase = (typeof __triggerBasePath !== 'undefined') ? __triggerBasePath : '';
-    var stageSegments = triggerBase.split('/');
-    var stageIdx = stageSegments.indexOf('stage');
-    var isStage = stageIdx !== -1;
-    if (isStage) {
-      var runtimeId = stageSegments[stageIdx + 1] || '';
-      if (!runtimeId) throw new Error('sdk.getApiUnitTriggerUrl: stage runtime id not found in trigger path');
-      return 'http://' + host + '/api/v1/trigger/' + projectId + '/stage/' + runtimeId + '/' + parts[0] + '/' + parts[1] + '/' + parts[3];
-    }
-    return 'http://' + host + '/api/v1/trigger/' + projectId + '/' + parts[0] + '/' + parts[1] + '/' + parts[3];
+    var resultJson = __baal_get_api_unit_trigger_url(JSON.stringify({ unitPathOrId: args.unitPathOrId }));
+    var parsed = JSON.parse(resultJson);
+    if (!parsed.ok) throw new Error(parsed.error || 'sdk.getApiUnitTriggerUrl failed');
+    return parsed.url;
   },
 };
 
