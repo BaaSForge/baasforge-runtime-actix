@@ -1,3 +1,4 @@
+use actix_web::{HttpMessage, HttpRequest};
 use opentelemetry::baggage::BaggageExt;
 use opentelemetry::global;
 use opentelemetry::trace::{
@@ -18,8 +19,21 @@ use tracing_subscriber::filter::{EnvFilter, LevelFilter};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Registry;
+use uuid::Uuid;
 
 static INIT: Once = Once::new();
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BaalHttpTriggerTraceIds {
+    pub release_id: Option<Uuid>,
+    pub runtime_id: Option<Uuid>,
+}
+
+impl BaalHttpTriggerTraceIds {
+    pub fn put_http_request(self, req: &HttpRequest) {
+        req.extensions_mut().insert(self);
+    }
+}
 
 const DEFAULT_OTLP_ENDPOINT: &str = "http://127.0.0.1:4317";
 
@@ -72,7 +86,7 @@ pub fn context_with_telemetry_baggage(
     base: Context,
     project_id: Option<&str>,
     trigger_runtime: Option<&'static str>,
-    stage_runtime_id: Option<&str>,
+    runtime_id: Option<&str>,
 ) -> Context {
     let mut kvs: Vec<KeyValue> = Vec::new();
     if let Some(t) = trigger_runtime {
@@ -81,10 +95,8 @@ pub fn context_with_telemetry_baggage(
     if let Some(pid) = project_id.filter(|s| !s.is_empty()) {
         kvs.push(KeyValue::new(BAGGAGE_PROJECT, pid.to_string()));
     }
-    if trigger_runtime == Some("stage") {
-        if let Some(r) = stage_runtime_id.filter(|s| !s.is_empty()) {
-            kvs.push(KeyValue::new(BAGGAGE_RUNTIME, r.to_string()));
-        }
+    if let Some(r) = runtime_id.filter(|s| !s.is_empty()) {
+        kvs.push(KeyValue::new(BAGGAGE_RUNTIME, r.to_string()));
     }
     if kvs.is_empty() {
         base
@@ -114,9 +126,6 @@ impl SpanProcessor for BaalSpanEnrichProcessor {
         }
         if let Some(v) = baggage.get(BAGGAGE_PROJECT).and_then(baggage_value_to_string) {
             OtelSdkSpanTrait::set_attribute(span, KeyValue::new("baal.project.id", v));
-        }
-        if let Some(v) = baggage.get(BAGGAGE_RUNTIME).and_then(baggage_value_to_string) {
-            OtelSdkSpanTrait::set_attribute(span, KeyValue::new("baal.runtime.id", v));
         }
     }
 
@@ -327,8 +336,9 @@ pub fn trace_id_hex_current() -> Option<String> {
 
 pub fn inject_traceparent_json_field(map: &mut serde_json::Map<String, serde_json::Value>) {
     let mut carrier: HashMap<String, String> = HashMap::new();
+    let cx = tracing::Span::current().context();
     global::get_text_map_propagator(|prop| {
-        prop.inject_context(&opentelemetry::Context::current(), &mut carrier);
+        prop.inject_context(&cx, &mut carrier);
     });
     if let Some(tp) = carrier.get("traceparent") {
         map.insert(
@@ -375,8 +385,9 @@ pub fn attach_context_from_json_value(
 }
 
 pub fn inject_traceparent_string_map(carrier: &mut HashMap<String, String>) {
+    let cx = tracing::Span::current().context();
     global::get_text_map_propagator(|prop| {
-        prop.inject_context(&opentelemetry::Context::current(), carrier);
+        prop.inject_context(&cx, carrier);
     });
 }
 
@@ -395,6 +406,7 @@ pub struct AsyncConsumerSpanExtras<'a> {
     pub baal_workflow_instance_id: Option<&'a str>,
     pub baal_queue_run_id: Option<&'a str>,
     pub baal_wake_reason: Option<&'a str>,
+    pub baal_release_id: Option<&'a str>,
 }
 
 fn async_consumer_split_trace_mode() -> bool {
@@ -469,7 +481,7 @@ pub fn async_consumer_context(
     span_name: &'static str,
     trigger_source: &'static str,
     project_id: Option<&str>,
-    trigger_runtime: Option<&'static str>,
+    _trigger_runtime: Option<&'static str>,
     stage_runtime_id: Option<&str>,
     extras: Option<&AsyncConsumerSpanExtras<'_>>,
 ) -> Context {
@@ -500,6 +512,21 @@ pub fn async_consumer_context(
             "split",
         ));
     }
+    let is_stage_scope = stage_runtime_id.is_some_and(|s| !s.is_empty());
+    let scope_env: &'static str = if is_stage_scope {
+        "stage"
+    } else {
+        "production"
+    };
+    attrs.push(KeyValue::new("baal.app.environment", scope_env));
+    if let Some(pid) = project_id.filter(|s| !s.is_empty()) {
+        attrs.push(KeyValue::new("baal.project.id", pid.to_string()));
+    }
+    if is_stage_scope {
+        if let Some(r) = stage_runtime_id.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("baal.runtime.id", r.to_string()));
+        }
+    }
     if let Some(x) = extras {
         if let Some(dest) = x.messaging_destination.filter(|s| !s.is_empty()) {
             attrs.push(KeyValue::new("messaging.system", "nats"));
@@ -521,6 +548,9 @@ pub fn async_consumer_context(
         if let Some(r) = x.baal_wake_reason.filter(|s| !s.is_empty()) {
             attrs.push(KeyValue::new("baal.workflow.wake.reason", r.to_string()));
         }
+        if let Some(r) = x.baal_release_id.filter(|s| !s.is_empty()) {
+            attrs.push(KeyValue::new("baal.release.id", r.to_string()));
+        }
     }
     let mut builder = tracer
         .span_builder(span_name)
@@ -531,5 +561,5 @@ pub fn async_consumer_context(
     }
     let span = builder.start_with_context(&tracer, &parent_cx);
     let cx = Context::current_with_span(span);
-    context_with_telemetry_baggage(cx, project_id, trigger_runtime, stage_runtime_id)
+    context_with_telemetry_baggage(cx, project_id, Some(scope_env), stage_runtime_id)
 }

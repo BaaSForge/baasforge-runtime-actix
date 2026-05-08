@@ -1,6 +1,7 @@
-use opentelemetry::{global, Context};
+use opentelemetry::global;
 use rquickjs::{Ctx, Exception, Object, Value, function::Func};
 use std::collections::HashMap;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::libs::unit_js::modules::helpers;
 
@@ -34,8 +35,9 @@ fn merge_outbound_trace_headers(headers: &[(String, String)]) -> Vec<(String, St
     }
     let mut out = headers.to_vec();
     let mut carrier = HashMap::<String, String>::new();
+    let cx = tracing::Span::current().context();
     global::get_text_map_propagator(|p| {
-        p.inject_context(&Context::current(), &mut carrier);
+        p.inject_context(&cx, &mut carrier);
     });
     for (k, v) in carrier {
         if k.eq_ignore_ascii_case("traceparent") || k.eq_ignore_ascii_case("tracestate") {

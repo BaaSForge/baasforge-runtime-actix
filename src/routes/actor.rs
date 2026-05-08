@@ -9,8 +9,10 @@ use crate::services::actor_engine::{
 use crate::services::actor_worker::manager::{
     ActorRunInput, delete_actor, passivate_actor, run_actor_with_lock,
 };
+use crate::services::project_release::live_release_and_runtime_ids_for_scope;
+use crate::telemetry::BaalHttpTriggerTraceIds;
 use crate::libs::unit_js::actor_runner::ActorKind;
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use bytes::BytesMut;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -134,14 +136,131 @@ fn is_valid_handler_name(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+#[tracing::instrument(
+    name = "actor.invoke",
+    skip(ctx, actor_redis, http_req),
+    fields(
+        baal.project.id = %project_id_str,
+        baal.unit.path = %unit_path,
+        baal.actor.instance_id = %actor_id,
+        baal.actor.handler = %handler_name,
+        baal.app.environment = tracing::field::Empty,
+        baal.runtime.id = tracing::field::Empty,
+        baal.release.id = tracing::field::Empty,
+    ),
+)]
+async fn invoke_actor_handler_http(
+    ctx: web::Data<AppContext>,
+    actor_redis: ActorRedis,
+    project_id_str: String,
+    unit_path: String,
+    actor_id: String,
+    handler_name: String,
+    payload_json: String,
+    stage_runtime_id: Option<Uuid>,
+    http_req: HttpRequest,
+) -> HttpResponse {
+    let span = tracing::Span::current();
+    span.record(
+        "baal.app.environment",
+        if stage_runtime_id.is_some() {
+            "stage"
+        } else {
+            "production"
+        },
+    );
+    let input = ActorRunInput {
+        project_id: project_id_str.clone(),
+        unit_path: unit_path.clone(),
+        actor_id,
+        handler: handler_name,
+        payload_json,
+        kind: ActorKind::Handler,
+        alarm_name: None,
+        error_msg: None,
+    };
+    let timeout_ms = 30_000u64;
+    let comm = Arc::new(SdkCommCtx {
+        pool: ctx.pool.clone(),
+        redis_conn: ctx.redis_conn.clone(),
+        wf_redis: ctx.wf_redis.clone(),
+        wf_nats: ctx.wf_nats_client.clone(),
+        wf_js: ctx.wf_jetstream.clone(),
+        wq_redis: ctx.wq_redis.clone(),
+        wq_nats: ctx.wq_nats_client.clone(),
+        wq_js: ctx.wq_jetstream.clone(),
+        actor_redis: Some(actor_redis.clone()),
+        actor_nats: ctx.actor_nats_client.clone(),
+        actor_js: ctx.actor_jetstream.clone(),
+        actor_pg: ctx.actor_pg.clone(),
+        actor_locks: ctx.actor_locks.clone(),
+        project_id: project_id_str.clone(),
+        source_unit_path: unit_path.clone(),
+        source_instance_id: None,
+        stage_runtime_id,
+        sdk_public_host: "localhost".to_string(),
+        sdk_trigger_base_path: String::new(),
+    });
+    let precomputed_scope_trace_ids = match Uuid::parse_str(&project_id_str) {
+        Ok(pid) => {
+            let (release_id, runtime_id) = live_release_and_runtime_ids_for_scope(
+                &ctx.pool,
+                &ctx.redis_conn,
+                pid,
+                stage_runtime_id,
+            )
+            .await;
+            let ids = BaalHttpTriggerTraceIds {
+                release_id,
+                runtime_id,
+            };
+            ids.put_http_request(&http_req);
+            Some(ids)
+        }
+        Err(_) => None,
+    };
+    let run_future = run_actor_with_lock(input, comm, precomputed_scope_trace_ids);
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(timeout_ms),
+        run_future,
+    )
+    .await
+    {
+        Ok(Ok(out)) => {
+            if out
+                .error
+                .as_deref()
+                .map(|e| e.starts_with("UnknownHandler:"))
+                .unwrap_or(false)
+            {
+                return HttpResponse::BadRequest()
+                    .json(api_error(&out.error.unwrap_or_default(), json!({})));
+            }
+            HttpResponse::Ok().json(json!({ "result": out.result }))
+        }
+        Ok(Err(e)) => {
+            if e.contains("UnknownHandler:") {
+                return HttpResponse::BadRequest().json(api_error(&e, json!({})));
+            }
+            if e.contains("actor unit not found") {
+                return HttpResponse::NotFound().json(api_error(&e, json!({})));
+            }
+            tracing::error!(error = %e, "[actor_route] handler error");
+            HttpResponse::InternalServerError().json(api_error(&e, json!({})))
+        }
+        Err(_) => HttpResponse::GatewayTimeout().json(api_error("actor handler timed out", json!({}))),
+    }
+}
+
 pub async fn handle_actor_post(
     ctx: web::Data<AppContext>,
     path: web::Path<(Uuid, String)>,
     payload: web::Payload,
     query: web::Query<ActorQuery>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let (project_id, tail) = path.into_inner();
-    actor_post_inner(ctx, project_id, None, tail, payload, query).await
+    actor_post_inner(ctx, project_id, None, tail, payload, query, req).await
 }
 
 pub async fn handle_actor_post_stage(
@@ -149,9 +268,10 @@ pub async fn handle_actor_post_stage(
     path: web::Path<(Uuid, Uuid, String)>,
     payload: web::Payload,
     query: web::Query<ActorQuery>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let (project_id, runtime_id, tail) = path.into_inner();
-    actor_post_inner(ctx, project_id, Some(runtime_id), tail, payload, query).await
+    actor_post_inner(ctx, project_id, Some(runtime_id), tail, payload, query, req).await
 }
 
 async fn actor_post_inner(
@@ -161,6 +281,7 @@ async fn actor_post_inner(
     tail: String,
     mut payload: web::Payload,
     query: web::Query<ActorQuery>,
+    req: HttpRequest,
 ) -> HttpResponse {
     let parsed = match parse_actor_tail(&tail, "POST") {
         Some(p) => p,
@@ -253,72 +374,18 @@ async fn actor_post_inner(
 
         ActorOperation::CallHandler(handler_name) => {
             if query.await_result {
-                let input = ActorRunInput {
-                    project_id: project_id_str.clone(),
-                    unit_path: unit_path.clone(),
-                    actor_id: parsed.actor_id.clone(),
-                    handler: handler_name,
+                invoke_actor_handler_http(
+                    ctx.clone(),
+                    actor_redis.clone(),
+                    project_id_str.clone(),
+                    unit_path.clone(),
+                    parsed.actor_id.clone(),
+                    handler_name,
                     payload_json,
-                    kind: ActorKind::Handler,
-                    alarm_name: None,
-                    error_msg: None,
-                };
-
-                let timeout_ms = 30_000u64;
-
-                let comm = Arc::new(SdkCommCtx {
-                    pool: ctx.pool.clone(),
-                    redis_conn: ctx.redis_conn.clone(),
-                    wf_redis: ctx.wf_redis.clone(),
-                    wf_nats: ctx.wf_nats_client.clone(),
-                    wf_js: ctx.wf_jetstream.clone(),
-                    wq_redis: ctx.wq_redis.clone(),
-                    wq_nats: ctx.wq_nats_client.clone(),
-                    wq_js: ctx.wq_jetstream.clone(),
-                    actor_redis: Some(actor_redis.clone()),
-                    actor_nats: ctx.actor_nats_client.clone(),
-                    actor_js: ctx.actor_jetstream.clone(),
-                    actor_pg: ctx.actor_pg.clone(),
-                    actor_locks: ctx.actor_locks.clone(),
-                    project_id: project_id_str.clone(),
-                    source_unit_path: unit_path.clone(),
-                    source_instance_id: None,
                     stage_runtime_id,
-                    sdk_public_host: "localhost".to_string(),
-                    sdk_trigger_base_path: String::new(),
-                });
-
-                let run_future = run_actor_with_lock(input, comm);
-
-                match tokio::time::timeout(
-                    std::time::Duration::from_millis(timeout_ms),
-                    run_future,
+                    req.clone(),
                 )
                 .await
-                {
-                    Ok(Ok(out)) => {
-                        if out.error.as_deref().map(|e| e.starts_with("UnknownHandler:")).unwrap_or(false) {
-                            return HttpResponse::BadRequest()
-                                .json(api_error(&out.error.unwrap_or_default(), json!({})));
-                        }
-                        HttpResponse::Ok().json(json!({ "result": out.result }))
-                    }
-                    Ok(Err(e)) => {
-                        if e.contains("UnknownHandler:") {
-                            return HttpResponse::BadRequest()
-                                .json(api_error(&e, json!({})));
-                        }
-                        if e.contains("actor unit not found") {
-                            return HttpResponse::NotFound()
-                                .json(api_error(&e, json!({})));
-                        }
-                        tracing::error!(error = %e, "[actor_route] handler error");
-                        HttpResponse::InternalServerError()
-                            .json(api_error(&e, json!({})))
-                    }
-                    Err(_) => HttpResponse::GatewayTimeout()
-                        .json(api_error("actor handler timed out", json!({}))),
-                }
             } else {
                 let Some(ref js) = ctx.actor_jetstream else {
                     return HttpResponse::ServiceUnavailable()

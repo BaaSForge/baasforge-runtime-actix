@@ -2,6 +2,7 @@ use crate::libs::unit_js::actor_runner::ActorKind;
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::services::actor_engine::pop_due_alarms;
 use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock};
+use crate::services::project_release::load_live_release_id_scoped;
 use crate::telemetry::{async_consumer_context, AsyncConsumerSpanExtras, TriggerCorrelation};
 use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
@@ -39,9 +40,23 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
                 "production"
             };
             let corr = TriggerCorrelation::empty();
+            let release_id_owned = match uuid::Uuid::parse_str(&project_id) {
+                Ok(pu) => load_live_release_id_scoped(
+                    &comm.pool,
+                    &comm.redis_conn,
+                    pu,
+                    stage_runtime_id,
+                )
+                .await
+                .ok()
+                .flatten()
+                .map(|u| u.to_string()),
+                Err(_) => None,
+            };
             let extras = AsyncConsumerSpanExtras {
                 baal_unit_path: Some(unit_path.as_str()),
                 baal_actor_instance_id: Some(actor_id.as_str()),
+                baal_release_id: release_id_owned.as_deref(),
                 ..Default::default()
             };
             let consumer_cx = async_consumer_context(
@@ -54,7 +69,7 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
                 Some(&extras),
             );
 
-            if let Err(e) = (async move { run_actor_with_lock(input, comm_for_alarm).await })
+            if let Err(e) = (async move { run_actor_with_lock(input, comm_for_alarm, None).await })
                 .with_context(consumer_cx)
                 .await
             {

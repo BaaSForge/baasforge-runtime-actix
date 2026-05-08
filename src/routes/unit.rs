@@ -10,13 +10,15 @@ use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::{ProjectUnitRow, ProjectUnitType};
 use crate::routes::AppContext;
 use crate::services::project_release::{
-    load_unit_for_path_production, load_unit_for_path_stage, ServiceError,
+    load_live_release_id_scoped, load_production_runtime_id_for_project, load_unit_for_path_production,
+    load_unit_for_path_stage, ServiceError,
 };
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 /// Max request body size forwarded into QuickJS `req` (bytes).
@@ -190,15 +192,6 @@ async fn respond_trigger_unit(
     .await
 }
 
-#[tracing::instrument(
-    name = "unit.invoke",
-    skip(unit, http_req, body, ctx),
-    fields(
-        baal.unit.path = %unit_path,
-        baal.unit.id = %unit.id,
-        baal.unit.revision = unit.revision,
-    ),
-)]
 async fn invoke_api_unit(
     unit: ProjectUnitRow,
     http_req: HttpRequest,
@@ -209,6 +202,10 @@ async fn invoke_api_unit(
     unit_path: String,
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
+    let span = tracing::Span::current();
+    span.record("baal.unit.path", unit_path.as_str());
+    span.record("baal.unit.id", unit.id.as_str());
+    span.record("baal.unit.revision", unit.revision);
     let code = match unit.compiled_code.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(c) => c.to_string(),
         None => {
@@ -220,6 +217,49 @@ async fn invoke_api_unit(
         Ok(s) => s,
         Err(msg) => return HttpResponse::PayloadTooLarge().json(api_error(msg, json!({}))),
     };
+    let project_uuid = match Uuid::parse_str(&project_id_str) {
+        Ok(u) => u,
+        Err(_) => {
+            return HttpResponse::InternalServerError()
+                .json(api_error("invalid project id", json!({})));
+        }
+    };
+    let resolved_runtime_id = match stage_runtime_id {
+        Some(rid) => Some(rid),
+        None => load_production_runtime_id_for_project(&ctx.pool, project_uuid)
+            .await
+            .ok()
+            .flatten(),
+    };
+    let live_release_id = load_live_release_id_scoped(
+        &ctx.pool,
+        &ctx.redis_conn,
+        project_uuid,
+        stage_runtime_id,
+    )
+    .await
+    .ok()
+    .flatten();
+    span.record("baal.project.id", project_id_str.as_str());
+    span.record(
+        "baal.app.environment",
+        if stage_runtime_id.is_some() {
+            "stage"
+        } else {
+            "production"
+        },
+    );
+    if let Some(r) = resolved_runtime_id {
+        span.record("baal.runtime.id", tracing::field::display(r));
+    }
+    if let Some(rel) = live_release_id {
+        span.record("baal.release.id", tracing::field::display(rel));
+    }
+    crate::telemetry::BaalHttpTriggerTraceIds {
+        release_id: live_release_id,
+        runtime_id: resolved_runtime_id,
+    }
+    .put_http_request(&http_req);
     let sdk_public_host = http_req
         .headers()
         .get(actix_web::http::header::HOST)
@@ -250,18 +290,18 @@ async fn invoke_api_unit(
     });
     let unit_id = unit.id.clone();
     let revision = unit.revision;
-    let parent_span = tracing::Span::current();
-    let rid = stage_runtime_id.map(|u| u.to_string());
+    let parent_span = span.clone();
+    let rid_owned = resolved_runtime_id.map(|u| u.to_string());
     let trigger_runtime = if stage_runtime_id.is_some() {
         Some("stage")
     } else {
         Some("production")
     };
     let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-        crate::telemetry::otel_context_current(),
+        span.context(),
         Some(project_id_str.as_str()),
         trigger_runtime,
-        rid.as_deref(),
+        rid_owned.as_deref(),
     );
     let run_result = match tokio::task::spawn_blocking(move || {
         let _span_enter = parent_span.enter();

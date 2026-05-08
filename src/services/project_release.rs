@@ -55,6 +55,24 @@ pub enum LiveReleaseRevisionSource {
     Stage { runtime_id: Uuid },
 }
 
+/// First [`project_runtimes`] row with [`PlatformEnvironmentType::Prod`] for this project (same ordering as live-release resolution).
+pub async fn load_production_runtime_id_for_project(
+    pool: &DbPool,
+    project_id: Uuid,
+) -> Result<Option<Uuid>, ServiceError> {
+    let prod_runtime_id = block_on_db(pool, move |conn| {
+        project_runtimes::table
+            .filter(project_runtimes::project_id.eq(project_id))
+            .filter(project_runtimes::environment.eq(PlatformEnvironmentType::Prod))
+            .order(project_runtimes::id.asc())
+            .select(project_runtimes::id)
+            .first::<Uuid>(conn)
+            .optional()
+    })
+    .await?;
+    Ok(prod_runtime_id)
+}
+
 /// Reads the live release’s numeric revision for prod or a stage runtime (no Redis).
 ///
 /// Uses [`project_runtimes::live_release_id`] only; the revision value comes from [`project_releases::revision`].
@@ -67,17 +85,8 @@ pub async fn load_live_release_revision_for_runtime(
 
     let runtime_live = match source {
         LiveReleaseRevisionSource::Production => {
-            let prod_runtime_id = block_on_db(pool, move |conn| {
-                project_runtimes::table
-                    .filter(project_runtimes::project_id.eq(project_id))
-                    .filter(project_runtimes::environment.eq(PlatformEnvironmentType::Prod))
-                    .order(project_runtimes::id.asc())
-                    .select(project_runtimes::id)
-                    .first::<Uuid>(conn)
-                    .optional()
-            })
-            .await?;
-            let Some(prod_rid) = prod_runtime_id else {
+            let prod_rid = load_production_runtime_id_for_project(pool, project_id).await?;
+            let Some(prod_rid) = prod_rid else {
                 return Ok(None);
             };
             block_on_db(pool, move |conn| {
@@ -204,17 +213,8 @@ async fn load_latest_release_for_project_runtime(
 
     let runtime_live = match source {
         ProjectRuntimeReleaseSource::Production => {
-            let prod_runtime_id = block_on_db(pool, move |conn| {
-                project_runtimes::table
-                    .filter(project_runtimes::project_id.eq(project_id))
-                    .filter(project_runtimes::environment.eq(PlatformEnvironmentType::Prod))
-                    .order(project_runtimes::id.asc())
-                    .select(project_runtimes::id)
-                    .first::<Uuid>(conn)
-                    .optional()
-            })
-            .await?;
-            let Some(prod_rid) = prod_runtime_id else {
+            let prod_rid = load_production_runtime_id_for_project(pool, project_id).await?;
+            let Some(prod_rid) = prod_rid else {
                 tracing::warn!(
                     %project_id,
                     environment = ?PlatformEnvironmentType::Prod,
@@ -514,6 +514,40 @@ pub async fn load_unit_for_path_scoped(
         Some(rid) => load_unit_for_path_stage(pool, redis, project_id, rid, unit_type, unit_path).await,
         None => load_unit_for_path_production(pool, redis, project_id, unit_type, unit_path).await,
     }
+}
+
+pub async fn load_live_release_id_scoped(
+    pool: &DbPool,
+    redis: &SharedRedisConn,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+) -> Result<Option<Uuid>, ServiceError> {
+    let source = match stage_runtime_id {
+        Some(runtime_id) => ProjectRuntimeReleaseSource::Stage { runtime_id },
+        None => ProjectRuntimeReleaseSource::Production,
+    };
+    let row = load_latest_release_for_project_runtime(pool, redis, project_id, source).await?;
+    Ok(row.map(|r| r.id))
+}
+
+pub async fn live_release_and_runtime_ids_for_scope(
+    pool: &DbPool,
+    redis: &SharedRedisConn,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+) -> (Option<Uuid>, Option<Uuid>) {
+    let release_id = load_live_release_id_scoped(pool, redis, project_id, stage_runtime_id)
+        .await
+        .ok()
+        .flatten();
+    let runtime_id = match stage_runtime_id {
+        Some(r) => Some(r),
+        None => load_production_runtime_id_for_project(pool, project_id)
+            .await
+            .ok()
+            .flatten(),
+    };
+    (release_id, runtime_id)
 }
 
 /// Loads a release row by primary key, scoped to project and stage flag (NATS deploy previous release).

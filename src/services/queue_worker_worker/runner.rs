@@ -4,6 +4,7 @@ use opentelemetry::trace::FutureExt;
 use redis::AsyncCommands;
 use std::sync::Arc;
 use tracing::{error, info, warn, Instrument};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::database::DbPool;
@@ -14,7 +15,7 @@ use crate::libs::unit_js::queue_worker_runner::{
     extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler,
 };
 use crate::models::projects::ProjectUnitType;
-use crate::services::project_release::load_unit_for_path_scoped;
+use crate::services::project_release::{load_live_release_id_scoped, load_unit_for_path_scoped};
 use crate::services::queue_worker_engine::{
     QueueWorkerRunMeta, QueueWorkerRedis, WQ_NATS_WORK_SUBJECT_PER_PROJECT,
     WQ_NATS_WORK_STREAM_SUBJECTS, publish_qw_event,
@@ -213,11 +214,25 @@ async fn handle_work_message(
     } else {
         "production"
     };
+    let project_uuid = match uuid::Uuid::parse_str(&project_id) {
+        Ok(u) => u,
+        Err(e) => {
+            error!(error = %e, "[queue_worker_consumer] invalid project_id");
+            let _ = msg.ack().await;
+            return;
+        }
+    };
+    let release_id_owned = load_live_release_id_scoped(&pool, &redis_conn, project_uuid, wq_stage)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.to_string());
     let corr = crate::telemetry::trigger_correlation_from_payload(&payload);
     let extras = crate::telemetry::AsyncConsumerSpanExtras {
         messaging_destination: Some(messaging_subject.as_str()),
         baal_unit_path: Some(unit_path.as_str()),
         baal_queue_run_id: Some(run_id.as_str()),
+        baal_release_id: release_id_owned.as_deref(),
         ..Default::default()
     };
     let consumer_cx = crate::telemetry::async_consumer_context(
@@ -231,15 +246,6 @@ async fn handle_work_message(
     );
     (async move {
     let nats_opt = Some(nats.clone());
-
-    let project_uuid = match uuid::Uuid::parse_str(&project_id) {
-        Ok(u) => u,
-        Err(e) => {
-            error!(error = %e, "[queue_worker_consumer] invalid project_id");
-            let _ = msg.ack().await;
-            return;
-        }
-    };
 
     let unit_result = load_unit_for_path_scoped(
         &pool,
@@ -400,13 +406,13 @@ async fn handle_work_message(
     } else {
         Some("production")
     };
+    let caller_span = tracing::Span::current();
     let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-        crate::telemetry::otel_context_current(),
+        caller_span.context(),
         Some(project_id.as_str()),
         trigger_runtime,
         rid.as_deref(),
     );
-    let caller_span = tracing::Span::current();
     let run_future = tokio::task::spawn_blocking(move || {
         let _trace = caller_span.enter();
         let _otel = parent_ctx.attach();
@@ -745,13 +751,13 @@ async fn handle_batch_item(
         } else {
             Some("production")
         };
+        let batch_span = tracing::Span::current();
         let parent_ctx_t = crate::telemetry::context_with_telemetry_baggage(
-            crate::telemetry::otel_context_current(),
+            batch_span.context(),
             Some(project_id_t.as_str()),
             trigger_rt_t,
             rid_t.as_deref(),
         );
-        let batch_span = tracing::Span::current();
 
         tokio::spawn(
             async move {
@@ -833,13 +839,13 @@ async fn dispatch_batch(
         } else {
             Some("production")
         };
+        let caller_span = tracing::Span::current();
         let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-            crate::telemetry::otel_context_current(),
+            caller_span.context(),
             Some(project_id.as_str()),
             trigger_runtime,
             rid.as_deref(),
         );
-        let caller_span = tracing::Span::current();
         let first_result = tokio::task::spawn_blocking(move || {
             let _trace = caller_span.enter();
             let _otel = parent_ctx.attach();
@@ -902,13 +908,13 @@ async fn dispatch_batch(
         } else {
             Some("production")
         };
+        let caller_span = tracing::Span::current();
         let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-            crate::telemetry::otel_context_current(),
+            caller_span.context(),
             Some(project_id.as_str()),
             trigger_runtime,
             rid.as_deref(),
         );
-        let caller_span = tracing::Span::current();
         let run_result = tokio::task::spawn_blocking(move || {
             let _trace = caller_span.enter();
             let _otel = parent_ctx.attach();

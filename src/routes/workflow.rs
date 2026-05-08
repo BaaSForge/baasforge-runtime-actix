@@ -4,9 +4,12 @@ use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
-use crate::services::project_release::{load_unit_for_path_production, load_unit_for_path_stage};
+use crate::services::project_release::{
+    live_release_and_runtime_ids_for_scope, load_unit_for_path_production, load_unit_for_path_stage,
+};
+use crate::telemetry::BaalHttpTriggerTraceIds;
 use crate::services::workflow_engine::{self, SharedRedis};
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -96,6 +99,26 @@ fn build_unit_path(
         "{}.{}.workflow.{}",
         context_slug, module_slug, workflow_name_slug
     ))
+}
+
+async fn attach_workflow_http_trigger_trace(
+    req: &HttpRequest,
+    ctx: &AppContext,
+    project_id: Uuid,
+    stage_runtime_id: Option<Uuid>,
+) {
+    let (release_id, runtime_id) = live_release_and_runtime_ids_for_scope(
+        &ctx.pool,
+        &ctx.redis_conn,
+        project_id,
+        stage_runtime_id,
+    )
+    .await;
+    BaalHttpTriggerTraceIds {
+        release_id,
+        runtime_id,
+    }
+    .put_http_request(req);
 }
 
 fn require_wf_redis(ctx: &AppContext) -> Result<SharedRedis, HttpResponse> {
@@ -400,6 +423,7 @@ pub async fn start_workflow_production(
     ctx: web::Data<AppContext>,
     path: web::Path<ProdPath>,
     body: web::Bytes,
+    req: HttpRequest,
 ) -> HttpResponse {
     let p = path.into_inner();
     let unit_path = match build_unit_path(&p.context_slug, &p.module_slug, &p.workflow_name_slug) {
@@ -410,6 +434,7 @@ pub async fn start_workflow_production(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    attach_workflow_http_trigger_trace(&req, &ctx, p.project_id, None).await;
     do_start_workflow(&ctx, p.project_id, &unit_path, &source, &body, None).await
 }
 
@@ -417,6 +442,7 @@ pub async fn call_shared_handler_production(
     ctx: web::Data<AppContext>,
     path: web::Path<ProdHandlerPath>,
     body: web::Bytes,
+    req: HttpRequest,
 ) -> HttpResponse {
     let p = path.into_inner();
     let unit_path = match build_unit_path(&p.context_slug, &p.module_slug, &p.workflow_name_slug) {
@@ -427,6 +453,7 @@ pub async fn call_shared_handler_production(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    attach_workflow_http_trigger_trace(&req, &ctx, p.project_id, None).await;
     do_call_handler(&ctx, p.project_id, &p.instance_id, &p.handler_name, &source, &body, None).await
 }
 
@@ -462,6 +489,7 @@ pub async fn start_workflow_stage(
     ctx: web::Data<AppContext>,
     path: web::Path<StagePath>,
     body: web::Bytes,
+    req: HttpRequest,
 ) -> HttpResponse {
     let p = path.into_inner();
     let unit_path = match build_unit_path(&p.context_slug, &p.module_slug, &p.workflow_name_slug) {
@@ -472,6 +500,7 @@ pub async fn start_workflow_stage(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    attach_workflow_http_trigger_trace(&req, &ctx, p.project_id, Some(p.runtime_id)).await;
     do_start_workflow(&ctx, p.project_id, &unit_path, &source, &body, Some(p.runtime_id)).await
 }
 
@@ -479,6 +508,7 @@ pub async fn call_shared_handler_stage(
     ctx: web::Data<AppContext>,
     path: web::Path<StageHandlerPath>,
     body: web::Bytes,
+    req: HttpRequest,
 ) -> HttpResponse {
     let p = path.into_inner();
     let unit_path = match build_unit_path(&p.context_slug, &p.module_slug, &p.workflow_name_slug) {
@@ -489,6 +519,7 @@ pub async fn call_shared_handler_stage(
         Ok(s) => s,
         Err(resp) => return resp,
     };
+    attach_workflow_http_trigger_trace(&req, &ctx, p.project_id, Some(p.runtime_id)).await;
     do_call_handler(&ctx, p.project_id, &p.instance_id, &p.handler_name, &source, &body, Some(p.runtime_id)).await
 }
 

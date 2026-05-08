@@ -5,7 +5,7 @@ use crate::{init_tracing, shutdown_telemetry};
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
 use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::models::projects::ProjectUnitType;
-use crate::services::project_release::load_unit_for_path_scoped;
+use crate::services::project_release::{load_live_release_id_scoped, load_unit_for_path_scoped};
 use crate::services::workflow_engine;
 use futures::StreamExt;
 use opentelemetry::trace::FutureExt;
@@ -504,6 +504,13 @@ async fn handle_start(
     } else {
         "production"
     };
+    let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
+        .map_err(|e| format!("handle_start: invalid project_id: {e}"))?;
+    let release_id_owned = load_live_release_id_scoped(&pool, &redis_conn, project_uuid, stage_runtime_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.to_string());
     let corr = crate::telemetry::trigger_correlation_from_payload(
         trace_payload.as_ref().unwrap_or(&serde_json::Value::Null),
     );
@@ -512,6 +519,7 @@ async fn handle_start(
         messaging_destination: Some(messaging_dest.as_str()),
         baal_unit_path: Some(unit_path.as_str()),
         baal_workflow_instance_id: Some(instance_id.as_str()),
+        baal_release_id: release_id_owned.as_deref(),
         ..Default::default()
     };
     let consumer_cx = crate::telemetry::async_consumer_context(
@@ -524,9 +532,6 @@ async fn handle_start(
         Some(&extras),
     );
     (async move {
-    let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
-        .map_err(|e| format!("invalid project_id: {e}"))?;
-
     let unit = load_unit_for_path_scoped(
         &pool,
         &redis_conn,
@@ -676,6 +681,13 @@ async fn handle_wake(
     } else {
         "production"
     };
+    let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
+        .map_err(|e| format!("handle_wake: invalid project_id: {e}"))?;
+    let release_id_owned = load_live_release_id_scoped(&pool, &redis_conn, project_uuid, stage_runtime_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.to_string());
     let corr = crate::telemetry::trigger_correlation_from_payload(
         wake_payload
             .as_ref()
@@ -692,6 +704,7 @@ async fn handle_wake(
         baal_unit_path: Some(meta.name.as_str()),
         baal_workflow_instance_id: Some(instance_id.as_str()),
         baal_wake_reason: wake_reason.as_deref(),
+        baal_release_id: release_id_owned.as_deref(),
         ..Default::default()
     };
     let consumer_cx = crate::telemetry::async_consumer_context(
@@ -762,9 +775,6 @@ async fn handle_wake(
     if parts.len() < 4 {
         return Err(format!("invalid unit path in meta: {unit_path}"));
     }
-
-    let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
-        .map_err(|e| format!("invalid project_id: {e}"))?;
 
     let unit = load_unit_for_path_scoped(
         &pool,

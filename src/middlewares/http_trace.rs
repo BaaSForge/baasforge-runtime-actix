@@ -1,4 +1,5 @@
 use actix_web::body::{self, BodySize, BoxBody, MessageBody};
+use actix_web::HttpMessage;
 use actix_web::dev::{ServiceRequest, ServiceResponse};
 use actix_web::http::header::{HeaderMap, CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
 use actix_web::HttpResponseBuilder;
@@ -242,6 +243,14 @@ async fn finish_api_v1_response<B: MessageBody + 'static>(
     meta: ApiV1TraceMeta,
     res: ServiceResponse<B>,
 ) -> Result<ServiceResponse<BoxBody>, Error> {
+    if let Some(ids) = res.request().extensions().get::<crate::telemetry::BaalHttpTriggerTraceIds>() {
+        if let Some(rel) = ids.release_id {
+            span.record("baal.release.id", tracing::field::display(rel));
+        }
+        if let Some(rid) = ids.runtime_id {
+            span.record("baal.runtime.id", tracing::field::display(rid));
+        }
+    }
     record_request_meta(&span, &meta);
 
     let status = res.status();
@@ -388,6 +397,8 @@ pub async fn trace_request_middleware<B: MessageBody + 'static>(
                 network.peer.address = %peer,
                 server.address = %host,
                 baal.trigger.entry = trigger_entry,
+                baal.runtime.id = tracing::field::Empty,
+                baal.release.id = tracing::field::Empty,
                 http.url = tracing::field::Empty,
                 url.query = tracing::field::Empty,
                 baal.path_params = tracing::field::Empty,
@@ -414,6 +425,13 @@ pub async fn trace_request_middleware<B: MessageBody + 'static>(
                 baal.trigger.entry = trigger_entry,
             )
         };
+        if api_v1 {
+            if let Some(ref rid) = trace_rid {
+                if !rid.is_empty() {
+                    span.record("baal.runtime.id", rid.as_str());
+                }
+            }
+        }
         let res = next.call(req).instrument(span.clone()).await?;
         if api_v1 {
             finish_api_v1_response(span, meta, res).await

@@ -3,7 +3,9 @@ use futures::StreamExt;
 use opentelemetry::trace::FutureExt;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::Instrument;
 use tracing::{error, info, warn};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::database::DbPool;
 use crate::libs::unit_js::actor_runner::ActorKind;
@@ -13,6 +15,9 @@ use crate::routes::ActorLocks;
 use crate::services::actor_engine::{ActorRedis, ACTOR_NATS_STREAM_SUBJECTS};
 use crate::services::actor_worker::idle::run_actor_idle_sweep;
 use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock};
+use crate::services::project_release::{
+    load_live_release_id_scoped, load_production_runtime_id_for_project,
+};
 use crate::services::workflow_engine::SharedRedis as WfRedis;
 
 pub async fn run_actor_consumer(
@@ -166,6 +171,30 @@ async fn handle_actor_message(
     };
     let corr = crate::telemetry::trigger_correlation_from_payload(&payload);
     let subject = msg.subject.to_string();
+    let stage_uuid = rid_o
+        .as_deref()
+        .and_then(|s| uuid::Uuid::parse_str(s).ok());
+    let project_uuid_opt = pid_o.as_deref().and_then(|s| uuid::Uuid::parse_str(s).ok());
+    let release_id_owned = match project_uuid_opt {
+        Some(pu) => load_live_release_id_scoped(&pool, &redis_conn, pu, stage_uuid)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.to_string()),
+        None => None,
+    };
+    let production_runtime_owned = if stage_uuid.is_none() {
+        match project_uuid_opt {
+            Some(pu) => load_production_runtime_id_for_project(&pool, pu)
+                .await
+                .ok()
+                .flatten()
+                .map(|u| u.to_string()),
+            None => None,
+        }
+    } else {
+        None
+    };
     let unit_path_ref = payload
         .get("unitPath")
         .and_then(|v| v.as_str())
@@ -174,10 +203,15 @@ async fn handle_actor_message(
         .get("actorId")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
+    let handler_ref = payload
+        .get("handler")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
     let extras = crate::telemetry::AsyncConsumerSpanExtras {
         messaging_destination: Some(subject.as_str()),
         baal_unit_path: unit_path_ref,
         baal_actor_instance_id: actor_id_ref,
+        baal_release_id: release_id_owned.as_deref(),
         ..Default::default()
     };
     let consumer_cx = crate::telemetry::async_consumer_context(
@@ -189,6 +223,35 @@ async fn handle_actor_message(
         rid_o.as_deref(),
         Some(&extras),
     );
+
+    let env_label: &'static str = if rid_o.is_some() {
+        "stage"
+    } else {
+        "production"
+    };
+    let dispatch_span = tracing::info_span!(
+        "actor.invoke",
+        baal.trigger.source = "actor_mailbox",
+        baal.app.environment = env_label,
+        baal.project.id = pid_o.as_deref().unwrap_or(""),
+        baal.unit.path = unit_path_ref.unwrap_or(""),
+        baal.actor.instance_id = actor_id_ref.unwrap_or(""),
+        baal.actor.handler = handler_ref.unwrap_or(""),
+        baal.runtime.id = tracing::field::Empty,
+        baal.release.id = tracing::field::Empty,
+    );
+    dispatch_span.set_parent(consumer_cx.clone());
+    if let Some(ref r) = rid_o {
+        if !r.is_empty() {
+            dispatch_span.record("baal.runtime.id", r.as_str());
+        }
+    } else if let Some(ref pr) = production_runtime_owned {
+        dispatch_span.record("baal.runtime.id", pr.as_str());
+    }
+    if let Some(ref rel) = release_id_owned {
+        dispatch_span.record("baal.release.id", rel.as_str());
+    }
+    let dispatch_span_run = dispatch_span.clone();
 
     (async move {
     let project_id = payload
@@ -263,7 +326,7 @@ async fn handle_actor_message(
         sdk_trigger_base_path: String::new(),
     });
 
-    let result = run_actor_with_lock(input, comm).await;
+    let result = run_actor_with_lock(input, comm, None).await;
 
     if let Some(reply_subject) = reply_to {
         // reply_subject format: "wf.promise.{pid}.{iid}.{pname}"
@@ -299,6 +362,7 @@ async fn handle_actor_message(
 
     let _ = msg.ack().await;
     })
+    .instrument(dispatch_span_run)
     .with_context(consumer_cx)
     .await;
 }

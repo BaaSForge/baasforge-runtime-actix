@@ -2,7 +2,8 @@ use crate::libs::api_response::api_error;
 use crate::libs::unit_slug::{is_valid_slug, normalize_filename_stem_to_slug};
 use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
-use crate::services::project_release::load_unit_for_path_scoped;
+use crate::services::project_release::{live_release_and_runtime_ids_for_scope, load_unit_for_path_scoped};
+use crate::telemetry::BaalHttpTriggerTraceIds;
 use crate::services::queue_worker_engine::{
     QueueWorkerRedis, cancel_queue_worker_run, enqueue_queue_worker_run, get_queue_worker_run_result,
     load_queue_worker_run_meta, queue_worker_url_stage_matches_meta,
@@ -116,8 +117,6 @@ async fn queue_worker_post_inner(
     body: web::Bytes,
     req: HttpRequest,
 ) -> HttpResponse {
-    let _ = req;
-
     let parsed = match parse_queue_worker_tail(&tail, true) {
         Some(p) => p,
         None => {
@@ -159,6 +158,19 @@ async fn queue_worker_post_inner(
                 }
                 Ok(Some(_)) => {}
             }
+
+            let (release_id, runtime_id) = live_release_and_runtime_ids_for_scope(
+                &ctx.pool,
+                &ctx.redis_conn,
+                project_id,
+                stage_runtime_id,
+            )
+            .await;
+            BaalHttpTriggerTraceIds {
+                release_id,
+                runtime_id,
+            }
+            .put_http_request(&req);
 
             let data_json = String::from_utf8_lossy(&body).into_owned();
             let project_id_str = project_id.to_string();

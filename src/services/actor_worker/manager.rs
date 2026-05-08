@@ -10,13 +10,33 @@ use crate::services::actor_engine::{
     delete_actor_state, evict_actor_hot_cache_keep_alarms, idle_due_member, load_hot_state, publish_actor_event,
     refresh_actor_idle_deadline, set_alarm, ACTOR_IDLE_DUE_ZSET,
 };
-use crate::services::project_release::load_unit_for_path_scoped;
+use crate::services::project_release::{
+    load_live_release_id_scoped, load_production_runtime_id_for_project, load_unit_for_path_scoped,
+};
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{error, warn};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
+
+const MAX_HANDLER_PAYLOAD_TRACE_CHARS: usize = 8192;
+
+fn actor_handler_payload_preview(payload_json: &str) -> String {
+    let normalized = serde_json::from_str::<Value>(payload_json)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| payload_json.to_string());
+    if normalized.chars().count() <= MAX_HANDLER_PAYLOAD_TRACE_CHARS {
+        return normalized;
+    }
+    let mut out: String = normalized
+        .chars()
+        .take(MAX_HANDLER_PAYLOAD_TRACE_CHARS)
+        .collect();
+    out.push_str("…(truncated for trace)");
+    out
+}
 
 async fn sync_idle_tracker_after_touch(
     redis: &ActorRedis,
@@ -53,6 +73,7 @@ pub struct ActorRunOutput {
 pub async fn run_actor_with_lock(
     input: ActorRunInput,
     comm: Arc<SdkCommCtx>,
+    precomputed_scope_trace_ids: Option<crate::telemetry::BaalHttpTriggerTraceIds>,
 ) -> Result<ActorRunOutput, String> {
     let actor_redis = comm
         .actor_redis
@@ -75,13 +96,14 @@ pub async fn run_actor_with_lock(
 
     let _guard = actor_mutex.lock().await;
 
-    run_actor_inner(input, actor_redis, comm).await
+    run_actor_inner(input, actor_redis, comm, precomputed_scope_trace_ids).await
 }
 
 async fn run_actor_inner(
     input: ActorRunInput,
     actor_redis: ActorRedis,
     comm: Arc<SdkCommCtx>,
+    precomputed_scope_trace_ids: Option<crate::telemetry::BaalHttpTriggerTraceIds>,
 ) -> Result<ActorRunOutput, String> {
     let nats = comm.actor_nats.clone();
     let project_uuid = Uuid::parse_str(&input.project_id)
@@ -107,6 +129,40 @@ async fn run_actor_inner(
         Some(s) => s.to_string(),
         None => return Err("actor unit has no compiled code".to_string()),
     };
+
+    let (resolved_runtime_id, live_release_id) = if let Some(ids) = precomputed_scope_trace_ids {
+        (ids.runtime_id, ids.release_id)
+    } else {
+        let resolved_runtime_id = match comm.stage_runtime_id {
+            Some(rid) => Some(rid),
+            None => load_production_runtime_id_for_project(&comm.pool, project_uuid)
+                .await
+                .ok()
+                .flatten(),
+        };
+        let live_release_id = load_live_release_id_scoped(
+            &comm.pool,
+            &comm.redis_conn,
+            project_uuid,
+            comm.stage_runtime_id,
+        )
+        .await
+        .ok()
+        .flatten();
+        (resolved_runtime_id, live_release_id)
+    };
+
+    let trace_ids = crate::telemetry::BaalHttpTriggerTraceIds {
+        release_id: live_release_id,
+        runtime_id: resolved_runtime_id,
+    };
+    let cur = tracing::Span::current();
+    if let Some(rid) = trace_ids.runtime_id {
+        cur.record("baal.runtime.id", tracing::field::display(rid));
+    }
+    if let Some(rel) = trace_ids.release_id {
+        cur.record("baal.release.id", tracing::field::display(rel));
+    }
 
     let source_for_meta = source.clone();
     let metadata: ActorMetadata =
@@ -199,23 +255,47 @@ async fn run_actor_inner(
             input.unit_path.clone(),
             None,
         );
-        let rid = comm.stage_runtime_id.map(|u| u.to_string());
+        let rid_owned = resolved_runtime_id.map(|u| u.to_string());
         let trigger_runtime = if comm.stage_runtime_id.is_some() {
             Some("stage")
         } else {
             Some("production")
         };
+        let env_label: &'static str = if comm.stage_runtime_id.is_some() {
+            "stage"
+        } else {
+            "production"
+        };
+        let handler_payload_preview = actor_handler_payload_preview(&input.payload_json);
+        let handler_span = tracing::info_span!(
+            "actor.handler.invoke",
+            baal.project.id = %input.project_id,
+            baal.app.environment = env_label,
+            baal.unit.path = %input.unit_path,
+            baal.actor.instance_id = %input.actor_id,
+            baal.actor.handler = %input.handler,
+            baal.actor.handler_payload = %handler_payload_preview,
+            attempt,
+            baal.runtime.id = tracing::field::Empty,
+            baal.release.id = tracing::field::Empty,
+        );
+        if let Some(r) = resolved_runtime_id {
+            handler_span.record("baal.runtime.id", tracing::field::display(r));
+        }
+        if let Some(rel) = live_release_id {
+            handler_span.record("baal.release.id", tracing::field::display(rel));
+        }
+        handler_span.set_parent(tracing::Span::current().context());
         let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-            crate::telemetry::otel_context_current(),
+            handler_span.context(),
             Some(input.project_id.as_str()),
             trigger_runtime,
-            rid.as_deref(),
+            rid_owned.as_deref(),
         );
-        let caller_span = tracing::Span::current();
 
         let outcome =
             tokio::task::spawn_blocking(move || {
-                let _trace = caller_span.enter();
+                let _trace = handler_span.enter();
                 let _otel = parent_ctx.attach();
                 run_actor_handler(&src, &ctx_json, comm_for_spawn, limit, timeout)
             })
@@ -479,22 +559,69 @@ async fn run_dead_letter(
         input.unit_path.clone(),
         None,
     );
-    let rid = comm.stage_runtime_id.map(|u| u.to_string());
-    let trigger_runtime = if comm.stage_runtime_id.is_some() {
+    let project_uuid_dl = match Uuid::parse_str(&input.project_id) {
+        Ok(u) => u,
+        Err(_) => {
+            warn!(project_id = %input.project_id, "[actor_manager] dead_letter: invalid project_id");
+            return;
+        }
+    };
+    let resolved_runtime_id_dl = match comm.stage_runtime_id {
+        Some(rid) => Some(rid),
+        None => load_production_runtime_id_for_project(&comm.pool, project_uuid_dl)
+            .await
+            .ok()
+            .flatten(),
+    };
+    let live_release_id_dl = load_live_release_id_scoped(
+        &comm.pool,
+        &comm.redis_conn,
+        project_uuid_dl,
+        comm.stage_runtime_id,
+    )
+    .await
+    .ok()
+    .flatten();
+    let rid_owned_dl = resolved_runtime_id_dl.map(|u| u.to_string());
+    let trigger_runtime_dl = if comm.stage_runtime_id.is_some() {
         Some("stage")
     } else {
         Some("production")
     };
-    let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-        crate::telemetry::otel_context_current(),
-        Some(input.project_id.as_str()),
-        trigger_runtime,
-        rid.as_deref(),
+    let env_dl: &'static str = if comm.stage_runtime_id.is_some() {
+        "stage"
+    } else {
+        "production"
+    };
+    let dl_payload_preview = actor_handler_payload_preview(&input.payload_json);
+    let dl_span = tracing::info_span!(
+        "actor.handler.dead_letter",
+        baal.project.id = %input.project_id,
+        baal.app.environment = env_dl,
+        baal.unit.path = %input.unit_path,
+        baal.actor.instance_id = %input.actor_id,
+        baal.actor.handler = %input.handler,
+        baal.actor.handler_payload = %dl_payload_preview,
+        attempt,
+        baal.runtime.id = tracing::field::Empty,
+        baal.release.id = tracing::field::Empty,
     );
-    let caller_span = tracing::Span::current();
+    if let Some(r) = resolved_runtime_id_dl {
+        dl_span.record("baal.runtime.id", tracing::field::display(r));
+    }
+    if let Some(rel) = live_release_id_dl {
+        dl_span.record("baal.release.id", tracing::field::display(rel));
+    }
+    dl_span.set_parent(tracing::Span::current().context());
+    let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
+        dl_span.context(),
+        Some(input.project_id.as_str()),
+        trigger_runtime_dl,
+        rid_owned_dl.as_deref(),
+    );
 
     let outcome = tokio::task::spawn_blocking(move || {
-        let _trace = caller_span.enter();
+        let _trace = dl_span.enter();
         let _otel = parent_ctx.attach();
         run_actor_handler(&src, &dl_ctx, comm_for_spawn, limit, None)
     })

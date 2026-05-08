@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
@@ -712,14 +713,14 @@ pub(crate) async fn drive_workflow(
     } else {
         Some("production")
     };
+    let caller_span_blocking = tracing::Span::current();
     let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-        crate::telemetry::otel_context_current(),
+        caller_span_blocking.context(),
         Some(comm_for_spawn.project_id.as_str()),
         trigger_runtime,
         rid.as_deref(),
     );
     let parent_ctx_blocking = parent_ctx.clone();
-    let caller_span_blocking = tracing::Span::current();
 
     let result = tokio::task::spawn_blocking(move || {
         let _trace = caller_span_blocking.enter();

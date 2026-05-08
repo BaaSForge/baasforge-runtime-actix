@@ -131,7 +131,7 @@ fn block_async<F, R>(future: F) -> Result<R, String>
 where
     F: std::future::Future<Output = Result<R, String>> + Send,
 {
-    let cx = crate::telemetry::otel_context_current();
+    let cx = tracing::Span::current().context();
     tokio::runtime::Handle::current().block_on(future.with_context(cx))
 }
 
@@ -150,29 +150,84 @@ fn sdk_json_preview(v: &serde_json::Value) -> String {
     sdk_trace_preview(&v.to_string())
 }
 
-fn sdk_span(operation: &'static str) -> tracing::Span {
-    let unit_path = COMM_CTX.with(|c| {
-        c.borrow()
-            .as_ref()
-            .map(|x| x.source_unit_path.clone())
-            .unwrap_or_default()
-    });
-    let parent_cx = crate::telemetry::otel_context_current();
-    let parent_sc = parent_cx.span().span_context().clone();
-    let span = tracing::info_span!(
-        "sdk.host",
-        baal.operation = operation,
-        baal.caller_unit_path = %unit_path,
-        baal.correlation.trace_id = tracing::field::Empty,
-        baal.sdk.input = tracing::field::Empty,
-        baal.sdk.output = tracing::field::Empty,
-    );
-    if parent_sc.is_valid() {
-        let tid = format!("{}", parent_sc.trace_id());
-        span.set_parent(parent_cx);
-        span.record("baal.correlation.trace_id", tid.as_str());
+macro_rules! sdk_span {
+    ($op:literal) => {{
+        let unit_path = COMM_CTX.with(|c| {
+            c.borrow()
+                .as_ref()
+                .map(|x| x.source_unit_path.clone())
+                .unwrap_or_default()
+        });
+        let project_id = COMM_CTX.with(|c| {
+            c.borrow()
+                .as_ref()
+                .map(|x| x.project_id.clone())
+                .unwrap_or_default()
+        });
+        let env_label: &'static str = COMM_CTX.with(|c| {
+            match c.borrow().as_ref() {
+                Some(x) if x.stage_runtime_id.is_some() => "stage",
+                _ => "production",
+            }
+        });
+        let parent_cx = tracing::Span::current().context();
+        let parent_sc = parent_cx.span().span_context().clone();
+        let span = tracing::info_span!(
+            $op,
+            baal.operation = $op,
+            baal.caller_unit_path = %unit_path,
+            baal.project.id = %project_id,
+            baal.app.environment = env_label,
+            baal.runtime.id = tracing::field::Empty,
+            baal.release.id = tracing::field::Empty,
+            baal.correlation.trace_id = tracing::field::Empty,
+            baal.sdk.input = tracing::field::Empty,
+            baal.sdk.output = tracing::field::Empty,
+        );
+        if parent_sc.is_valid() {
+            let tid = format!("{}", parent_sc.trace_id());
+            span.set_parent(parent_cx);
+            span.record("baal.correlation.trace_id", tid.as_str());
+        }
+        span
+    }};
+}
+
+fn sdk_record_release_and_runtime_ids(span: &tracing::Span, comm: &SdkCommCtx) {
+    let Ok(pu) = Uuid::parse_str(comm.project_id.as_str()) else {
+        return;
+    };
+    let pool = comm.pool.clone();
+    let redis = comm.redis_conn.clone();
+    let stage = comm.stage_runtime_id;
+    let Ok((release, runtime)) = block_async(async move {
+        let release = crate::services::project_release::load_live_release_id_scoped(
+            &pool, &redis, pu, stage,
+        )
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.to_string());
+        let runtime = match stage {
+            Some(rid) => Some(rid.to_string()),
+            None => crate::services::project_release::load_production_runtime_id_for_project(
+                &pool, pu,
+            )
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.to_string()),
+        };
+        Ok::<_, String>((release, runtime))
+    }) else {
+        return;
+    };
+    if let Some(ref r) = release {
+        span.record("baal.release.id", r.as_str());
     }
-    span
+    if let Some(ref r) = runtime {
+        span.record("baal.runtime.id", r.as_str());
+    }
 }
 
 fn record_sdk_input(span: &tracing::Span, v: &serde_json::Value) {
@@ -379,7 +434,7 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
 }
 
 fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_name: String) -> rquickjs::Result<()> {
-    let span = sdk_span("workflow.durable.startChildWorkflow");
+    let span = sdk_span!("workflow.durable.startChildWorkflow");
     let _g = span.enter();
     let input = serde_json::json!({
         "unitPath": &unit_path,
@@ -473,7 +528,7 @@ fn host_get_api_unit_trigger_url(ctx: Ctx<'_>, args_json: String) -> rquickjs::R
         .get("unitPathOrId")
         .and_then(|v| v.as_str())
         .ok_or_else(|| Exception::throw_message(&ctx, "sdk.getApiUnitTriggerUrl: unitPathOrId is required"))?;
-    let span = sdk_span("sdk.getApiUnitTriggerUrl");
+    let span = sdk_span!("sdk.getApiUnitTriggerUrl");
     let _g = span.enter();
     let input = serde_json::json!({ "unitPathOrId": unit_path_or_id });
     record_sdk_input(&span, &input);
@@ -501,8 +556,7 @@ fn host_call_actor_sync(
     use crate::libs::unit_js::actor_runner::ActorKind;
     use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock};
 
-    let span = sdk_span("sdk.callActorAndWaitForResultSync");
-    let _g = span.enter();
+    let span = sdk_span!("sdk.callActorAndWaitForResultSync");
     let input = serde_json::json!({
         "unitPath": &unit_path,
         "actorId": &actor_id,
@@ -512,6 +566,7 @@ fn host_call_actor_sync(
     });
     record_sdk_input(&span, &input);
     let res: Result<String, String> = with_comm_ctx(|comm| {
+        sdk_record_release_and_runtime_ids(&span, comm.as_ref());
         if comm.actor_redis.is_none() {
             return Err("sdk.callActor: actor Redis not configured".to_string());
         }
@@ -536,13 +591,19 @@ fn host_call_actor_sync(
             alarm_name: None,
             error_msg: None,
         };
-        block_async(async move {
-            match tokio::time::timeout(timeout, run_actor_with_lock(input, comm_clone)).await {
-                Ok(Ok(out)) => Ok(serde_json::json!({ "ok": true, "result": out.result }).to_string()),
-                Ok(Err(e)) => Ok(serde_json::json!({ "ok": false, "error": e }).to_string()),
-                Err(_) => Ok(serde_json::json!({ "ok": false, "error": format!("sdk.callActor: timed out after {}ms", timeout_ms as u64) }).to_string()),
+        let span_run = span.clone();
+        block_async(
+            async move {
+                match tokio::time::timeout(timeout, run_actor_with_lock(input, comm_clone, None)).await {
+                    Ok(Ok(out)) => {
+                        Ok(serde_json::json!({ "ok": true, "result": out.result }).to_string())
+                    }
+                    Ok(Err(e)) => Ok(serde_json::json!({ "ok": false, "error": e }).to_string()),
+                    Err(_) => Ok(serde_json::json!({ "ok": false, "error": format!("sdk.callActor: timed out after {}ms", timeout_ms as u64) }).to_string()),
+                }
             }
-        })
+            .instrument(span_run),
+        )
     });
     record_sdk_output_result_str(&span, &res);
     res.map_err(|e| Exception::throw_message(&ctx, &e))
@@ -557,8 +618,7 @@ fn host_call_actor_async(
 ) -> rquickjs::Result<String> {
     use crate::services::actor_engine::publish_actor_message;
 
-    let span = sdk_span("sdk.sendActorMessageSync");
-    let _g = span.enter();
+    let span = sdk_span!("sdk.sendActorMessageSync");
     let input = serde_json::json!({
         "unitPath": &unit_path,
         "actorId": &actor_id,
@@ -567,24 +627,29 @@ fn host_call_actor_async(
     });
     record_sdk_input(&span, &input);
     let res: Result<String, String> = with_comm_ctx(|comm| {
+        sdk_record_release_and_runtime_ids(&span, comm.as_ref());
         let actor_js = comm.actor_js.clone()
             .ok_or_else(|| "sdk.callActor (fire-forget): actor NATS JetStream not configured".to_string())?;
         let project_id = comm.project_id.clone();
         let stage_s: Option<String> = comm.stage_runtime_id.map(|u| u.to_string());
-        block_async(async move {
-            publish_actor_message(
-                &actor_js,
-                &project_id,
-                &unit_path,
-                &actor_id,
-                &handler,
-                &payload_json,
-                None,
-                stage_s.as_deref(),
-            )
-            .await?;
-            Ok(serde_json::json!({ "delivered": true }).to_string())
-        })
+        let span_run = span.clone();
+        block_async(
+            async move {
+                publish_actor_message(
+                    &actor_js,
+                    &project_id,
+                    &unit_path,
+                    &actor_id,
+                    &handler,
+                    &payload_json,
+                    None,
+                    stage_s.as_deref(),
+                )
+                .await?;
+                Ok(serde_json::json!({ "delivered": true }).to_string())
+            }
+            .instrument(span_run),
+        )
     });
     record_sdk_output_result_str(&span, &res);
     res.map_err(|e| Exception::throw_message(&ctx, &e))
@@ -597,7 +662,7 @@ fn host_enqueue_worker(
 ) -> rquickjs::Result<String> {
     use crate::services::queue_worker_engine::enqueue_queue_worker_run;
 
-    let span = sdk_span("sdk.enqueueWorkerSync");
+    let span = sdk_span!("sdk.enqueueWorkerSync");
     let _g = span.enter();
     let input = serde_json::json!({
         "unitPath": &unit_path,
@@ -648,7 +713,7 @@ fn host_call_workflow_sync(
     use crate::services::project_release::load_unit_for_path_scoped;
     use crate::services::workflow_engine::start_workflow;
 
-    let span = sdk_span("sdk.callWorkflowAndWaitForOutputSync");
+    let span = sdk_span!("sdk.callWorkflowAndWaitForOutputSync");
     let _g = span.enter();
     let input = serde_json::json!({
         "unitPath": &unit_path,
@@ -748,7 +813,7 @@ fn host_start_workflow_fire_forget(
     use crate::services::project_release::load_unit_for_path_scoped;
     use crate::services::workflow_engine::{drive_workflow, prepare_workflow_instance_for_start};
 
-    let span = sdk_span("sdk.startWorkflowSync");
+    let span = sdk_span!("sdk.startWorkflowSync");
     let _g = span.enter();
     let input = serde_json::json!({
         "unitPath": &unit_path,
@@ -822,7 +887,7 @@ fn host_start_workflow_fire_forget(
                     Some("production")
                 };
                 let parent_ctx_bg = crate::telemetry::context_with_telemetry_baggage(
-                    crate::telemetry::otel_context_current(),
+                    tracing::Span::current().context(),
                     Some(project_id_bg.as_str()),
                     trigger_rt_bg,
                     rid_bg.as_deref(),
@@ -873,7 +938,7 @@ fn host_call_workflow_handler_sync(
     use crate::services::project_release::load_unit_for_path_scoped;
     use crate::services::workflow_engine::call_handler;
 
-    let span = sdk_span("sdk.callWorkflowHandlerAndWaitForResultSync");
+    let span = sdk_span!("sdk.callWorkflowHandlerAndWaitForResultSync");
     let _g = span.enter();
     let input = serde_json::json!({
         "unitPath": &unit_path,
@@ -956,8 +1021,7 @@ fn host_start_actor_call(
 ) -> rquickjs::Result<()> {
     use crate::services::actor_engine::publish_actor_message;
 
-    let span = sdk_span("workflow.durable.startActorCall");
-    let _g = span.enter();
+    let span = sdk_span!("workflow.durable.startActorCall");
     let input = serde_json::json!({
         "unitPath": &unit_path,
         "actorId": &actor_id,
@@ -984,22 +1048,26 @@ fn host_start_actor_call(
                     .and_then(|co| co.stage_runtime_id.map(|u| u.to_string()))
             });
 
-            block_async(async move {
-                publish_actor_message(
-                    &actor_js,
-                    &project_id,
-                    &unit_path,
-                    &actor_id,
-                    &handler,
-                    &payload_json,
-                    Some(&reply_subject),
-                    stage_s.as_deref(),
-                )
-                .await
-                .map_err(|e| format!("__baal_start_actor_call: publish failed: {e}"))?;
+            let span_run = span.clone();
+            block_async(
+                async move {
+                    publish_actor_message(
+                        &actor_js,
+                        &project_id,
+                        &unit_path,
+                        &actor_id,
+                        &handler,
+                        &payload_json,
+                        Some(&reply_subject),
+                        stage_s.as_deref(),
+                    )
+                    .await
+                    .map_err(|e| format!("__baal_start_actor_call: publish failed: {e}"))?;
 
-                Ok(())
-            })
+                    Ok(())
+                }
+                .instrument(span_run),
+            )
         });
     let out = match &res {
         Ok(()) => serde_json::json!({ "ok": true }),
