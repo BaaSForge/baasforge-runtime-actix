@@ -9,7 +9,7 @@ export type QueryParams = never;
  * Seeded only into the stage-b runtime release; the production runtime
  * continues to serve `basic/runtime-scope.ts` instead.
  */
-export function handleRequest(_req: IncomingMessage, res: ServerResponse): void {
+export async function handleRequest(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ scope: "stage-b" } satisfies ResponseBody));
 }

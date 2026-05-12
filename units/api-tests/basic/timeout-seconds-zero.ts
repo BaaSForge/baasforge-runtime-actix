@@ -9,6 +9,6 @@ export type QueryParams = never;
  * must treat that like absent and apply the 30 s platform default (e2e: index.ts
  * `default-platform-30s-timeout-metadata-scenarios-sequential-e2e`).
  */
-export function handleRequest(_req: IncomingMessage, _res: ServerResponse): void {
+export async function handleRequest(_req: IncomingMessage, _res: ServerResponse): Promise<void> {
   // Intentionally hangs — never calls res.end().
 }

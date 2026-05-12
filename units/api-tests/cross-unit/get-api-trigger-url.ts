@@ -17,7 +17,7 @@ export type QueryParams = never;
  * This unit is used to verify that the SDK is runtime-context-aware and
  * never mixes production and stage trigger URLs.
  */
-export function handleRequest(_req: IncomingMessage, res: ServerResponse): void {
+export async function handleRequest(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = sdk.getApiUnitTriggerUrl({ unitPathOrId: "test.api-tests.api.echo" });
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ url } satisfies ResponseBody));

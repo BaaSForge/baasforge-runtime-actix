@@ -7,6 +7,6 @@ export type QueryParams = never;
 /**
  * Never calls `res.end()`. Seed omits `metadata.timeout_seconds`; runtime uses the 30 s default.
  */
-export function handleRequest(_req: IncomingMessage, _res: ServerResponse): void {
+export async function handleRequest(_req: IncomingMessage, _res: ServerResponse): Promise<void> {
   // Intentionally hangs — never calls res.end().
 }

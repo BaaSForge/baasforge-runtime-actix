@@ -11,7 +11,7 @@ export type RequestBody = never;
 export type ResponseBody = { params: Record<string, string> };
 export type QueryParams = { [key: string]: string };
 
-export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const params: Record<string, string> = {};
   url.searchParams.forEach((value, key) => {

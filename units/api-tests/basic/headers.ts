@@ -11,7 +11,7 @@ export type RequestBody = never;
 export type ResponseBody = { received: Record<string, string> };
 export type QueryParams = never;
 
-export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
+export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const probeKeys = ["content-type", "x-test-header", "x-custom-value", "accept"];
   const received: Record<string, string> = {};
   for (const key of probeKeys) {

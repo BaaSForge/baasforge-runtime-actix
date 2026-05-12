@@ -11,7 +11,7 @@ export type RequestBody = never;
 export type ResponseBody = { kind: "attachment"; name: string; lines: number };
 export type QueryParams = never;
 
-export function handleRequest(_req: IncomingMessage, res: ServerResponse): void {
+export async function handleRequest(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   const payload = "alpha\nbeta\ngamma\n";
   const snapshot: ResponseBody = { kind: "attachment", name: "sample-lines.txt", lines: 3 };
   res.writeHead(200, {

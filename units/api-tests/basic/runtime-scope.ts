@@ -13,7 +13,7 @@ export type QueryParams = never;
  * The `-runtime-stage-a.ts` and `-runtime-stage-b.ts` siblings override
  * this unit for their respective stage runtimes.
  */
-export function handleRequest(_req: IncomingMessage, res: ServerResponse): void {
+export async function handleRequest(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ scope: "production" } satisfies ResponseBody));
 }
