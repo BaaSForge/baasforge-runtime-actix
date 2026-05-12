@@ -13,8 +13,9 @@ An actor unit must have a default export produced by the `actor()` function:
   export default actor<TState>({ state, handlers, metadata?, onAlarm?, onDeadLetter? });
 
 `state` — the initial state value for new actor instances. It is deep-cloned on first
-activation. Mutate `ctx.state` directly inside handlers; the updated state is persisted
-atomically after each successful handler execution.
+activation. Update handler state by mutating `ctx.state` in place or by assigning a new
+object to `ctx.state` (e.g. `ctx.state = { ...prev, n: next }`). The resulting state is
+persisted atomically after each successful handler execution.
 
 Handler return values are serialized and sent back to the caller.
 

@@ -72,6 +72,9 @@ var ctx = {
   id: __actorCtx.id,
   attempt: __actorCtx.attempt,
   get state() { return __currentState; },
+  set state(v) {
+    __currentState = v === null || v === undefined ? {} : v;
+  },
   setAlarm: function (name, at) {
     if (typeof at === "object" && at !== null && typeof at.fireAfterMs === "number") {
       var ms = at.fireAfterMs;

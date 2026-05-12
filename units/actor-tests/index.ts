@@ -628,7 +628,7 @@ async function runInlineTest(baseUrl: string, test: ActorInlineTestDef): Promise
 
 function allActorTests(): ActorTestDef[] {
   return [
-    // ---- basic (7) ----
+    // ---- basic (8) ----
     {
       name: "state-init",
       category: "basic",
@@ -648,6 +648,17 @@ function allActorTests(): ActorTestDef[] {
       handler: "increment",
       checks: [
         { type: "eq", path: "count", expected: 1 },
+      ],
+    },
+    {
+      name: "state-reassignment",
+      category: "basic",
+      unit: "state-reassignment",
+      actorId: `state-reassign-${uid()}`,
+      handler: "replaceState",
+      checks: [
+        { type: "eq", path: "count", expected: 7 },
+        { type: "eq", path: "tag", expected: "reassigned" },
       ],
     },
     {
