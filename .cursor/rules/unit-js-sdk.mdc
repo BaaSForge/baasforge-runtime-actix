@@ -14,6 +14,7 @@ When editing anything under `src/libs/unit_js/scripts/` or adding a new `sdk.*` 
 2. **Injected JS is a thin proxy.** Allowed: input validation, `JSON.stringify` / `JSON.parse`, error translation, calling one `__baal_*` host fn. Forbidden: network I/O, Redis/NATS/SQL semantics, retry/backoff/timeout loops (host owns them), background tasks, per-unit-type globals like `__baal_*_base_url` / `__baal_*_project_id`.
 3. **Shared `sdk.*` helpers live only in `scripts/runtime-shared.js`.** `sdk.callActorAndWaitForResultSync`, `sdk.enqueueWorkerSync`, `sdk.callWorkflowAndWaitForOutputSync`, etc., must not be copied into `actor-runtime.js`, `queue-worker-runtime.js`, or `api-runtime.js`. Per-unit-type scripts may **override** an `sdk.*` helper when semantics differ (e.g. `workflow-runtime.js` overrides `sdk.callWorkflowAndWaitForOutputSync` to suspend on a durable promise via `__baal_start_call` instead of blocking), but overrides are still thin proxies to host functions. All `sdk.*` methods are SYNCHRONOUS and return plain values (never Promises); JS code must NOT write `await` in front of them.
 4. **Need new functionality? Add a host function first.** Any new capability that needs Redis/NATS/JetStream/DbPool/locks access must be a new `__baal_*` function in `modules/sdk.rs` that reads handles from `SdkCommCtx`. The JS side is at most ~5 lines of validation + `__baal_*` call + error translation. Add a matching type to `units/shared/@sdk.d.ts`.
+5. **Getter-only context fields:** If you add `get foo()` for host-serialized state, pair it with `set foo()` (see **Context accessors** in [src/libs/unit_js/README.md](mdc:src/libs/unit_js/README.md)).
 
 ## Review checklist for PRs touching `src/libs/unit_js/scripts/`
 
@@ -22,6 +23,7 @@ When editing anything under `src/libs/unit_js/scripts/` or adding a new `sdk.*` 
 - [ ] No duplicated helpers across scripts.
 - [ ] New helper has matching `__baal_*` host fn and `@sdk.d.ts` entry.
 - [ ] New JS is ≤ ~30 lines; otherwise the work belongs in Rust.
+- [ ] No getter-only properties on `ctx` / `res` for host-serialized state—pair `get` with `set` or use a method (README **Context accessors**).
 
 ## Examples
 

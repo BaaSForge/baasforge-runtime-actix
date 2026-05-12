@@ -12,6 +12,8 @@ Every unit type (api, actor, queue_worker, workflow) runs user TypeScript/JavaSc
 
 These scripts are **not** where business logic lives. They are the glue between user code and the Rust runtime.
 
+**Context accessors:** If user-facing glue exposes a value with a JS `get foo()` that reads an internal backing field the host later serializes (actor state, response status, etc.), a **`set foo()` must update that same backing store** (or use an explicit method instead of a writable-looking property). A getter with no setter makes assignments like `ctx.foo = { ... }` look valid—TypeScript will not flag them—while the write either does nothing useful (sloppy mode) or throws (strict mode) and persistence still follows the old backing object, which is easy to mistake for “handler returned empty state.”
+
 ## Hard rules
 
 ### 1. No `fetch()` to internal routes from injected JS
@@ -73,3 +75,4 @@ Before merging any change under `src/libs/unit_js/scripts/`:
 - [ ] The same helper is not defined in two scripts.
 - [ ] Any new helper has a matching host function and a `@sdk.d.ts` type.
 - [ ] JS added is ≤ ~30 lines; if longer, the work probably belongs in Rust.
+- [ ] No new getter-only context/`res` fields for host-serialized state (pair `get` with `set` or use a method; see **Context accessors** above).
