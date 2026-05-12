@@ -171,6 +171,38 @@
       return Promise.resolve(ab);
     },
 
+    deriveBits: function (algorithm, baseKey, length) {
+      var an = algorithm && algorithm.name;
+      if (an !== "PBKDF2") {
+        return Promise.reject(new Error("deriveBits: unsupported algorithm"));
+      }
+      if (!baseKey || baseKey._keyType !== "pbkdf2") {
+        return Promise.reject(new Error("deriveBits: key is not a PBKDF2 key"));
+      }
+      var saltBytes = toByteArray(algorithm.salt);
+      var iterations = algorithm.iterations;
+      if (typeof iterations !== "number" || iterations < 1 || (iterations | 0) !== iterations) {
+        return Promise.reject(new Error("deriveBits: invalid iterations"));
+      }
+      var hashStr = algorithm.hash;
+      if (hashStr && typeof hashStr === "object" && hashStr.name) {
+        hashStr = hashStr.name;
+      }
+      if (!hashStr) hashStr = "SHA-256";
+      var digest = (hashStr + "").replace(/-/g, "").toLowerCase();
+      var keyLenBytes = length / 8;
+      if (length !== keyLenBytes * 8 || keyLenBytes < 1) {
+        return Promise.reject(new Error("deriveBits: length must be a positive multiple of 8 bits"));
+      }
+      var passBuf = baseKey._raw;
+      var saltBuf = Buffer.from(saltBytes);
+      var derived = _pbkdf2Sync(passBuf, saltBuf, iterations, keyLenBytes, digest);
+      var ab = new ArrayBuffer(derived.length);
+      var view = new Uint8Array(ab);
+      for (var i = 0; i < derived.length; i++) view[i] = derived[i];
+      return Promise.resolve(ab);
+    },
+
     generateKey: function (algorithm, extractable, usages) {
       var name = algorithm.name || algorithm;
       if (name === "HMAC") {
@@ -194,6 +226,24 @@
     },
 
     importKey: function (format, keyData, algorithm, extractable, usages) {
+      var algoName = algorithm && algorithm.name;
+      if (algoName === "PBKDF2") {
+        if (format !== "raw") {
+          return Promise.reject(new Error("importKey: PBKDF2 only supports raw format"));
+        }
+        var rawPwd;
+        if (keyData instanceof ArrayBuffer) {
+          rawPwd = Buffer.from(new Uint8Array(keyData));
+        } else if (ArrayBuffer.isView(keyData)) {
+          rawPwd = Buffer.from(keyData);
+        } else {
+          rawPwd = keyData;
+        }
+        return Promise.resolve({
+          type: "secret", algorithm: algorithm, extractable: extractable,
+          usages: usages, _raw: rawPwd, _keyType: "pbkdf2"
+        });
+      }
       var hashName = ((algorithm.hash || "SHA-256") + "").replace(/-/g, "").toLowerCase();
       var raw;
       if (keyData instanceof ArrayBuffer) {

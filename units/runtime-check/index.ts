@@ -3163,6 +3163,89 @@ async function checkWebCryptoSubtle(): Promise<GroupedTests> {
     assert(valid === true);
   }));
 
+  tests.push(await runTestAsync("crypto.subtle PBKDF2 importKey + deriveBits (known vector)", async () => {
+    const salt = new Uint8Array(16);
+    salt.fill(7);
+    const keyMat = await subtle.importKey(
+      "raw",
+      new TextEncoder().encode("hunter2"),
+      { name: "PBKDF2" },
+      false,
+      ["deriveBits"],
+    );
+    const bits = await subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        salt,
+        iterations: 100000,
+        hash: "SHA-256",
+      },
+      keyMat,
+      256,
+    );
+    assert(bits instanceof ArrayBuffer);
+    assert(bits.byteLength === 32);
+    const hex = [...new Uint8Array(bits)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    assert(hex === "d47782be820e75a3e07c919f81642b1679c08bc6e3f004a0ae6a1dd9245c8a3d");
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle PBKDF2 deriveBits with hash object", async () => {
+    const salt = new Uint8Array(16);
+    salt.fill(7);
+    const keyMat = await subtle.importKey(
+      "raw",
+      new TextEncoder().encode("hunter2"),
+      { name: "PBKDF2" },
+      false,
+      ["deriveBits"],
+    );
+    const bits = await subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        salt,
+        iterations: 100000,
+        hash: { name: "SHA-256" },
+      },
+      keyMat,
+      256,
+    );
+    const hex = [...new Uint8Array(bits)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    assert(hex === "d47782be820e75a3e07c919f81642b1679c08bc6e3f004a0ae6a1dd9245c8a3d");
+  }));
+
+  tests.push(await runTestAsync("crypto.subtle PBKDF2 matches crypto.pbkdf2Sync", async () => {
+    const salt = new Uint8Array(16);
+    getRandomValues(salt);
+    const password = "unit-runtime-pbkdf2";
+    const keyMat = await subtle.importKey(
+      "raw",
+      new TextEncoder().encode(password),
+      { name: "PBKDF2" },
+      false,
+      ["deriveBits"],
+    );
+    const subtleOut = await subtle.deriveBits(
+      {
+        name: "PBKDF2",
+        salt,
+        iterations: 5000,
+        hash: "SHA-256",
+      },
+      keyMat,
+      256,
+    );
+    const syncBuf = pbkdf2Sync(password, salt, 5000, 32, "sha256");
+    assert(syncBuf.length === 32);
+    const a = new Uint8Array(subtleOut);
+    for (let i = 0; i < 32; i++) {
+      assert(a[i] === syncBuf[i]);
+    }
+  }));
+
   tests.push(await runTestAsync("crypto.subtle AES-GCM encrypt + decrypt", async () => {
     const key = await subtle.generateKey(
       { name: "AES-GCM", length: 256 },
