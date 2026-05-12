@@ -13,27 +13,25 @@ export type RequestBody = { actorId?: string; by?: number };
 export type ResponseBody = { delivered: true };
 export type QueryParams = never;
 
-export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-  void (async () => {
-    const raw = await text(req);
-    let body: RequestBody = {};
-    try {
-      body = JSON.parse(raw) as RequestBody;
-    } catch {
-      // use defaults
-    }
+export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const raw = await text(req);
+  let body: RequestBody = {};
+  try {
+    body = JSON.parse(raw) as RequestBody;
+  } catch {
+    // use defaults
+  }
 
-    const actorId = (body.actorId ?? "api-test-send-default") as ActorInstanceId;
-    const by = body.by ?? 1;
+  const actorId = (body.actorId ?? "api-test-send-default") as ActorInstanceId;
+  const by = body.by ?? 1;
 
-    const result = sdk.sendActorMessageSync<{ by: number }>({
-      unitPath: "test.actor-tests.actor.counter",
-      actorId,
-      handler: "increment",
-      payload: { by },
-    });
+  const result = sdk.sendActorMessageSync<{ by: number }>({
+    unitPath: "test.actor-tests.actor.counter",
+    actorId,
+    handler: "increment",
+    payload: { by },
+  });
 
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(result satisfies ResponseBody));
-  })();
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(result satisfies ResponseBody));
 }

@@ -13,22 +13,20 @@ export type RequestBody = { value?: unknown };
 export type ResponseBody = { instanceId: string };
 export type QueryParams = never;
 
-export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-  void (async () => {
-    const raw = await text(req);
-    let body: RequestBody = {};
-    try {
-      body = JSON.parse(raw) as RequestBody;
-    } catch {
-      // use defaults
-    }
+export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const raw = await text(req);
+  let body: RequestBody = {};
+  try {
+    body = JSON.parse(raw) as RequestBody;
+  } catch {
+    // use defaults
+  }
 
-    const { instanceId } = sdk.startWorkflowSync<{ value: unknown }>({
-      unitPath: "test.wf.workflow.wf-echo",
-      input: { value: body.value ?? null },
-    });
+  const { instanceId } = sdk.startWorkflowSync<{ value: unknown }>({
+    unitPath: "test.wf.workflow.wf-echo",
+    input: { value: body.value ?? null },
+  });
 
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ instanceId: String(instanceId) } satisfies ResponseBody));
-  })();
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ instanceId: String(instanceId) } satisfies ResponseBody));
 }

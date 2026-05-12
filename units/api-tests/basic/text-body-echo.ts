@@ -22,15 +22,13 @@ function headerContentType(req: IncomingMessage): string | null {
   return Array.isArray(v) ? (v[0] ?? null) : v;
 }
 
-export function handleRequest(req: IncomingMessage, res: ServerResponse): void {
-  void (async () => {
-    const body = await text(req);
-    const out: ResponseBody = {
-      contentType: headerContentType(req),
-      length: body.length,
-      body,
-    };
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify(out));
-  })();
+export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = await text(req);
+  const out: ResponseBody = {
+    contentType: headerContentType(req),
+    length: body.length,
+    body,
+  };
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(out));
 }
