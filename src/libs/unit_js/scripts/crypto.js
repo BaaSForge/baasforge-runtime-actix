@@ -335,6 +335,16 @@
     }
   };
 
+  crypto.webcrypto = {
+    subtle: crypto.subtle,
+    getRandomValues: function (typedArray) {
+      return crypto.getRandomValues(typedArray);
+    },
+    randomUUID: function () {
+      return crypto.randomUUID();
+    }
+  };
+
   globalThis.crypto = crypto;
 
   globalThis.__baalModules = globalThis.__baalModules || {};

@@ -33,6 +33,7 @@ import {
   createDecipheriv,
   subtle,
   getRandomValues,
+  webcrypto,
 } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { TextEncoder, TextDecoder } from "node:util";
@@ -3108,6 +3109,29 @@ async function checkWebCryptoSubtle(): Promise<GroupedTests> {
 
   tests.push(runTest("crypto.subtle exists", () => {
     assert(subtle != null);
+  }));
+
+  tests.push(runTest("crypto.subtle has no timingSafeEqual (Node webcrypto parity)", () => {
+    assert(Reflect.get(subtle as object, "timingSafeEqual") === undefined);
+  }));
+
+  tests.push(runTest("node:crypto.webcrypto matches Node surface", () => {
+    assert(webcrypto != null);
+    assert(webcrypto.subtle === subtle);
+    assert(typeof webcrypto.getRandomValues === "function");
+    assert(typeof webcrypto.randomUUID === "function");
+    assert(Reflect.get(webcrypto as object, "timingSafeEqual") === undefined);
+  }));
+
+  tests.push(runTest("node:crypto.webcrypto.getRandomValues", () => {
+    const arr = new Uint8Array(8);
+    webcrypto.getRandomValues(arr);
+    assert(!arr.every((b) => b === 0));
+  }));
+
+  tests.push(runTest("node:crypto.webcrypto.randomUUID format", () => {
+    const id = webcrypto.randomUUID();
+    assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id));
   }));
 
   tests.push(await runTestAsync("crypto.subtle.digest SHA-256 known vector", async () => {
