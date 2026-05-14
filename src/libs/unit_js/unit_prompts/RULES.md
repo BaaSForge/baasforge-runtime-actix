@@ -10,11 +10,12 @@
   - Inbound: how other units reach THIS unit (typed TS code)
   - Outbound: what SDK calls are valid FROM this unit type, with the blocking / fire-and-forget form for each; include at least one example per SDK method available in this unit type
   List the exact `sdk.*` methods and their signatures that are valid from this unit type so the LLM never invents non-existent primitives (e.g. "signal via callWorkflow with a sub-path")
+- **Runtime** — `RUNTIME`: HTTP trigger URL patterns (production vs stage), HTTP methods, path segments, JSON bodies, and how the dashboard derives fields from exported types vs unit metadata. Only this section documents `/api/v1/trigger/...` paths.
 - **Metadata** — leave empty
 
 ## Hard rules
 
-- Do NOT include internal HTTP endpoint paths (e.g. `/api/v1/trigger/...`) anywhere in prompts — not in DETAIL, not in COMMUNICATION, not in examples
+- Do NOT include internal HTTP endpoint paths outside `RUNTIME` — not in DETAIL, not in COMMUNICATION, not in examples
 - All code in CODE_EXAMPLES must be fully typed: every function parameter, return type, and SDK call must have explicit type annotations and `import type` from the relevant unit
 - All `sdk.*` methods are synchronous. Examples and Communication sections MUST NOT use `await` in front of any `sdk.*` call. The only valid `await` inside unit code is in front of `ctx.run(...)` (workflow steps) and user-authored async fns like `fetch` / `text(req)`.
 - Use the current SDK method names ending in `...Sync`:
