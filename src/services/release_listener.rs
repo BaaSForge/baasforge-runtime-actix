@@ -1,14 +1,14 @@
 //! NATS JetStream: release deploy notifications drive **scoped** Redis cache invalidation for one runtime only.
 //!
-//! Invalidation is limited to a single Redis namespace: production (`{project_id}:prod:`) or one stage
-//! runtime (`{runtime_id}:`). A deploy event never walks every runtime for a project,
+//! Invalidation is limited to a single Redis namespace: production (`shared:units:{project_id}:prod:`) or one stage
+//! runtime (`shared:units:{runtime_id}:`). A deploy event never walks every runtime for a project,
 //! never uses `FLUSHDB` / `KEYS`, and does not clear other stage runtimes when production changes (or vice
 //! versa). **Product assumption:** one production runtime per project; prod cache keys are shared for that
 //! project’s lone prod scope.
 //!
 //! **Publishers** must use JetStream (`jetstream.publish` / the JS API), not core NATS publish, so messages
 //! are persisted and match the stream. **Consumers**: a single durable pull consumer is shared by all
-//! `release_listener` processes; each message is delivered to at most one replica.
+//! `runtime_cache_listener` processes; each message is delivered to at most one replica.
 
 use crate::database::{DbPool, SharedRedisConn};
 use crate::services::project_release::load_project_release_by_id;
@@ -176,7 +176,7 @@ async fn handle_release_deploy_event(
     );
 }
 
-/// Runs the JetStream durable pull consumer until the connection ends. Intended for the `release_listener`
+/// Runs the JetStream durable pull consumer until the connection ends. Intended for the `runtime_cache_listener`
 /// binary (or a dedicated task); do not drop the returned future immediately or the listener will stop.
 pub async fn run_release_deploy_listener(
     pool: DbPool,

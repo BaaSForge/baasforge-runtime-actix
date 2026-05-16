@@ -1,8 +1,8 @@
 //! Redis cache layout for project runtime scope (prod or stage runtime) and selective invalidation on deploy.
 //!
-//! **Scope:** Keys are namespaced per *environment slice* — one `{project_id}:prod:` tree for the project’s
+//! **Scope:** Keys are under `shared:units:` — one `shared:units:{project_id}:prod:` tree for the project’s
 //! single production runtime (domain rule: at most one prod runtime per project), and separate
-//! `{runtime_id}:` trees per stage runtime (runtime id is globally unique; project id is not part of the key).
+//! `shared:units:{runtime_id}:` trees per stage runtime (runtime id is globally unique; project id is not part of the key).
 //! Callers must pass the correct [`ProjectRuntimeCacheScope`]; routines here never invalidate sibling runtimes
 //! or the whole project.
 //!
@@ -16,10 +16,41 @@
 use crate::database::SharedRedisConn;
 use crate::models::projects::ProjectReleaseRow;
 use redis::AsyncCommands;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::collections::HashSet;
 use uuid::Uuid;
 
-/// Redis cache scope: production (`{project_id}:prod:*`) or one stage runtime (`{runtime_id}:*`).
+pub(crate) async fn redis_get_json<T: DeserializeOwned>(
+    redis: &SharedRedisConn,
+    key: &str,
+) -> Result<Option<T>, redis::RedisError> {
+    let Some(rc) = redis else {
+        return Ok(None);
+    };
+    let mut conn = rc.lock().await;
+    let s: Option<String> = conn.get(key).await?;
+    let Some(raw) = s else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(&raw).ok())
+}
+
+pub(crate) async fn redis_set_json<T: Serialize>(
+    redis: &SharedRedisConn,
+    key: &str,
+    value: &T,
+) -> Result<(), redis::RedisError> {
+    let Some(rc) = redis else {
+        return Ok(());
+    };
+    let mut conn = rc.lock().await;
+    let raw = serde_json::to_string(value).expect("serialize redis cache value");
+    let _: () = conn.set(key, raw).await?;
+    Ok(())
+}
+
+/// Redis cache scope: production (`shared:units:{project_id}:prod:*`) or one stage runtime (`shared:units:{runtime_id}:*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectRuntimeCacheScope {
     Prod,
@@ -28,8 +59,8 @@ pub enum ProjectRuntimeCacheScope {
 
 pub(crate) fn redis_scope_prefix(project_id: Uuid, scope: ProjectRuntimeCacheScope) -> String {
     match scope {
-        ProjectRuntimeCacheScope::Prod => format!("{project_id}:prod:"),
-        ProjectRuntimeCacheScope::Stage { runtime_id } => format!("{runtime_id}:"),
+        ProjectRuntimeCacheScope::Prod => format!("shared:units:{project_id}:prod:"),
+        ProjectRuntimeCacheScope::Stage { runtime_id } => format!("shared:units:{runtime_id}:"),
     }
 }
 

@@ -11,8 +11,8 @@ name = "workflow_worker"
 path = "src/bin/workflow_worker.rs"
 
 [[bin]]
-name = "release_listener"
-path = "src/bin/release_listener.rs"
+name = "runtime_cache_listener"
+path = "src/bin/runtime_cache_listener.rs"
 
 [[bin]]
 name = "queue_worker_worker"

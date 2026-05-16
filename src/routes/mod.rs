@@ -408,6 +408,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     source_unit_path: String::new(),
                     source_instance_id: None,
                     stage_runtime_id: None,
+                    resolved_runtime_id: None,
                     sdk_public_host: "localhost".to_string(),
                     sdk_trigger_base_path: String::new(),
                 });

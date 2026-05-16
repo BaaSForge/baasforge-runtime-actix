@@ -180,6 +180,19 @@ async fn invoke_actor_handler_http(
         error_msg: None,
     };
     let timeout_ms = 30_000u64;
+    let resolved_runtime_id = match Uuid::parse_str(&project_id_str) {
+        Ok(pid) => {
+            live_release_and_runtime_ids_for_scope(
+                &ctx.pool,
+                &ctx.redis_conn,
+                pid,
+                stage_runtime_id,
+            )
+            .await
+            .1
+        }
+        Err(_) => None,
+    };
     let comm = Arc::new(SdkCommCtx {
         pool: ctx.pool.clone(),
         redis_conn: ctx.redis_conn.clone(),
@@ -198,6 +211,7 @@ async fn invoke_actor_handler_http(
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
         stage_runtime_id,
+        resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });

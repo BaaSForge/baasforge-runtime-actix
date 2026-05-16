@@ -27,10 +27,10 @@ echo "==> Stopping workflow worker processes..."
 pkill -x workflow_worker 2>/dev/null && echo "    pkill -x workflow_worker" || true
 pkill -f 'run --bin workflow_worker' 2>/dev/null && echo "    pkill -f 'run --bin workflow_worker'" || true
 
-# Binary name from Cargo.toml: [[bin]] name = "release_listener" (path src/bin/release_listener.rs)
+# Binary name from Cargo.toml: [[bin]] name = "runtime_cache_listener" (path src/bin/runtime_cache_listener.rs)
 echo "==> Stopping release listener processes..."
-pkill -x release_listener 2>/dev/null && echo "    pkill -x release_listener" || true
-pkill -f 'run --bin release_listener' 2>/dev/null && echo "    pkill -f 'run --bin release_listener'" || true
+pkill -x runtime_cache_listener 2>/dev/null && echo "    pkill -x runtime_cache_listener" || true
+pkill -f 'run --bin runtime_cache_listener' 2>/dev/null && echo "    pkill -f 'run --bin runtime_cache_listener'" || true
 
 echo "==> Stopping cargo watch..."
 # dev.sh / dev-runtime-worker.sh use `cargo watch` (installed binary is often `cargo-watch`)

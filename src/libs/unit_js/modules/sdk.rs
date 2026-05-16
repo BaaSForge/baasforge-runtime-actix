@@ -41,6 +41,8 @@ pub struct SdkCommCtx {
     pub source_unit_path: String,
     pub source_instance_id: Option<String>,
     pub stage_runtime_id: Option<Uuid>,
+    /// Prod or stage runtime row id for this invocation (used by `getSecureEnv` cache keys).
+    pub resolved_runtime_id: Option<Uuid>,
     pub sdk_public_host: String,
     pub sdk_trigger_base_path: String,
 }
@@ -58,6 +60,7 @@ impl SdkCommCtx {
     pub fn with_stage_runtime(&self, stage_runtime_id: Option<Uuid>) -> Arc<Self> {
         Arc::new(SdkCommCtx {
             stage_runtime_id,
+            resolved_runtime_id: stage_runtime_id,
             ..self.clone()
         })
     }
@@ -514,7 +517,58 @@ pub fn register_sdk_comm(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
     ctx.globals().set("__baal_start_workflow_fire_forget", Func::from(host_start_workflow_fire_forget))?;
     ctx.globals().set("__baal_call_workflow_handler_sync", Func::from(host_call_workflow_handler_sync))?;
     ctx.globals().set("__baal_start_actor_call", Func::from(host_start_actor_call))?;
+    ctx.globals().set("__baal_get_secure_env", Func::from(host_get_secure_env))?;
     Ok(())
+}
+
+fn host_get_secure_env(ctx: Ctx<'_>, key: String) -> rquickjs::Result<String> {
+    use crate::services::runtime_env::{self, RuntimeEnvError};
+
+    let span = sdk_span!("sdk.getSecureEnv");
+    let _g = span.enter();
+    let input = serde_json::json!({ "key": &key });
+    record_sdk_input(&span, &input);
+    let res: Result<String, String> = with_comm_ctx(|comm| {
+        sdk_record_release_and_runtime_ids(&span, comm.as_ref());
+        let project_id = Uuid::parse_str(comm.project_id.as_str())
+            .map_err(|_| "sdk.getSecureEnv: invalid project id".to_string())?;
+        let pool = comm.pool.clone();
+        let redis = comm.redis_conn.clone();
+        let resolved_runtime_id = comm.resolved_runtime_id;
+        block_async(async move {
+            let runtime_id = resolved_runtime_id.ok_or_else(|| {
+                "sdk.getSecureEnv: resolved_runtime_id is not set".to_string()
+            })?;
+            runtime_env::get_secure_env(&pool, &redis, project_id, runtime_id, &key)
+                .await
+                .map_err(|e| match e {
+                    RuntimeEnvError::NotFound(k) => {
+                        format!("sdk.getSecureEnv: env var not found: {k}")
+                    }
+                    RuntimeEnvError::InvalidKey => {
+                        "sdk.getSecureEnv: key must be non-empty".to_string()
+                    }
+                    RuntimeEnvError::EncryptionKeyMissing => {
+                        "sdk.getSecureEnv: encryption key missing for runtime".to_string()
+                    }
+                    RuntimeEnvError::Decrypt(msg) => {
+                        format!("sdk.getSecureEnv: decrypt failed: {msg}")
+                    }
+                    RuntimeEnvError::Db(e) => format!("sdk.getSecureEnv: database error: {e}"),
+                    RuntimeEnvError::Redis(e) => format!("sdk.getSecureEnv: cache error: {e}"),
+                })
+        })
+    });
+    let out_json = match &res {
+        Ok(value) => serde_json::json!({ "ok": true, "value": value }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+    };
+    record_sdk_output_json(&span, &out_json);
+    let out_str = out_json.to_string();
+    match res {
+        Ok(_) => Ok(out_str),
+        Err(e) => Err(Exception::throw_message(&ctx, &e)),
+    }
 }
 
 fn host_get_api_unit_trigger_url(ctx: Ctx<'_>, args_json: String) -> rquickjs::Result<String> {

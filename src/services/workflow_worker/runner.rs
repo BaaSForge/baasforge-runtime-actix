@@ -5,7 +5,9 @@ use crate::{init_tracing, shutdown_telemetry};
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
 use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::models::projects::ProjectUnitType;
-use crate::services::project_release::{load_live_release_id_scoped, load_unit_for_path_scoped};
+use crate::services::project_release::{
+    live_release_and_runtime_ids_for_scope, load_live_release_id_scoped, load_unit_for_path_scoped,
+};
 use crate::services::workflow_engine;
 use futures::StreamExt;
 use opentelemetry::trace::FutureExt;
@@ -506,11 +508,12 @@ async fn handle_start(
     };
     let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
         .map_err(|e| format!("handle_start: invalid project_id: {e}"))?;
-    let release_id_owned = load_live_release_id_scoped(&pool, &redis_conn, project_uuid, stage_runtime_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.to_string());
+    let (release_id_owned, resolved_runtime_id) = {
+        let (release_id, runtime_id) =
+            live_release_and_runtime_ids_for_scope(&pool, &redis_conn, project_uuid, stage_runtime_id)
+                .await;
+        (release_id.map(|u| u.to_string()), runtime_id)
+    };
     let corr = crate::telemetry::trigger_correlation_from_payload(
         trace_payload.as_ref().unwrap_or(&serde_json::Value::Null),
     );
@@ -590,6 +593,7 @@ async fn handle_start(
         source_unit_path: unit_path.clone(),
         source_instance_id: Some(instance_id.clone()),
         stage_runtime_id,
+        resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });
@@ -683,11 +687,12 @@ async fn handle_wake(
     };
     let project_uuid = uuid::Uuid::parse_str(project_id.as_str())
         .map_err(|e| format!("handle_wake: invalid project_id: {e}"))?;
-    let release_id_owned = load_live_release_id_scoped(&pool, &redis_conn, project_uuid, stage_runtime_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.to_string());
+    let (release_id_owned, resolved_runtime_id) = {
+        let (release_id, runtime_id) =
+            live_release_and_runtime_ids_for_scope(&pool, &redis_conn, project_uuid, stage_runtime_id)
+                .await;
+        (release_id.map(|u| u.to_string()), runtime_id)
+    };
     let corr = crate::telemetry::trigger_correlation_from_payload(
         wake_payload
             .as_ref()
@@ -834,6 +839,7 @@ async fn handle_wake(
         source_unit_path: unit_path.to_string(),
         source_instance_id: Some(instance_id.clone()),
         stage_runtime_id,
+        resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });

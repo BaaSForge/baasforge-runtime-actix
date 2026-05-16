@@ -147,6 +147,16 @@ var sdk = {
     if (!parsed.ok) throw new Error(parsed.error || 'sdk.getApiUnitTriggerUrl failed');
     return parsed.url;
   },
+
+  getSecureEnv: function (key) {
+    if (typeof key !== 'string' || !key.trim()) {
+      throw new Error('sdk.getSecureEnv: key must be a non-empty string');
+    }
+    var resultJson = __baal_get_secure_env(key);
+    var parsed = JSON.parse(resultJson);
+    if (!parsed.ok) throw new Error(parsed.error || 'sdk.getSecureEnv failed');
+    return parsed.value;
+  },
 };
 
 globalThis.sdk = sdk;

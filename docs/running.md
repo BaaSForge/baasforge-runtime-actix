@@ -83,9 +83,9 @@ Optional: `ACTOR_NATS_JETSTREAM_STREAM`, `ACTOR_NATS_JETSTREAM_CONSUMER` to over
 Listens for deploy events and invalidates the unit cache so newly deployed code is picked up without a restart.
 
 ```sh
-cargo run --release --bin release_listener
+cargo run --release --bin runtime_cache_listener
 # or:
-./target/release/release_listener
+./target/release/runtime_cache_listener
 ```
 
 ## Redis (`WF_REDIS_URL`)

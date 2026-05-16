@@ -13,7 +13,7 @@
 //!    If the path is absent from that set, return not found **without querying** `project_units` (the unit is not
 //!    part of the live release).
 //! 3. **Per-unit Redis** — Read-through cache at [`crate::services::project_runtime_cache::redis_key_unit`], whose
-//!    key always includes `chat_session_id` alongside scope (`{project_id}:prod:` or `{runtime_id}:`) so duplicate
+//!    key always includes `chat_session_id` alongside scope (`shared:units:{project_id}:prod:` or `shared:units:{runtime_id}:`) so duplicate
 //!    full ids across sessions never collide in cache.
 //! 4. **Database** — Load by `project_id`, `chat_session_id`, full `id`, and `revision`. Omitting
 //!    `chat_session_id` could return the wrong row when ids are duplicated across sessions.
@@ -30,7 +30,7 @@ use crate::models::projects::{
 };
 use crate::schema::{project_releases, project_runtimes, project_units};
 use crate::services::project_runtime_cache::{
-    ProjectRuntimeCacheScope, redis_key_release, redis_key_unit,
+    redis_get_json, redis_set_json, ProjectRuntimeCacheScope, redis_key_release, redis_key_unit,
 };
 use diesel::prelude::*;
 use diesel::OptionalExtension;
@@ -160,35 +160,6 @@ pub async fn load_live_release_revision_for_runtime(
         return Ok(None);
     };
     Ok(Some(out.revision))
-}
-
-async fn redis_get_json<T: serde::de::DeserializeOwned>(
-    redis: &SharedRedisConn,
-    key: &str,
-) -> Result<Option<T>, redis::RedisError> {
-    let Some(rc) = redis else {
-        return Ok(None);
-    };
-    let mut conn = rc.lock().await;
-    let s: Option<String> = conn.get(key).await?;
-    let Some(raw) = s else {
-        return Ok(None);
-    };
-    Ok(serde_json::from_str(&raw).ok())
-}
-
-async fn redis_set_json<T: Serialize>(
-    redis: &SharedRedisConn,
-    key: &str,
-    value: &T,
-) -> Result<(), redis::RedisError> {
-    let Some(rc) = redis else {
-        return Ok(());
-    };
-    let mut conn = rc.lock().await;
-    let raw = serde_json::to_string(value).expect("serialize release/unit cache");
-    let _: () = conn.set(key, raw).await?;
-    Ok(())
 }
 
 /// Loads the live [`project_releases`] row for this runtime from [`project_runtimes::live_release_id`] only.

@@ -19,6 +19,7 @@ use crate::services::project_release::{
     load_live_release_id_scoped, load_production_runtime_id_for_project,
 };
 use crate::services::workflow_engine::SharedRedis as WfRedis;
+use uuid::Uuid;
 
 pub async fn run_actor_consumer(
     actor_redis: ActorRedis,
@@ -94,6 +95,7 @@ pub async fn run_actor_consumer(
         source_unit_path: String::new(),
         source_instance_id: None,
         stage_runtime_id: None,
+        resolved_runtime_id: None,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });
@@ -304,6 +306,17 @@ async fn handle_actor_message(
         error_msg: None,
     };
 
+    let resolved_runtime_id = match stage_runtime_id {
+        Some(rid) => Some(rid),
+        None => match Uuid::parse_str(&project_id) {
+            Ok(pu) => load_production_runtime_id_for_project(&pool, pu)
+                .await
+                .ok()
+                .flatten(),
+            Err(_) => None,
+        },
+    };
+
     let comm = Arc::new(SdkCommCtx {
         pool,
         redis_conn,
@@ -322,6 +335,7 @@ async fn handle_actor_message(
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
         stage_runtime_id,
+        resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });

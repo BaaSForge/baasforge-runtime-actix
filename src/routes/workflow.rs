@@ -147,6 +147,14 @@ async fn do_start_workflow(
     let input_json = String::from_utf8_lossy(body).into_owned();
     let instance_id = new_uuid().to_string();
     let project_id_str = project_id.to_string();
+    let resolved_runtime_id = live_release_and_runtime_ids_for_scope(
+        &ctx.pool,
+        &ctx.redis_conn,
+        project_id,
+        stage_runtime_id,
+    )
+    .await
+    .1;
 
     let comm = Arc::new(SdkCommCtx {
         pool: ctx.pool.clone(),
@@ -166,6 +174,7 @@ async fn do_start_workflow(
         source_unit_path: unit_path.to_string(),
         source_instance_id: Some(instance_id.clone()),
         stage_runtime_id,
+        resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });
@@ -214,6 +223,14 @@ async fn do_call_handler(
 
     let handler_input = String::from_utf8_lossy(body).into_owned();
     let project_id_str = project_id.to_string();
+    let resolved_runtime_id = live_release_and_runtime_ids_for_scope(
+        &ctx.pool,
+        &ctx.redis_conn,
+        project_id,
+        stage_runtime_id,
+    )
+    .await
+    .1;
 
     let comm = Arc::new(SdkCommCtx {
         pool: ctx.pool.clone(),
@@ -233,6 +250,7 @@ async fn do_call_handler(
         source_unit_path: String::new(),
         source_instance_id: Some(instance_id.to_string()),
         stage_runtime_id,
+        resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });

@@ -34,14 +34,18 @@ pub struct Settings {
     pub database_pool_size: u32,
     pub database_connection_timeout_secs: u64,
     pub redis_url: String,
-    /// When false, no Redis connection is opened for cache (API / release_listener); all project release/unit paths hit Postgres only.
+    /// When false, no Redis connection is opened for cache (API / runtime_cache_listener); all project release/unit paths hit Postgres only.
     pub redis_cache_enabled: bool,
     pub nats_url: Option<String>,
     pub nats_subject_release: Option<String>,
-    /// JetStream stream name (must not contain `.`). Used by the `release_listener` binary.
+    /// JetStream stream name (must not contain `.`). Used by the `runtime_cache_listener` binary.
     pub nats_jetstream_stream_release: Option<String>,
-    /// Durable pull consumer name shared by all `release_listener` replicas (queue-style load balancing).
+    /// Durable pull consumer name shared by all `runtime_cache_listener` replicas (queue-style load balancing).
     pub nats_jetstream_consumer_release: Option<String>,
+    /// JetStream subject for runtime env cache invalidation (`runtime_cache_listener` binary).
+    pub nats_subject_runtime_env: Option<String>,
+    pub nats_jetstream_stream_runtime_env: Option<String>,
+    pub nats_jetstream_consumer_runtime_env: Option<String>,
 
     // -- Workflow runtime infrastructure --
 
@@ -151,6 +155,29 @@ impl Settings {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+
+        let nats_subject_runtime_env = env::var("NATS_SUBJECT_RUNTIME_ENV")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let nats_jetstream_stream_runtime_env = env::var("NATS_JETSTREAM_STREAM_RUNTIME_ENV")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let nats_jetstream_consumer_runtime_env = env::var("NATS_JETSTREAM_CONSUMER_RUNTIME_ENV")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        match (&nats_url, &nats_subject_runtime_env) {
+            (Some(_), Some(_)) | (None, None) => {}
+            _ => {
+                return Err(
+                    "NATS_URL and NATS_SUBJECT_RUNTIME_ENV must both be set"
+                        .into(),
+                );
+            }
+        }
 
         let wf_redis_url = env::var("WF_REDIS_URL")
             .ok()
@@ -268,6 +295,9 @@ impl Settings {
             nats_subject_release,
             nats_jetstream_stream_release,
             nats_jetstream_consumer_release,
+            nats_subject_runtime_env,
+            nats_jetstream_stream_runtime_env,
+            nats_jetstream_consumer_runtime_env,
             wf_redis_url,
             wf_nats_url,
             wf_nats_jetstream_stream,

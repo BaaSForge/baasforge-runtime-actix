@@ -15,7 +15,9 @@ use crate::libs::unit_js::queue_worker_runner::{
     extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler,
 };
 use crate::models::projects::ProjectUnitType;
-use crate::services::project_release::{load_live_release_id_scoped, load_unit_for_path_scoped};
+use crate::services::project_release::{
+    live_release_and_runtime_ids_for_scope, load_live_release_id_scoped, load_unit_for_path_scoped,
+};
 use crate::services::queue_worker_engine::{
     QueueWorkerRunMeta, QueueWorkerRedis, WQ_NATS_WORK_SUBJECT_PER_PROJECT,
     WQ_NATS_WORK_STREAM_SUBJECTS, publish_qw_event,
@@ -222,11 +224,11 @@ async fn handle_work_message(
             return;
         }
     };
-    let release_id_owned = load_live_release_id_scoped(&pool, &redis_conn, project_uuid, wq_stage)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.to_string());
+    let (release_id_owned, resolved_runtime_id) = {
+        let (release_id, runtime_id) =
+            live_release_and_runtime_ids_for_scope(&pool, &redis_conn, project_uuid, wq_stage).await;
+        (release_id.map(|u| u.to_string()), runtime_id)
+    };
     let corr = crate::telemetry::trigger_correlation_from_payload(&payload);
     let extras = crate::telemetry::AsyncConsumerSpanExtras {
         messaging_destination: Some(messaging_subject.as_str()),
@@ -314,6 +316,7 @@ async fn handle_work_message(
             source_unit_path: unit_path.clone(),
             source_instance_id: None,
             stage_runtime_id: wq_stage,
+            resolved_runtime_id,
             sdk_public_host: "localhost".to_string(),
             sdk_trigger_base_path: String::new(),
         });
@@ -396,6 +399,7 @@ async fn handle_work_message(
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
         stage_runtime_id: wq_stage,
+        resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
     });

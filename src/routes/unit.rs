@@ -285,6 +285,7 @@ async fn invoke_api_unit(
         source_unit_path: unit_path.clone(),
         source_instance_id: None,
         stage_runtime_id,
+        resolved_runtime_id,
         sdk_public_host,
         sdk_trigger_base_path,
     });

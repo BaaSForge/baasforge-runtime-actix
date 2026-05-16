@@ -576,10 +576,12 @@ pub async fn clear_test_project_runtime_redis_cache(redis: &SharedRedisConn) -> 
     };
     let mut conn = rc.lock().await;
     for prefix in [
-        format!("{TEST_PROJECT_ID}:prod:"),
-        format!("{TEST_ALT_PROJECT_ID}:prod:"),
-        format!("{TEST_STAGE_RUNTIME_ID}:"),
-        format!("{TEST_STAGE_B_RUNTIME_ID}:"),
+        format!("shared:units:{TEST_PROJECT_ID}:prod:"),
+        format!("shared:units:{TEST_ALT_PROJECT_ID}:prod:"),
+        format!("shared:units:{TEST_STAGE_RUNTIME_ID}:"),
+        format!("shared:units:{TEST_STAGE_B_RUNTIME_ID}:"),
+        format!("shared:env:{TEST_PROJECT_ID}:"),
+        format!("shared:env:{TEST_ALT_PROJECT_ID}:"),
     ] {
         let pattern = format!("{prefix}*");
         let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
