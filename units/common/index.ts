@@ -162,6 +162,122 @@ function allTests(): CommonTestDef[] {
         if (b["hasLogFn"] !== true) throw new Error(`hasLogFn: ${JSON.stringify(b)}`);
       },
     },
+
+    // ── common-import-forms: import * as / type+value ────────────────────────
+    {
+      name: "import-ns-star-from-common-module",
+      category: "common-import-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "import-ns-star"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["token"] !== "alpha-token") throw new Error(`token: ${JSON.stringify(b)}`);
+        if (b["version"] !== 1) throw new Error(`version: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "import-ns-star-from-export-star-barrel",
+      category: "common-import-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "import-ns-barrel"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["token"] !== "alpha-token") throw new Error(`token: ${JSON.stringify(b)}`);
+        if (b["version"] !== 1) throw new Error(`version: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "import-type-only-plus-value-import",
+      category: "common-import-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "import-type-and-value"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["size"] !== "sm") throw new Error(`size: ${JSON.stringify(b)}`);
+        if (b["tagMatches"] !== true) throw new Error(`tagMatches: ${JSON.stringify(b)}`);
+      },
+    },
+
+    // ── common-export-forms: export * / namespace / inline / local ───────────
+    {
+      name: "export-star-re-exports-all-bindings",
+      category: "common-export-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-star"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["token"] !== "alpha-token") throw new Error(`token: ${JSON.stringify(b)}`);
+        if (b["version"] !== 1) throw new Error(`version: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "export-named-list-re-exports",
+      category: "common-export-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-named"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["token"] !== "alpha-token") throw new Error(`token: ${JSON.stringify(b)}`);
+        if (b["version"] !== 1) throw new Error(`version: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "export-ns-re-exports-as-namespace",
+      category: "common-export-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-ns"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["token"] !== "alpha-token") throw new Error(`token: ${JSON.stringify(b)}`);
+        if (b["version"] !== 1) throw new Error(`version: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "export-star-plus-named-aliases",
+      category: "common-export-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-mixed-barrel"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["alphaToken"] !== "alpha-token") throw new Error(`alphaToken: ${JSON.stringify(b)}`);
+        if (b["betaToken"] !== "beta-token") throw new Error(`betaToken: ${JSON.stringify(b)}`);
+        if (b["alphaVersion"] !== 1) throw new Error(`alphaVersion: ${JSON.stringify(b)}`);
+        if (b["betaVersion"] !== 2) throw new Error(`betaVersion: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "export-inline-const-and-function",
+      category: "common-export-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-inline"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["label"] !== "inline-export") throw new Error(`label: ${JSON.stringify(b)}`);
+        if (b["joined"] !== "x:y") throw new Error(`joined: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "export-from-local-binding",
+      category: "common-export-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-from-local"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["value"] !== 42) throw new Error(`value: ${JSON.stringify(b)}`);
+        if (b["doubled"] !== 84) throw new Error(`doubled: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "export-type-and-value-together",
+      category: "common-export-forms",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-type-value"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["size"] !== "sm") throw new Error(`size: ${JSON.stringify(b)}`);
+        if (b["large"] !== false) throw new Error(`large: ${JSON.stringify(b)}`);
+      },
+    },
     {
       name: "common-stage-value-production",
       category: "common-imports",
