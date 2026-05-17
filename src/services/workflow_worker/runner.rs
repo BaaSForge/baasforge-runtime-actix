@@ -22,15 +22,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let settings = Settings::new()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
 
-    let redis_conn = if settings.redis_cache_enabled {
-        let redis_client = redis::Client::open(settings.redis_url.as_str())?;
-        let conn = redis_client.get_multiplexed_async_connection().await?;
-        info!("Connected to Redis for cache");
-        Some(Arc::new(Mutex::new(conn)))
-    } else {
-        info!("Redis skipped (REDIS_CACHE_ENABLED=false)");
-        None
-    };
+    let redis_conn = crate::database::connect_shared_redis_cache(
+        settings.redis_cache_enabled,
+        &settings.redis_url,
+    )
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
     let pool = establish_pool(
         settings.pg_database_url.clone(),

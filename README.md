@@ -7,7 +7,7 @@
 - **Production:** keys under `{project_id}:prod:` (single namespace per project for live prod release + units).
 - **Stage:** keys under `{runtime_id}:` per stage runtime.
 
-When the `runtime_cache_listener` process receives a JetStream **release deploy** message, it calls `clear_project_runtime_cache_on_deploy` with **exactly one** scope: either `Prod` or `Stage { runtime_id }` from the event. That routine deletes only (1) the cached release JSON for that scope and (2) per-unit keys that appeared in the previously live release but not in the newly deployed release’s `combinedUnitIDs`. It does **not** flush Redis, pattern-scan keys, or invalidate other stage runtimes or production when only one environment/runtime changed.
+When the `runtime_cache_listener` process receives a JetStream **release deploy** message, it calls `clear_project_runtime_cache_on_deploy` with **exactly one** scope: either `Prod` or `Stage { runtime_id }` from the event. Production and stage use the same logic (only the Redis key prefix differs): delete the cached release row and **all** per-unit keys for that scope. Caches refill on the next read-through load. Other stage runtimes and production are not touched when only one scope changes.
 
 Stage payloads **must** include `runtime_id`. Production uses the shared prod scope above (there is only one prod runtime per project in this model).
 

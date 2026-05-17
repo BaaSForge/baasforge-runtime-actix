@@ -98,27 +98,12 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         settings.database_pool_size,
         settings.database_connection_timeout_secs,
     );
-    let redis_conn: SharedRedisConn = if !settings.redis_cache_enabled {
-        tracing::info!("[redis] cache disabled (REDIS_CACHE_ENABLED=false); skipping connection");
-        None
-    } else {
-        match redis::Client::open(settings.redis_url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    tracing::info!("[redis] publish connection connected");
-                    Some(Arc::new(Mutex::new(conn)))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[redis] publish connection failed");
-                    None
-                }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "[redis] client open failed");
-                None
-            }
-        }
-    };
+    let redis_conn = crate::database::connect_shared_redis_cache(
+        settings.redis_cache_enabled,
+        &settings.redis_url,
+    )
+    .await
+    .map_err(|e| -> Box<dyn Error> { e.into() })?;
     let wf_redis: Option<SharedRedis> = if let Some(url) = &settings.wf_redis_url {
         match redis::Client::open(url.as_str()) {
             Ok(client) => match client.get_multiplexed_async_connection().await {

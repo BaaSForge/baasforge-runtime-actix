@@ -1,10 +1,12 @@
+email queue
+
+---------
+
 req body parser?
 
 logging
 
 image / video worker
-
-email queue
 
 storage
 

@@ -25,27 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         settings.database_connection_timeout_secs,
     );
 
-    let redis_conn = if settings.redis_cache_enabled {
-        match redis::Client::open(settings.redis_url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    info!("[redis] cache connected");
-                    Some(Arc::new(Mutex::new(conn)))
-                }
-                Err(e) => {
-                    warn!(error = %e, "[redis] connection failed");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!(error = %e, "[redis] client open failed");
-                None
-            }
-        }
-    } else {
-        info!("[redis] cache disabled (REDIS_CACHE_ENABLED=false)");
-        None
-    };
+    let redis_conn = baal_runtime_actix::database::connect_shared_redis_cache(
+        settings.redis_cache_enabled,
+        &settings.redis_url,
+    )
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
     let (Some(actor_redis_url), Some(actor_nats_url)) = (
         settings.actor_redis_url.as_deref(),

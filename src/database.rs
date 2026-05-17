@@ -86,6 +86,25 @@ where
     }
 }
 
+/// Shared metadata cache (`shared:units:*`, `shared:env:*`) on `REDIS_URL`.
+/// When `redis_cache_enabled` is true, connection failure is fatal (no silent `None`).
+pub async fn connect_shared_redis_cache(
+    redis_cache_enabled: bool,
+    redis_url: &str,
+) -> Result<SharedRedisConn, String> {
+    if !redis_cache_enabled {
+        tracing::info!("[redis] cache disabled (REDIS_CACHE_ENABLED=false); skipping connection");
+        return Ok(None);
+    }
+    let client = redis::Client::open(redis_url).map_err(|e| format!("redis client open: {e}"))?;
+    let conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .map_err(|e| format!("redis connect ({redis_url}): {e}"))?;
+    tracing::info!(%redis_url, "[redis] shared metadata cache connected");
+    Ok(Some(Arc::new(Mutex::new(conn))))
+}
+
 pub fn establish_pool(database_url: String, max_size: u32, connection_timeout_secs: u64) -> DbPool {
     let manager = ConnectionManager::<PgConnection>::new(&database_url);
 

@@ -1,17 +1,14 @@
-//! NATS JetStream: release deploy notifications drive **scoped** Redis cache invalidation for one runtime only.
+//! NATS JetStream: release deploy notifications clear all Redis unit/release cache for one runtime scope.
 //!
 //! Invalidation is limited to a single Redis namespace: production (`shared:units:{project_id}:prod:`) or one stage
-//! runtime (`shared:units:{runtime_id}:`). A deploy event never walks every runtime for a project,
-//! never uses `FLUSHDB` / `KEYS`, and does not clear other stage runtimes when production changes (or vice
-//! versa). **Product assumption:** one production runtime per project; prod cache keys are shared for that
-//! project’s lone prod scope.
+//! runtime (`shared:units:{runtime_id}:`). A deploy event never clears other stage runtimes or production when only
+//! one scope changed. **Product assumption:** one production runtime per project.
 //!
 //! **Publishers** must use JetStream (`jetstream.publish` / the JS API), not core NATS publish, so messages
 //! are persisted and match the stream. **Consumers**: a single durable pull consumer is shared by all
 //! `runtime_cache_listener` processes; each message is delivered to at most one replica.
 
-use crate::database::{DbPool, SharedRedisConn};
-use crate::services::project_release::load_project_release_by_id;
+use crate::database::SharedRedisConn;
 use crate::services::project_runtime_cache::{
     clear_project_runtime_cache_on_deploy, ProjectRuntimeCacheScope,
 };
@@ -29,30 +26,29 @@ pub enum ReleaseDeployEnvironment {
     Stage,
 }
 
-/// Payload published when a runtime’s live release changes (upgrade, rollback, or first deploy).
-///
-/// [`ReleaseDeployEvent::deployed_release_id`] absent or `null` means the live release was detached.
-/// [`ReleaseDeployEvent::previous_release_id`] identifies the row that was live before this deploy (for selective
-/// Redis invalidation vs the deployed release). Omit or `null` when there was no prior live release (first deploy).
+/// Payload published when a runtime’s live release changes (upgrade, rollback, detach, or first deploy).
 #[derive(Debug, Deserialize)]
 pub struct ReleaseDeployEvent {
     pub project_id: Uuid,
     pub environment: ReleaseDeployEnvironment,
     #[serde(default)]
     pub runtime_id: Option<Uuid>,
-    /// `None` / missing: detached.
     #[serde(default)]
     pub deployed_release_id: Option<Uuid>,
-    /// Primary key of the release row that was live before this deploy (`project_releases.id`).
     #[serde(default)]
     pub previous_release_id: Option<Uuid>,
 }
 
-async fn handle_release_deploy_event(
-    pool: &DbPool,
-    redis: &SharedRedisConn,
-    payload: &[u8],
-) {
+fn cache_scope_for_deploy_event(event: &ReleaseDeployEvent) -> Option<ProjectRuntimeCacheScope> {
+    match event.environment {
+        ReleaseDeployEnvironment::Production => Some(ProjectRuntimeCacheScope::Prod),
+        ReleaseDeployEnvironment::Stage => event
+            .runtime_id
+            .map(|runtime_id| ProjectRuntimeCacheScope::Stage { runtime_id }),
+    }
+}
+
+async fn handle_release_deploy_event(redis: &SharedRedisConn, payload: &[u8]) {
     let event: ReleaseDeployEvent = match serde_json::from_slice(payload) {
         Ok(e) => e,
         Err(e) => {
@@ -70,27 +66,10 @@ async fn handle_release_deploy_event(
         "[nats] release deploy event received"
     );
 
-    let is_stage = matches!(event.environment, ReleaseDeployEnvironment::Stage);
-
-    let scope = match event.environment {
-        ReleaseDeployEnvironment::Production => ProjectRuntimeCacheScope::Prod,
-        ReleaseDeployEnvironment::Stage => {
-            let Some(runtime_id) = event.runtime_id else {
-                tracing::warn!(
-                    project_id = %event.project_id,
-                    "[nats] stage deploy event requires runtime_id"
-                );
-                return;
-            };
-            ProjectRuntimeCacheScope::Stage { runtime_id }
-        }
-    };
-
-    let Some(deployed_id) = event.deployed_release_id else {
-        tracing::info!(
+    let Some(scope) = cache_scope_for_deploy_event(&event) else {
+        tracing::warn!(
             project_id = %event.project_id,
-            ?scope,
-            "[nats] live release detached; skipping cache invalidation"
+            "[nats] stage deploy event requires runtime_id"
         );
         return;
     };
@@ -98,88 +77,30 @@ async fn handle_release_deploy_event(
     if redis.is_none() {
         tracing::info!(
             project_id = %event.project_id,
-            deployed_release_id = %deployed_id,
             ?scope,
             "[nats] redis unavailable; skipping cache invalidation"
         );
         return;
     }
 
-    let live_row = if let Some(prev_id) = event.previous_release_id {
-        match load_project_release_by_id(pool, event.project_id, is_stage, prev_id).await {
-            Ok(Some(r)) => Some(r),
-            Ok(None) => {
-                tracing::warn!(
-                    project_id = %event.project_id,
-                    previous_release_id = %prev_id,
-                    "[nats] previous_release_id not found; continuing without prior release row"
-                );
-                None
-            }
-            Err(e) => {
-                tracing::error!(
-                    error = %e,
-                    project_id = %event.project_id,
-                    previous_release_id = %prev_id,
-                    "[nats] failed to load previous release by id"
-                );
-                return;
-            }
-        }
-    } else {
-        None
-    };
-
-    let target_row = match load_project_release_by_id(pool, event.project_id, is_stage, deployed_id).await {
-        Ok(Some(r)) => r,
-        Ok(None) => {
-            tracing::warn!(
-                project_id = %event.project_id,
-                deployed_release_id = %deployed_id,
-                is_stage,
-                "[nats] deployed release row not found"
-            );
-            return;
-        }
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                project_id = %event.project_id,
-                deployed_release_id = %deployed_id,
-                "[nats] failed to load deployed release"
-            );
-            return;
-        }
-    };
-
-    // Single scope only: prod XOR one stage runtime — see `ProjectRuntimeCacheScope`.
-    if let Err(e) = clear_project_runtime_cache_on_deploy(
-        redis,
-        event.project_id,
-        scope,
-        live_row.as_ref(),
-        &target_row,
-    )
-    .await
+    if let Err(e) =
+        clear_project_runtime_cache_on_deploy(redis, event.project_id, scope).await
     {
-        tracing::error!(error = %e, "[nats] redis selective cache clear failed");
+        tracing::error!(error = %e, "[nats] redis cache clear failed");
         return;
     }
 
     tracing::info!(
         project_id = %event.project_id,
-        deployed_release_id = %deployed_id,
-        deployed_revision = target_row.revision,
-        previous_release_id = ?event.previous_release_id,
+        deployed_release_id = ?event.deployed_release_id,
         ?scope,
-        "[nats] release deploy cache invalidated"
+        "[nats] release deploy cache cleared for scope"
     );
 }
 
 /// Runs the JetStream durable pull consumer until the connection ends. Intended for the `runtime_cache_listener`
 /// binary (or a dedicated task); do not drop the returned future immediately or the listener will stop.
 pub async fn run_release_deploy_listener(
-    pool: DbPool,
     redis: SharedRedisConn,
     nats_url: String,
     subject: String,
@@ -223,7 +144,7 @@ pub async fn run_release_deploy_listener(
     while let Some(result) = messages.next().await {
         match result {
             Ok(msg) => {
-                handle_release_deploy_event(&pool, &redis, &msg.payload).await;
+                handle_release_deploy_event(&redis, &msg.payload).await;
                 if let Err(e) = msg.ack().await {
                     tracing::error!(error = %e, "[nats] jetstream ack failed");
                 }

@@ -59,8 +59,8 @@ impl SdkCommCtx {
 
     pub fn with_stage_runtime(&self, stage_runtime_id: Option<Uuid>) -> Arc<Self> {
         Arc::new(SdkCommCtx {
+            resolved_runtime_id: stage_runtime_id.or(self.resolved_runtime_id),
             stage_runtime_id,
-            resolved_runtime_id: stage_runtime_id,
             ..self.clone()
         })
     }
@@ -535,13 +535,11 @@ fn host_get_secure_env(ctx: Ctx<'_>, key: String) -> rquickjs::Result<String> {
         let pool = comm.pool.clone();
         let redis = comm.redis_conn.clone();
         let resolved_runtime_id = comm.resolved_runtime_id;
-        block_async(async move {
-            let runtime_id = resolved_runtime_id.ok_or_else(|| {
-                "sdk.getSecureEnv: resolved_runtime_id is not set".to_string()
-            })?;
-            runtime_env::get_secure_env(&pool, &redis, project_id, runtime_id, &key)
-                .await
-                .map_err(|e| match e {
+        let runtime_id = resolved_runtime_id.ok_or_else(|| {
+            "sdk.getSecureEnv: resolved_runtime_id is not set".to_string()
+        })?;
+        runtime_env::get_secure_env_blocking(&pool, &redis, project_id, runtime_id, &key)
+            .map_err(|e| match e {
                     RuntimeEnvError::NotFound(k) => {
                         format!("sdk.getSecureEnv: env var not found: {k}")
                     }
@@ -557,7 +555,6 @@ fn host_get_secure_env(ctx: Ctx<'_>, key: String) -> rquickjs::Result<String> {
                     RuntimeEnvError::Db(e) => format!("sdk.getSecureEnv: database error: {e}"),
                     RuntimeEnvError::Redis(e) => format!("sdk.getSecureEnv: cache error: {e}"),
                 })
-        })
     });
     let out_json = match &res {
         Ok(value) => serde_json::json!({ "ok": true, "value": value }),

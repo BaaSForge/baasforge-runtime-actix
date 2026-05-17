@@ -323,10 +323,8 @@ fn path_and_revision_from_full_unit_id(full_unit_id: &str) -> Option<(String, i3
 /// Finds the *full unit id* (`unitId` in JSON) and chat session from release `units_metadata` for a logical
 /// unit path (`context.module.unit_type.unit_name` — no revision segment; matches the `unit_path` argument).
 ///
-/// Only [`crate::models::projects::UnitsMetadata::combined_unit_ids`] is consulted — the same live set used for Redis invalidation on
-/// deploy ([`crate::services::project_runtime_cache::clear_project_runtime_cache_on_deploy`]). Entries that
-/// appear only in `new_unit_ids` or `previous_unit_ids` are not loaded or cached so we do not store redundant
-/// rows in Redis.
+/// Only [`crate::models::projects::UnitsMetadata::combined_unit_ids`] is consulted. Entries that appear only in
+/// `new_unit_ids` or `previous_unit_ids` are not loaded or cached so we do not store redundant rows in Redis.
 ///
 /// If more than one entry shares the same logical path (same four-segment prefix), the first match wins and a
 /// warning is logged; publishers should avoid ambiguous `combinedUnitIDs` for a single release.

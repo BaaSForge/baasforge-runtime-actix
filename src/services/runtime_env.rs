@@ -1,8 +1,11 @@
 //! Runtime environment variables: DB load, optional AES-256-GCM decrypt, Redis read-through cache.
 //!
 //! Uses the shared [`SharedRedisConn`] (`redis_conn` in [`SdkCommCtx`]) — same connection as release/unit cache.
+//!
+//! DB access is synchronous (`pool.get` + Diesel) so QuickJS host calls from `spawn_blocking` never nest
+//! `block_on` + `block_on_db` (which could stall before the Redis `SET`).
 
-use crate::database::{block_on_db, BlockingDbError, DbPool, SharedRedisConn};
+use crate::database::{BlockingDbError, DbPool, SharedRedisConn};
 use crate::models::runtime_env::{ProjectRuntimeEncryptionKeyRow, ProjectRuntimeEnvVarRow};
 use crate::schema::{project_runtime_encryption_keys, project_runtime_env_vars};
 use crate::services::project_runtime_cache::{redis_get_json, redis_set_json};
@@ -11,6 +14,7 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
 use diesel::prelude::*;
 use redis::AsyncCommands;
+use std::future::Future;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -37,7 +41,8 @@ pub enum RuntimeEnvError {
     Decrypt(String),
 }
 
-pub async fn get_secure_env(
+/// Load a runtime env var (read-through Redis cache). Call from `spawn_blocking` / sync host fns only.
+pub fn get_secure_env_blocking(
     pool: &DbPool,
     redis: &SharedRedisConn,
     project_id: Uuid,
@@ -52,25 +57,48 @@ pub async fn get_secure_env(
     let cache_key = redis_key_env(project_id, runtime_id, key);
 
     if redis.is_none() {
-        tracing::debug!(%cache_key, "runtime env cache skipped (redis_conn unavailable)");
-    } else if let Some(cached) = redis_get_json::<String>(redis, &cache_key).await? {
+        tracing::warn!(
+            %cache_key,
+            "runtime env cache skipped (redis_conn unavailable; check REDIS_URL / startup logs)"
+        );
+    } else if let Some(cached) = block_on_redis(redis_get_json::<String>(redis, &cache_key))? {
         tracing::debug!(%cache_key, "runtime env cache hit");
         return Ok(cached);
     } else if redis.is_some() {
         tracing::debug!(%cache_key, "runtime env cache miss");
     }
 
-    let row = load_env_var_row(pool, project_id, runtime_id, key).await?;
+    let row = load_env_var_row_sync(pool, project_id, runtime_id, key)?;
     let Some(row) = row else {
         return Err(RuntimeEnvError::NotFound(key.to_string()));
     };
 
-    let plaintext = resolve_plaintext(pool, &row).await?;
-    redis_set_json(redis, &cache_key, &plaintext).await?;
+    let plaintext = resolve_plaintext_sync(pool, &row)?;
+    block_on_redis(redis_set_json(redis, &cache_key, &plaintext))?;
     if redis.is_some() {
         tracing::debug!(%cache_key, "runtime env cache set");
     }
     Ok(plaintext)
+}
+
+pub async fn get_secure_env(
+    pool: &DbPool,
+    redis: &SharedRedisConn,
+    project_id: Uuid,
+    runtime_id: Uuid,
+    key: &str,
+) -> Result<String, RuntimeEnvError> {
+    let pool = pool.clone();
+    let redis = redis.clone();
+    let key = key.trim().to_string();
+    match tokio::task::spawn_blocking(move || {
+        get_secure_env_blocking(&pool, &redis, project_id, runtime_id, &key)
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => Err(RuntimeEnvError::Db(BlockingDbError::Blocking)),
+    }
 }
 
 pub async fn invalidate_env_cache(
@@ -88,53 +116,60 @@ pub async fn invalidate_env_cache(
     Ok(())
 }
 
-async fn resolve_plaintext(
-    pool: &DbPool,
-    row: &ProjectRuntimeEnvVarRow,
-) -> Result<String, RuntimeEnvError> {
-    if !row.is_encrypted {
-        return Ok(row.stored_value.clone());
-    }
-    let enc_key = load_encryption_key(pool, row.runtime_id).await?;
-    let Some(enc_key) = enc_key else {
-        return Err(RuntimeEnvError::EncryptionKeyMissing);
-    };
-    decrypt_stored_value(&enc_key.encryption_key, &row.stored_value)
+fn block_on_redis<T, F>(future: F) -> Result<T, RuntimeEnvError>
+where
+    F: Future<Output = Result<T, redis::RedisError>>,
+{
+    tokio::runtime::Handle::current()
+        .block_on(future)
+        .map_err(RuntimeEnvError::Redis)
 }
 
-async fn load_env_var_row(
+fn load_env_var_row_sync(
     pool: &DbPool,
     project_id: Uuid,
     runtime_id: Uuid,
     key: &str,
 ) -> Result<Option<ProjectRuntimeEnvVarRow>, RuntimeEnvError> {
     let key_owned = key.to_string();
-    let row = block_on_db(pool, move |conn| {
-        project_runtime_env_vars::table
-            .filter(project_runtime_env_vars::project_id.eq(project_id))
-            .filter(project_runtime_env_vars::runtime_id.eq(runtime_id))
-            .filter(project_runtime_env_vars::key.eq(key_owned))
-            .select(ProjectRuntimeEnvVarRow::as_select())
-            .first::<ProjectRuntimeEnvVarRow>(conn)
-            .optional()
-    })
-    .await?;
+    let mut conn = pool.get().map_err(BlockingDbError::Pool)?;
+    let row = project_runtime_env_vars::table
+        .filter(project_runtime_env_vars::project_id.eq(project_id))
+        .filter(project_runtime_env_vars::runtime_id.eq(runtime_id))
+        .filter(project_runtime_env_vars::key.eq(key_owned))
+        .select(ProjectRuntimeEnvVarRow::as_select())
+        .first::<ProjectRuntimeEnvVarRow>(&mut conn)
+        .optional()
+        .map_err(BlockingDbError::Query)?;
     Ok(row)
 }
 
-async fn load_encryption_key(
+fn load_encryption_key_sync(
     pool: &DbPool,
     runtime_id: Uuid,
 ) -> Result<Option<ProjectRuntimeEncryptionKeyRow>, RuntimeEnvError> {
-    let row = block_on_db(pool, move |conn| {
-        project_runtime_encryption_keys::table
-            .filter(project_runtime_encryption_keys::runtime_id.eq(runtime_id))
-            .select(ProjectRuntimeEncryptionKeyRow::as_select())
-            .first::<ProjectRuntimeEncryptionKeyRow>(conn)
-            .optional()
-    })
-    .await?;
+    let mut conn = pool.get().map_err(BlockingDbError::Pool)?;
+    let row = project_runtime_encryption_keys::table
+        .filter(project_runtime_encryption_keys::runtime_id.eq(runtime_id))
+        .select(ProjectRuntimeEncryptionKeyRow::as_select())
+        .first::<ProjectRuntimeEncryptionKeyRow>(&mut conn)
+        .optional()
+        .map_err(BlockingDbError::Query)?;
     Ok(row)
+}
+
+fn resolve_plaintext_sync(
+    pool: &DbPool,
+    row: &ProjectRuntimeEnvVarRow,
+) -> Result<String, RuntimeEnvError> {
+    if !row.is_encrypted {
+        return Ok(row.stored_value.clone());
+    }
+    let enc_key = load_encryption_key_sync(pool, row.runtime_id)?;
+    let Some(enc_key) = enc_key else {
+        return Err(RuntimeEnvError::EncryptionKeyMissing);
+    };
+    decrypt_stored_value(&enc_key.encryption_key, &row.stored_value)
 }
 
 fn decrypt_stored_value(key: &[u8], stored_value: &str) -> Result<String, RuntimeEnvError> {
