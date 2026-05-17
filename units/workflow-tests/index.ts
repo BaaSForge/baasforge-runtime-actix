@@ -60,7 +60,7 @@ interface TestDef {
   internalResolution?: boolean;
   /** When true the test is recorded as skipped (pending an unimplemented feature). */
   skip?: string;
-  /** Override the default 100-iteration poll cap. Use for long-running steps. */
+  /** Override the default 5-iteration poll cap. Use for long-running steps. */
   maxIterations?: number;
 }
 
@@ -257,7 +257,7 @@ async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
 
     let handlerIdx = 0;
 
-    for (let iter = 0; iter < (test.maxIterations ?? 100); iter++) {
+    for (let iter = 0; iter < (test.maxIterations ?? 5); iter++) {
       await sleep(100);
 
       const statusResp = await httpGet(`${instanceBase}/status`);
@@ -313,7 +313,7 @@ async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
       }
     }
 
-    return fail(test, "max iterations (100) exceeded");
+    return fail(test, "max iterations (5) exceeded");
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return fail(test, `exception: ${msg}`);
