@@ -486,8 +486,8 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
     .expect("test_seed: insert stage release");
     sql_query(
         "INSERT INTO project_releases (id, project_id, units_metadata, created_at, is_stage, revision) \
-         VALUES ($1::uuid, $2::uuid, $3::jsonb, NOW(), true, 1.0) \
-         ON CONFLICT (id) DO UPDATE SET units_metadata = EXCLUDED.units_metadata",
+         VALUES ($1::uuid, $2::uuid, $3::jsonb, NOW(), true, 2.0) \
+         ON CONFLICT (id) DO UPDATE SET units_metadata = EXCLUDED.units_metadata, revision = EXCLUDED.revision",
     )
     .bind::<Text, _>(TEST_STAGE_B_RELEASE_ID)
     .bind::<Text, _>(TEST_PROJECT_ID)
