@@ -1,9 +1,7 @@
 /**
  * Common suite test runner (`test.common.api.index`).
  *
- * test.sh triggers this API unit once; handleRequest runs a small set of
- * infrastructure demos (harness ping, stage isolation, cross-unit SDK, skip).
- * Add real common-unit tests here as the runtime is implemented.
+ * Triggers API harness units that import injected common units.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -82,91 +80,147 @@ function testRunTag(): string {
   return Date.now().toString(36);
 }
 
+function bodyRecord(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null) {
+    throw new Error(`expected JSON object, got ${JSON.stringify(body)}`);
+  }
+  return body as Record<string, unknown>;
+}
+
 function allTests(): CommonTestDef[] {
   const runTag = testRunTag();
 
   return [
+    // ── common-imports: api ← common value wiring ───────────────────────────
     {
-      name: "harness-ping-returns-ok",
-      category: "harness",
+      name: "basic-sum-uses-logger-and-summer",
+      category: "common-imports",
       run: async (baseUrl) => {
-        const resp = await httpGet(apiHarnessUrl(baseUrl, "ping"));
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "basic-sum"));
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
-        if ((resp.body as Record<string, unknown>)["ok"] !== true)
-          throw new Error(`expected ok:true, got ${JSON.stringify(resp.body)}`);
+        const b = bodyRecord(resp.body);
+        if (b["loggerFactor"] !== 20) throw new Error(`loggerFactor: ${JSON.stringify(b)}`);
+        if (b["summerFactor"] !== 10) throw new Error(`summerFactor: ${JSON.stringify(b)}`);
+        if (b["sum"] !== 33) throw new Error(`sum expected 33 (1+2+20+10), got ${JSON.stringify(b)}`);
       },
     },
     {
-      name: "production-runtime-scope",
-      category: "isolation",
+      name: "export-name-collision-resolves-per-module",
+      category: "common-imports",
       run: async (baseUrl) => {
-        const resp = await httpGet(apiHarnessUrl(baseUrl, "runtime-scope"));
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "export-collision"));
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
-        if ((resp.body as Record<string, unknown>)["scope"] !== "production")
-          throw new Error(`expected production scope`);
+        const b = bodyRecord(resp.body);
+        if (b["alphaToken"] !== "alpha-token") throw new Error(`alphaToken: ${JSON.stringify(b)}`);
+        if (b["betaToken"] !== "beta-token") throw new Error(`betaToken: ${JSON.stringify(b)}`);
+        if (b["alphaVersion"] !== 1) throw new Error(`alphaVersion: ${JSON.stringify(b)}`);
+        if (b["betaVersion"] !== 2) throw new Error(`betaVersion: ${JSON.stringify(b)}`);
       },
     },
     {
-      name: "stage-a-runtime-scope",
-      category: "isolation",
+      name: "nested-scoped-names-stay-isolated",
+      category: "common-imports",
       run: async (baseUrl) => {
-        const resp = await httpGet(apiHarnessStageUrl(baseUrl, "runtime-scope", STAGE_RUNTIME_ID));
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "scoped-collision"));
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
-        if ((resp.body as Record<string, unknown>)["scope"] !== "stage-a")
-          throw new Error(`expected stage-a scope`);
+        const b = bodyRecord(resp.body);
+        if (b["a"] !== 10) throw new Error(`scope a expected 10, got ${JSON.stringify(b)}`);
+        if (b["b"] !== 99) throw new Error(`scope b expected 99, got ${JSON.stringify(b)}`);
       },
     },
     {
-      name: "stage-b-runtime-scope",
-      category: "isolation",
+      name: "nested-export-name-collision-resolves-correctly",
+      category: "common-imports",
       run: async (baseUrl) => {
-        const resp = await httpGet(apiHarnessStageUrl(baseUrl, "runtime-scope", STAGE_B_RUNTIME_ID));
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "nested-exports"));
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
-        if ((resp.body as Record<string, unknown>)["scope"] !== "stage-b")
-          throw new Error(`expected stage-b scope`);
+        const b = bodyRecord(resp.body);
+        if (b["tagA"] !== "leaf-a") throw new Error(`tagA: ${JSON.stringify(b)}`);
+        if (b["tagB"] !== "leaf-b") throw new Error(`tagB: ${JSON.stringify(b)}`);
+        if (b["total"] !== 106) throw new Error(`total expected 106 (6+100), got ${JSON.stringify(b)}`);
       },
     },
     {
-      name: "call-actor-sync",
-      category: "cross-unit",
+      name: "common-stage-value-production",
+      category: "common-imports",
       run: async (baseUrl) => {
-        const actorId = `common-${runTag}`;
-        const resp = await httpPost(apiHarnessUrl(baseUrl, "call-actor-sync"), {
-          actorId,
-          handler: "increment",
-          by: 1,
-        });
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "read-stage-value"));
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
-        if ((resp.body as Record<string, unknown>)["count"] !== 1)
-          throw new Error(`expected count 1, got ${JSON.stringify(resp.body)}`);
+        if (bodyRecord(resp.body)["marker"] !== "production")
+          throw new Error(`expected production marker`);
       },
     },
     {
-      name: "call-workflow",
-      category: "cross-unit",
+      name: "common-stage-value-stage-a",
+      category: "common-imports",
       run: async (baseUrl) => {
-        const resp = await httpPost(apiHarnessUrl(baseUrl, "call-workflow"), { value: "ping" });
+        const resp = await httpGet(apiHarnessStageUrl(baseUrl, "read-stage-value", STAGE_RUNTIME_ID));
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
-        if ((resp.body as Record<string, unknown>)["echoed"] !== "ping")
-          throw new Error(`workflow echo mismatch: ${JSON.stringify(resp.body)}`);
+        if (bodyRecord(resp.body)["marker"] !== "stage-a")
+          throw new Error(`expected stage-a marker`);
       },
     },
     {
-      name: "enqueue-worker",
-      category: "cross-unit",
+      name: "common-stage-value-stage-b",
+      category: "common-imports",
       run: async (baseUrl) => {
-        const resp = await httpPost(apiHarnessUrl(baseUrl, "enqueue-worker"), { data: { probe: true } });
+        const resp = await httpGet(apiHarnessStageUrl(baseUrl, "read-stage-value", STAGE_B_RUNTIME_ID));
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
-        const runId = (resp.body as Record<string, unknown>)["runId"];
+        if (bodyRecord(resp.body)["marker"] !== "stage-b")
+          throw new Error(`expected stage-b marker`);
+      },
+    },
+
+    // ── sdk-via-common: api → common → sdk ───────────────────────────────────
+    {
+      name: "actor-via-common-bridge",
+      category: "sdk-via-common",
+      run: async (baseUrl) => {
+        const actorId = `common-sdk-${runTag}`;
+        const resp = await httpPost(apiHarnessUrl(baseUrl, "actor-via-common"), { actorId, by: 2 });
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        if (bodyRecord(resp.body)["count"] !== 2)
+          throw new Error(`expected count 2, got ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "workflow-via-common-bridge",
+      category: "sdk-via-common",
+      run: async (baseUrl) => {
+        const resp = await httpPost(apiHarnessUrl(baseUrl, "workflow-via-common"), { value: "nested-sdk" });
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        if (bodyRecord(resp.body)["echoed"] !== "nested-sdk")
+          throw new Error(`echo mismatch: ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "queue-via-common-bridge",
+      category: "sdk-via-common",
+      run: async (baseUrl) => {
+        const resp = await httpPost(apiHarnessUrl(baseUrl, "queue-via-common"), { data: { viaCommon: true } });
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const runId = bodyRecord(resp.body)["runId"];
         if (typeof runId !== "string" || runId.length === 0)
           throw new Error(`expected non-empty runId`);
       },
     },
     {
-      name: "native-common-unit",
-      category: "future",
-      skip: "common unit runtime not implemented — remove skip and implement when ready",
-      run: async () => {},
+      name: "full-sdk-chain-via-common",
+      category: "sdk-via-common",
+      run: async (baseUrl) => {
+        const actorId = `common-chain-${runTag}`;
+        const resp = await httpPost(apiHarnessUrl(baseUrl, "all-via-common"), { actorId });
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        const actor = b["actor"] as Record<string, unknown> | undefined;
+        const workflow = b["workflow"] as Record<string, unknown> | undefined;
+        const queue = b["queue"] as Record<string, unknown> | undefined;
+        if (actor?.["count"] !== 1) throw new Error(`actor count: ${JSON.stringify(b)}`);
+        if (workflow?.["echoed"] !== "chain") throw new Error(`workflow echo: ${JSON.stringify(b)}`);
+        const runId = queue?.["runId"];
+        if (typeof runId !== "string" || runId.length === 0)
+          throw new Error(`queue runId: ${JSON.stringify(b)}`);
+      },
     },
   ];
 }

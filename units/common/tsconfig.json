@@ -1,7 +1,13 @@
 {
   "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@sdk": ["../shared/@sdk.d.ts"]
+    }
+  },
   "include": [
     "../shared/@sdk.d.ts",
+    "units-ambient.d.ts",
     "**/*.ts"
   ]
 }

@@ -4,7 +4,7 @@ export type RequestBody = never;
 export type ResponseBody = { ok: true };
 export type QueryParams = never;
 
-/** Minimal API harness — replace with real common-unit checks when runtime exists. */
+/** Kept for WebSocket infra (`ws-tests.mjs`); not part of the common-unit test runner. */
 export async function handleRequest(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ ok: true } satisfies ResponseBody));

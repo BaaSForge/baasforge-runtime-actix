@@ -1,11 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { STAGE_MARKER } from "@units/test.common.common.stage-value";
 
 export type RequestBody = never;
-export type ResponseBody = { scope: string };
+export type ResponseBody = { marker: string };
 export type QueryParams = never;
 
-/** Production runtime-scope harness; stage overrides use `-runtime-stage-a` / `-runtime-stage-b` suffix files. */
 export async function handleRequest(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ scope: "production" } satisfies ResponseBody));
+  res.end(JSON.stringify({ marker: STAGE_MARKER } satisfies ResponseBody));
 }

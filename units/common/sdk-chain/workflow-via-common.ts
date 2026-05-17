@@ -1,7 +1,6 @@
-/** Cross-unit harness: SDK → workflow (see `companion-workflows/wf-echo.ts`). */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { text } from "node:stream/consumers";
-import { sdk } from "@sdk";
+import { echoViaCommon } from "@units/test.common.common.sdk-bridge-workflow";
 
 export type RequestBody = { value?: unknown };
 export type ResponseBody = { echoed: unknown };
@@ -13,15 +12,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse): 
   try {
     body = JSON.parse(raw) as RequestBody;
   } catch {
-    // use defaults
+    // defaults
   }
-
-  const output = sdk.callWorkflowAndWaitForOutputSync<{ value: unknown }, { echoed: unknown }>({
-    unitPath: "test.wf.workflow.wf-echo",
-    input: { value: body.value ?? null },
-    opts: { timeoutMs: 120_000 },
-  });
-
+  const output = echoViaCommon(body.value ?? "via-common");
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(output satisfies ResponseBody));
 }
