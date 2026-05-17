@@ -87,6 +87,12 @@ function bodyRecord(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+function expectHarnessRejected(resp: { status: number; body: unknown }): void {
+  const text = typeof resp.body === "string" ? resp.body : JSON.stringify(resp.body);
+  if (resp.status !== 500) throw new Error(`expected 500, got ${resp.status}: ${text}`);
+  if (!text.includes("wrong import")) throw new Error(`expected "wrong import" in response: ${text}`);
+}
+
 function allTests(): CommonTestDef[] {
   const runTag = testRunTag();
 
@@ -160,6 +166,51 @@ function allTests(): CommonTestDef[] {
         const b = bodyRecord(resp.body);
         if (b["factor"] !== 20) throw new Error(`factor: ${JSON.stringify(b)}`);
         if (b["hasLogFn"] !== true) throw new Error(`hasLogFn: ${JSON.stringify(b)}`);
+      },
+    },
+
+    // ── common-import-policy: illegal value/default imports fail at runtime ─
+    {
+      name: "default-import-from-common-rejected",
+      category: "common-import-policy",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "illegal-default-from-common"));
+        expectHarnessRejected(resp);
+      },
+    },
+    {
+      name: "value-import-from-actor-rejected",
+      category: "common-import-policy",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "illegal-value-from-actor"));
+        expectHarnessRejected(resp);
+      },
+    },
+    {
+      name: "value-import-from-workflow-rejected",
+      category: "common-import-policy",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "invalid-value-from-workflow"));
+        expectHarnessRejected(resp);
+      },
+    },
+    {
+      name: "value-import-from-api-rejected",
+      category: "common-import-policy",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "illegal-value-from-api"));
+        expectHarnessRejected(resp);
+      },
+    },
+    {
+      name: "type-from-non-common-and-value-from-common-allowed",
+      category: "common-import-policy",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "valid-type-from-non-common-value-from-common"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}: ${JSON.stringify(resp.body)}`);
+        const b = bodyRecord(resp.body);
+        if (b["ok"] !== true) throw new Error(`expected ok: true, got ${JSON.stringify(b)}`);
+        if (b["factor"] !== 20) throw new Error(`expected factor 20, got ${JSON.stringify(b)}`);
       },
     },
 

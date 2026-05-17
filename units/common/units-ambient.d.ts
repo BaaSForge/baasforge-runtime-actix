@@ -1,3 +1,25 @@
+declare module "@units/test.common.common.default-canary" {
+  const defaultCanary: string;
+  export default defaultCanary;
+  export const NAMED_CANARY: string;
+}
+
+declare module "@units/test.actor-tests.actor.export-canary" {
+  export const ACTOR_VALUE_CANARY: number;
+}
+
+declare module "@units/test.wf.workflow.export-canary" {
+  export const WF_VALUE_CANARY: string;
+}
+
+declare module "@units/test.common.api.value-canary" {
+  export const API_VALUE_CANARY: string;
+}
+
+declare module "@units/test.actor-tests.actor.counter" {
+  export type State = { count: number };
+}
+
 declare module "@units/*" {
   export const FACTOR: number;
   export const TOKEN: string;
