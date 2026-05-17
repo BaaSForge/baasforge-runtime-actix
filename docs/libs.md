@@ -1,12 +1,14 @@
-email queue
+XXX email queue -> delegate to others for now, we can't beat them unless we have a large team dedicated to that email service
+
+---------
+
+XXX image / video worker -> delegate, we only add some libs, nothing more
 
 ---------
 
 req body parser?
 
 logging
-
-image / video worker
 
 storage
 

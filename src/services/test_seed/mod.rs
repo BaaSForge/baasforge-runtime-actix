@@ -10,6 +10,7 @@
 
 mod actor_units;
 mod api_units;
+mod common_units;
 mod queue_worker_units;
 mod workflow_units;
 
@@ -164,6 +165,7 @@ pub fn seed_test_entities(pool: &DbPool, settings: &Settings) {
 
     let mut discovered_units: Vec<UnitSpec> = Vec::new();
     discovered_units.extend(api_units::collect(settings));
+    discovered_units.extend(common_units::collect());
     discovered_units.extend(workflow_units::collect(settings));
     discovered_units.extend(queue_worker_units::collect(settings));
     discovered_units.extend(actor_units::collect());

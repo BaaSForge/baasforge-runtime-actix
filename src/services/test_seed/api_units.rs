@@ -62,6 +62,7 @@ pub(super) fn spec_for_label(label: &str, seed_source: String, compiled_code: St
             "queue-worker-tests" => api_unit_seed_metadata("queue-worker-tests", "index"),
             "actor-tests" => api_unit_seed_metadata("actor-tests", "index"),
             "api-tests" => api_unit_seed_metadata("api-tests", "index"),
+            "common" => api_unit_seed_metadata("common", "index"),
             other => {
                 let m = other.replace('-', "_");
                 api_unit_seed_metadata(&m, &m)
@@ -119,6 +120,17 @@ pub(super) fn spec_for_label(label: &str, seed_source: String, compiled_code: St
             unit_name_slug: "index".into(),
             unit_type: "api".into(),
             full_id: "test.api-tests.api.index.1".into(),
+            compiled_code,
+            seed_source,
+            runtime_target: RuntimeTarget::All,
+            metadata,
+        },
+        "common" => UnitSpec {
+            context_slug: "test".into(),
+            module_slug: "common".into(),
+            unit_name_slug: "index".into(),
+            unit_type: "api".into(),
+            full_id: "test.common.api.index.1".into(),
             compiled_code,
             seed_source,
             runtime_target: RuntimeTarget::All,
