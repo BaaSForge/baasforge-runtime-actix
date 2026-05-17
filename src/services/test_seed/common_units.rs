@@ -25,7 +25,7 @@ fn api_unit_seed_metadata(unit_name_slug: &str, rel_path: &str) -> Option<serde_
     if unit_name_slug == "index" {
         return Some(json!({ "method": "GET", "timeout_seconds": 120 }));
     }
-    if rel_path.starts_with("sdk-chain/") {
+    if rel_path.starts_with("sdk-chain/") || rel_path.starts_with("cross-unit/") {
         return Some(json!({ "method": "POST" }));
     }
     Some(json!({ "method": "GET" }))

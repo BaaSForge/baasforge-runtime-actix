@@ -141,6 +141,28 @@ function allTests(): CommonTestDef[] {
       },
     },
     {
+      name: "common-re-exports-resolve-with-aliases",
+      category: "common-imports",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "re-export-tags"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["tagA"] !== "leaf-a") throw new Error(`tagA: ${JSON.stringify(b)}`);
+        if (b["tagB"] !== "leaf-b") throw new Error(`tagB: ${JSON.stringify(b)}`);
+      },
+    },
+    {
+      name: "multiple-imports-from-same-common-module",
+      category: "common-imports",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "double-import"));
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const b = bodyRecord(resp.body);
+        if (b["factor"] !== 20) throw new Error(`factor: ${JSON.stringify(b)}`);
+        if (b["hasLogFn"] !== true) throw new Error(`hasLogFn: ${JSON.stringify(b)}`);
+      },
+    },
+    {
       name: "common-stage-value-production",
       category: "common-imports",
       run: async (baseUrl) => {
@@ -168,6 +190,40 @@ function allTests(): CommonTestDef[] {
         if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
         if (bodyRecord(resp.body)["marker"] !== "stage-b")
           throw new Error(`expected stage-b marker`);
+      },
+    },
+
+    // ── common-in-unit-types: actor / workflow / queue_worker ← common ───────
+    {
+      name: "actor-handler-imports-common-offset",
+      category: "common-in-unit-types",
+      run: async (baseUrl) => {
+        const actorId = `offset-common-${runTag}`;
+        const resp = await httpPost(apiHarnessUrl(baseUrl, "actor-with-common"), { actorId, by: 1 });
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        if (bodyRecord(resp.body)["count"] !== 8)
+          throw new Error(`expected count 8 (0+1+7 offset), got ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "workflow-step-imports-common-offset",
+      category: "common-in-unit-types",
+      run: async (baseUrl) => {
+        const resp = await httpPost(apiHarnessUrl(baseUrl, "workflow-with-common"), { n: 5 });
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        if (bodyRecord(resp.body)["result"] !== 12)
+          throw new Error(`expected result 12 (5+7), got ${JSON.stringify(resp.body)}`);
+      },
+    },
+    {
+      name: "queue-worker-process-imports-common-offset",
+      category: "common-in-unit-types",
+      run: async (baseUrl) => {
+        const resp = await httpPost(apiHarnessUrl(baseUrl, "queue-with-common"), { n: 3 });
+        if (resp.status !== 200) throw new Error(`expected 200, got ${resp.status}`);
+        const runId = bodyRecord(resp.body)["runId"];
+        if (typeof runId !== "string" || runId.length === 0)
+          throw new Error(`expected non-empty runId`);
       },
     },
 

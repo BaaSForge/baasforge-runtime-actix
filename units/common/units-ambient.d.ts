@@ -9,6 +9,10 @@ declare module "@units/*" {
   export const reveal: () => number;
   export const bothScopes: () => { a: number; b: number };
   export const bump: (n: number) => number;
+  export const OFFSET: number;
+  export function withOffset(n: number): number;
+  export const TAG_FROM_A: string;
+  export const TAG_FROM_B: string;
   export const composeNest: (n: number) => { tagA: string; tagB: string; total: number };
   export function incrementViaCommon(
     actorId: import("@sdk").ActorInstanceId,
