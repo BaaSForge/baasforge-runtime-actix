@@ -73,6 +73,8 @@ function queueWorker(configOrHandler) {
 
 globalThis.queueWorker = queueWorker;
 globalThis.TerminalError = TerminalError;
+globalThis.__baalModules = globalThis.__baalModules || {};
+globalThis.__baalModules['@sdk'] = Object.assign(globalThis.__baalModules['@sdk'] || {}, { queueWorker: queueWorker });
 
 var __qwCode = __stripImports(__userSource)
   .replace(/^export\s+default\s+/m, "var __qwDef = ");

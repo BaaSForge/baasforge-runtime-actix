@@ -807,6 +807,21 @@ fn host_call_workflow_sync(
                 .filter(|s| !s.trim().is_empty())
                 .ok_or("sdk.callWorkflow: workflow unit has no compiled code")?
                 .to_string();
+            let source = crate::libs::unit_js::prepare_source_scoped(
+                &source,
+                &pool,
+                &redis_conn,
+                project_uuid,
+                stage,
+            )
+            .await
+            .map_err(|e| match e {
+                crate::libs::unit_js::PrepareError::WrongImport
+                | crate::libs::unit_js::PrepareError::UnnamedImport => {
+                    crate::libs::unit_js::WRONG_IMPORT_MSG.to_string()
+                }
+                crate::libs::unit_js::PrepareError::Load(msg) => msg,
+            })?;
 
             let instance_id = crate::libs::ids::new_uuid().to_string();
 
@@ -904,6 +919,21 @@ fn host_start_workflow_fire_forget(
                 .filter(|s| !s.trim().is_empty())
                 .ok_or("sdk.callWorkflow: workflow unit has no compiled code")?
                 .to_string();
+            let source = crate::libs::unit_js::prepare_source_scoped(
+                &source,
+                &pool,
+                &redis_conn,
+                project_uuid,
+                stage,
+            )
+            .await
+            .map_err(|e| match e {
+                crate::libs::unit_js::PrepareError::WrongImport
+                | crate::libs::unit_js::PrepareError::UnnamedImport => {
+                    crate::libs::unit_js::WRONG_IMPORT_MSG.to_string()
+                }
+                crate::libs::unit_js::PrepareError::Load(msg) => msg,
+            })?;
 
             let instance_id = crate::libs::ids::new_uuid().to_string();
             let callee_comm = comm_arc.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
@@ -1039,6 +1069,21 @@ fn host_call_workflow_handler_sync(
                 .filter(|s| !s.trim().is_empty())
                 .ok_or("sdk.callWorkflowHandler: workflow unit has no compiled code")?
                 .to_string();
+            let source = crate::libs::unit_js::prepare_source_scoped(
+                &source,
+                &pool,
+                &redis_conn,
+                project_uuid,
+                stage,
+            )
+            .await
+            .map_err(|e| match e {
+                crate::libs::unit_js::PrepareError::WrongImport
+                | crate::libs::unit_js::PrepareError::UnnamedImport => {
+                    crate::libs::unit_js::WRONG_IMPORT_MSG.to_string()
+                }
+                crate::libs::unit_js::PrepareError::Load(msg) => msg,
+            })?;
 
             let callee_comm = comm_arc.for_unit(project_id.clone(), unit_path.clone(), Some(instance_id.clone()));
 

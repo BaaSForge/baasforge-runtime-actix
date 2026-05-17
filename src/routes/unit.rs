@@ -4,7 +4,7 @@
 //! with **cache and DB keys scoped by chat session** so duplicate full unit ids across sessions cannot cross-talk.
 
 use crate::libs::api_response::api_error;
-use crate::libs::unit_js::{self, TriggerHttpSnapshot};
+use crate::libs::unit_js::{self, PrepareError, TriggerHttpSnapshot, UNNAMED_IMPORT_MSG, WRONG_IMPORT_MSG};
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::{ProjectUnitRow, ProjectUnitType};
@@ -289,6 +289,21 @@ async fn invoke_api_unit(
         sdk_public_host,
         sdk_trigger_base_path,
     });
+    let code = match unit_js::prepare_source_for_comm(&code, &comm).await {
+        Ok(s) => s,
+        Err(PrepareError::WrongImport) => {
+            return HttpResponse::InternalServerError().json(api_error(WRONG_IMPORT_MSG, json!({})));
+        }
+        Err(PrepareError::UnnamedImport) => {
+            return HttpResponse::InternalServerError()
+                .json(api_error(UNNAMED_IMPORT_MSG, json!({})));
+        }
+        Err(unit_js::PrepareError::Load(e)) => {
+            tracing::error!(error = %e, "trigger unit: common import resolution failed");
+            return HttpResponse::InternalServerError()
+                .json(api_error("failed to resolve common imports", json!({ "detail": e })));
+        }
+    };
     let unit_id = unit.id.clone();
     let revision = unit.revision;
     let parent_span = span.clone();

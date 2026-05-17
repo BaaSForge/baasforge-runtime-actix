@@ -551,6 +551,22 @@ async fn handle_start(
         .ok_or_else(|| "workflow unit has no compiled code".to_string())?
         .to_string();
 
+    let source = crate::libs::unit_js::prepare_source_scoped(
+        &source,
+        &pool,
+        &redis_conn,
+        project_uuid,
+        stage_runtime_id,
+    )
+    .await
+    .map_err(|e| match e {
+        crate::libs::unit_js::PrepareError::WrongImport
+        | crate::libs::unit_js::PrepareError::UnnamedImport => {
+            crate::libs::unit_js::WRONG_IMPORT_MSG.to_string()
+        }
+        crate::libs::unit_js::PrepareError::Load(msg) => msg,
+    })?;
+
     let js = nats_client
         .as_ref()
         .map(|c| async_nats::jetstream::new(c.clone()));
@@ -796,6 +812,22 @@ async fn handle_wake(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| "workflow unit has no compiled code".to_string())?
         .to_string();
+
+    let source = crate::libs::unit_js::prepare_source_scoped(
+        &source,
+        &pool,
+        &redis_conn,
+        project_uuid,
+        stage_runtime_id,
+    )
+    .await
+    .map_err(|e| match e {
+        crate::libs::unit_js::PrepareError::WrongImport
+        | crate::libs::unit_js::PrepareError::UnnamedImport => {
+            crate::libs::unit_js::WRONG_IMPORT_MSG.to_string()
+        }
+        crate::libs::unit_js::PrepareError::Load(msg) => msg,
+    })?;
 
     let js = nats_client
         .as_ref()

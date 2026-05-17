@@ -35,6 +35,8 @@ function actor(config) {
 }
 
 globalThis.actor = actor;
+globalThis.__baalModules = globalThis.__baalModules || {};
+globalThis.__baalModules['@sdk'] = Object.assign(globalThis.__baalModules['@sdk'] || {}, { actor: actor });
 
 var __actorCode = __stripImports(__userSource)
   .replace(/^export\s+default\s+/m, "var __actorExport = ");

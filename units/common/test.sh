@@ -60,6 +60,10 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
   echo "==> Compiling TypeScript -> dist/…"
   npx tsc --noEmit false --outDir dist --sourceMap false --declaration false \
     --noUnusedLocals false --noUnusedParameters false
+  mkdir -p dist/import-policy/invalid
+  cp -f import-policy/invalid/illegal-unnamed-star-from-common.js \
+    import-policy/invalid/illegal-unnamed-import-from-common.js \
+    dist/import-policy/invalid/
   echo "    dist/ ready ($(find dist -name '*.js' | wc -l | tr -d ' ') JS files)"
 
   echo "==> Building main server binary (release)…"

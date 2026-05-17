@@ -118,6 +118,7 @@ chrono = { version = "0.4.43", features = ["serde"] }
 anyhow = "1.0.100"
 thiserror = "2.0.18"
 regex = { version = "1.12.2", features = ["unicode-perl", "perf"] }
+async-recursion = "1.1.1"
 
 base64 = "0.22.1"
 rustls = { version = "0.23.36", features = ["ring"] }

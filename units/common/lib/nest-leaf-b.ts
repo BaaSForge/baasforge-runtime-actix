@@ -1,3 +1,3 @@
 export const NEST_TAG = "leaf-b";
 
-export const bump = (n: number): number => n + 100;
+export const bump = (_n: number): number => 100;

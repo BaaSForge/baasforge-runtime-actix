@@ -130,6 +130,17 @@ async fn run_actor_inner(
         None => return Err("actor unit has no compiled code".to_string()),
     };
 
+    let source = match crate::libs::unit_js::prepare_source_for_comm(&source, &comm).await {
+        Ok(s) => s,
+        Err(crate::libs::unit_js::PrepareError::WrongImport) => {
+            return Err(crate::libs::unit_js::WRONG_IMPORT_MSG.to_string());
+        }
+        Err(crate::libs::unit_js::PrepareError::UnnamedImport) => {
+            return Err(crate::libs::unit_js::UNNAMED_IMPORT_MSG.to_string());
+        }
+        Err(crate::libs::unit_js::PrepareError::Load(e)) => return Err(e),
+    };
+
     let (resolved_runtime_id, live_release_id) = if let Some(ids) = precomputed_scope_trace_ids {
         (ids.runtime_id, ids.release_id)
     } else {

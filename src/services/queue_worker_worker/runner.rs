@@ -259,7 +259,7 @@ async fn handle_work_message(
     )
     .await;
 
-    let source = match unit_result {
+    let mut source = match unit_result {
         Ok(Some(unit)) => match unit.compiled_code.as_deref().filter(|s| !s.trim().is_empty()) {
             Some(s) => s.to_string(),
             None => {
@@ -285,6 +285,40 @@ async fn handle_work_message(
         }
         Err(e) => {
             error!(error = %e, run_id = %run_id, "[queue_worker_consumer] load unit error");
+            let _ = msg.ack().await;
+            return;
+        }
+    };
+
+    let source = match crate::libs::unit_js::prepare_source_scoped(
+        &source,
+        &pool,
+        &redis_conn,
+        project_uuid,
+        wq_stage,
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(crate::libs::unit_js::PrepareError::WrongImport)
+        | Err(crate::libs::unit_js::PrepareError::UnnamedImport) => {
+            move_to_dead_letter(
+                &wq_redis,
+                &nats_opt,
+                &project_id,
+                &run_id,
+                attempt,
+                enqueued_at,
+                &unit_path,
+                crate::libs::unit_js::WRONG_IMPORT_MSG,
+                wq_stage,
+            )
+            .await;
+            let _ = msg.ack().await;
+            return;
+        }
+        Err(crate::libs::unit_js::PrepareError::Load(e)) => {
+            error!(run_id = %run_id, error = %e, "[queue_worker_consumer] common import resolution failed");
             let _ = msg.ack().await;
             return;
         }

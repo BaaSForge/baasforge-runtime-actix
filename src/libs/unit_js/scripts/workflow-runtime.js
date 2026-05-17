@@ -260,6 +260,8 @@ function workflow(configOrHandler) {
 }
 
 globalThis.workflow = workflow;
+globalThis.__baalModules = globalThis.__baalModules || {};
+globalThis.__baalModules['@sdk'] = Object.assign(globalThis.__baalModules['@sdk'] || {}, { workflow: workflow });
 
 // --- Execute workflow ---
 // __baal_workflow_ctx is injected by Rust before eval, containing:

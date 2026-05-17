@@ -160,3 +160,5 @@ var sdk = {
 };
 
 globalThis.sdk = sdk;
+globalThis.__baalModules = globalThis.__baalModules || {};
+globalThis.__baalModules['@sdk'] = { sdk: sdk };

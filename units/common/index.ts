@@ -93,6 +93,16 @@ function expectHarnessRejected(resp: { status: number; body: unknown }): void {
   if (!text.includes("wrong import")) throw new Error(`expected "wrong import" in response: ${text}`);
 }
 
+function expectUnnamedImportRejected(resp: { status: number; body: unknown }): void {
+  const text = typeof resp.body === "string" ? resp.body : JSON.stringify(resp.body);
+  if (resp.status !== 500) throw new Error(`expected 500, got ${resp.status}: ${text}`);
+  if (!text.includes("unnamed imports from common units are not allowed")) {
+    throw new Error(
+      `expected "unnamed imports from common units are not allowed" in response: ${text}`,
+    );
+  }
+}
+
 function allTests(): CommonTestDef[] {
   const runTag = testRunTag();
 
@@ -200,6 +210,22 @@ function allTests(): CommonTestDef[] {
       run: async (baseUrl) => {
         const resp = await httpGet(apiHarnessUrl(baseUrl, "illegal-value-from-api"));
         expectHarnessRejected(resp);
+      },
+    },
+    {
+      name: "unnamed-star-import-from-common-rejected",
+      category: "common-import-policy",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "illegal-unnamed-star-from-common"));
+        expectUnnamedImportRejected(resp);
+      },
+    },
+    {
+      name: "unnamed-bare-import-from-common-rejected",
+      category: "common-import-policy",
+      run: async (baseUrl) => {
+        const resp = await httpGet(apiHarnessUrl(baseUrl, "illegal-unnamed-import-from-common"));
+        expectUnnamedImportRejected(resp);
       },
     },
     {

@@ -30,6 +30,7 @@ pub enum ProjectUnitType {
     Workflow,
     QueueWorker,
     Actor,
+    Common,
 }
 
 impl ProjectUnitType {
@@ -39,14 +40,21 @@ impl ProjectUnitType {
             Self::Workflow => "workflow",
             Self::QueueWorker => "queue_worker",
             Self::Actor => "actor",
+            Self::Common => "common",
         }
     }
 
     /// Parses the slug used in composite unit ids (`context.module.<slug>.…`). Inverse of [`Self::as_slug`].
     pub fn from_slug(s: &str) -> Option<Self> {
-        [Self::Api, Self::Workflow, Self::QueueWorker, Self::Actor]
-            .into_iter()
-            .find(|t| t.as_slug() == s)
+        [
+            Self::Api,
+            Self::Workflow,
+            Self::QueueWorker,
+            Self::Actor,
+            Self::Common,
+        ]
+        .into_iter()
+        .find(|t| t.as_slug() == s)
     }
 }
 
