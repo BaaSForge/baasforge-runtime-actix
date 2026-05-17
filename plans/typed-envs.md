@@ -1,0 +1,2 @@
+We can let the user to input the non-encrypted envs as a typed json, and type check when the LLM is using those typed envs.
+NOTE: we must verify that the values inserted for all runtimes share the same type.
