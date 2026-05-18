@@ -723,11 +723,11 @@ pub async fn passivate_actor(
     if skip_if_idle_rescheduled {
         let member = idle_due_member(stage_runtime_id, project_id, unit_path, actor_id);
         let now_ms = chrono::Utc::now().timestamp_millis() as f64;
-        let mut conn = actor_redis.lock().await;
+        let mut conn = actor_redis.clone();
         let score: Option<f64> = redis::cmd("ZSCORE")
             .arg(ACTOR_IDLE_DUE_ZSET)
             .arg(&member)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .ok()
             .flatten();

@@ -8,6 +8,7 @@ use crate::configs::Settings;
 use crate::database::{establish_pool, DbPool, SharedRedisConn};
 use crate::libs::unit_js::modules::sdk::SdkActorLocks;
 use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
+use crate::services::actor_engine::ActorRedis;
 use crate::services::workflow_engine::SharedRedis;
 use actix_web::Result;
 use actix_web::web;
@@ -35,7 +36,7 @@ pub struct AppContext {
     pub wq_jetstream: Option<async_nats::jetstream::Context>,
 
     /// Dedicated Redis connection for actor state (snapshots, leases, alarms).
-    pub actor_redis: Option<SharedRedis>,
+    pub actor_redis: Option<ActorRedis>,
     /// NATS client for actor mailbox (JetStream) and lifecycle events (Core).
     pub actor_nats_client: Option<async_nats::Client>,
     /// JetStream context for publishing actor mailbox messages.
@@ -59,7 +60,7 @@ impl AppContext {
         wq_redis: Option<SharedRedis>,
         wq_nats_client: Option<async_nats::Client>,
         wq_jetstream: Option<async_nats::jetstream::Context>,
-        actor_redis: Option<SharedRedis>,
+        actor_redis: Option<ActorRedis>,
         actor_nats_client: Option<async_nats::Client>,
         actor_jetstream: Option<async_nats::jetstream::Context>,
         actor_pg: Option<ActorPgPool>,
@@ -186,12 +187,12 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     let wq_jetstream: Option<async_nats::jetstream::Context> =
         wq_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
 
-    let actor_redis: Option<SharedRedis> = if let Some(url) = &settings.actor_redis_url {
+    let actor_redis: Option<ActorRedis> = if let Some(url) = &settings.actor_redis_url {
         match redis::Client::open(url.as_str()) {
             Ok(client) => match client.get_multiplexed_async_connection().await {
                 Ok(conn) => {
                     tracing::info!("[actor_redis] actor Redis connected");
-                    Some(Arc::new(Mutex::new(conn)))
+                    Some(conn)
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "[actor_redis] connection failed, actors disabled");

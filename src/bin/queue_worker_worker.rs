@@ -66,13 +66,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     } else { None };
 
-    let actor_redis: Option<baal_runtime_actix::services::workflow_engine::SharedRedis> =
+    let actor_redis: Option<baal_runtime_actix::services::actor_engine::ActorRedis> =
         if let Some(url) = settings.actor_redis_url.as_deref() {
             match redis::Client::open(url) {
                 Ok(client) => match client.get_multiplexed_async_connection().await {
                     Ok(conn) => {
                         info!("[actor_redis] actor Redis connected (for sdk.callActor*)");
-                        Some(Arc::new(Mutex::new(conn)))
+                        Some(conn)
                     }
                     Err(e) => {
                         warn!(error = %e, "[actor_redis] connection failed");

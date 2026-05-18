@@ -31,67 +31,58 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
                 alarm_name: Some(alarm_name.clone()),
                 error_msg: None,
             };
-
             let comm_for_alarm = comm.with_stage_runtime(stage_runtime_id);
+            let pool = comm.pool.clone();
+            let redis_conn = comm.redis_conn.clone();
             let rid_owned = stage_runtime_id.map(|u| u.to_string());
-            let inner_rt = if stage_runtime_id.is_some() {
-                "stage"
-            } else {
-                "production"
-            };
+            let inner_rt = if stage_runtime_id.is_some() { "stage" } else { "production" };
             let corr = TriggerCorrelation::empty();
-            let release_id_owned = match uuid::Uuid::parse_str(&project_id) {
-                Ok(pu) => load_live_release_id_scoped(
-                    &comm.pool,
-                    &comm.redis_conn,
-                    pu,
-                    stage_runtime_id,
-                )
-                .await
-                .ok()
-                .flatten()
-                .map(|u| u.to_string()),
-                Err(_) => None,
-            };
-            let extras = AsyncConsumerSpanExtras {
-                baal_unit_path: Some(unit_path.as_str()),
-                baal_actor_instance_id: Some(actor_id.as_str()),
-                baal_release_id: release_id_owned.as_deref(),
-                ..Default::default()
-            };
-            let consumer_cx = async_consumer_context(
-                &corr,
-                "baal.consumer.actor.alarm",
-                "internal_alarm",
-                Some(project_id.as_str()),
-                Some(inner_rt),
-                rid_owned.as_deref(),
-                Some(&extras),
-            );
 
-            tokio::spawn(
-                async move {
-                    let result = run_actor_with_lock(input, comm_for_alarm, None).await;
-                    match result {
-                        Ok(_) => tracing::debug!(
-                            project_id = %project_id,
-                            unit_path = %unit_path,
-                            actor_id = %actor_id,
-                            alarm_name = %alarm_name,
-                            "[alarm_sweeper] alarm run ok"
-                        ),
-                        Err(e) => warn!(
-                            project_id = %project_id,
-                            unit_path = %unit_path,
-                            actor_id = %actor_id,
-                            alarm_name = %alarm_name,
-                            error = %e,
-                            "[alarm_sweeper] alarm run failed"
-                        ),
-                    }
+            tokio::spawn(async move {
+                let release_id_owned = match uuid::Uuid::parse_str(&project_id) {
+                    Ok(pu) => load_live_release_id_scoped(&pool, &redis_conn, pu, stage_runtime_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|u| u.to_string()),
+                    Err(_) => None,
+                };
+                let extras = AsyncConsumerSpanExtras {
+                    baal_unit_path: Some(unit_path.as_str()),
+                    baal_actor_instance_id: Some(actor_id.as_str()),
+                    baal_release_id: release_id_owned.as_deref(),
+                    ..Default::default()
+                };
+                let consumer_cx = async_consumer_context(
+                    &corr,
+                    "baal.consumer.actor.alarm",
+                    "internal_alarm",
+                    Some(project_id.as_str()),
+                    Some(inner_rt),
+                    rid_owned.as_deref(),
+                    Some(&extras),
+                );
+                let result = run_actor_with_lock(input, comm_for_alarm, None)
+                    .with_context(consumer_cx)
+                    .await;
+                match result {
+                    Ok(_) => tracing::debug!(
+                        project_id = %project_id,
+                        unit_path = %unit_path,
+                        actor_id = %actor_id,
+                        alarm_name = %alarm_name,
+                        "[alarm_sweeper] alarm run ok"
+                    ),
+                    Err(e) => warn!(
+                        project_id = %project_id,
+                        unit_path = %unit_path,
+                        actor_id = %actor_id,
+                        alarm_name = %alarm_name,
+                        error = %e,
+                        "[alarm_sweeper] alarm run failed"
+                    ),
                 }
-                .with_context(consumer_cx),
-            );
+            });
         }
     }
 }

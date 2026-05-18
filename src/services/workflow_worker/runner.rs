@@ -3,6 +3,7 @@ use crate::configs::Settings;
 use crate::database::establish_pool;
 use crate::{init_tracing, shutdown_telemetry};
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
+use crate::services::actor_engine::ActorRedis;
 use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::{
@@ -76,12 +77,12 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let actor_locks: SdkActorLocks = Arc::new(Mutex::new(HashMap::new()));
 
-    let actor_redis: Option<SharedRedis> = if let Some(url) = &settings.actor_redis_url {
+    let actor_redis: Option<ActorRedis> = if let Some(url) = &settings.actor_redis_url {
         match redis::Client::open(url.as_str()) {
             Ok(client) => match client.get_multiplexed_async_connection().await {
                 Ok(conn) => {
                     info!("[actor_redis] connected for workflow wake (sdk.callActor*)");
-                    Some(Arc::new(Mutex::new(conn)))
+                    Some(conn)
                 }
                 Err(e) => {
                     warn!(error = %e, "[actor_redis] connection failed");
@@ -235,7 +236,7 @@ pub async fn run_wake_consumer(
     redis_conn: crate::database::SharedRedisConn,
     stream_name: &str,
     consumer_name: &str,
-    actor_redis: Option<SharedRedis>,
+    actor_redis: Option<ActorRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
@@ -455,7 +456,7 @@ async fn handle_start(
     project_id: &str,
     instance_id: &str,
     _payload: Option<&serde_json::Value>,
-    actor_redis: Option<SharedRedis>,
+    actor_redis: Option<ActorRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
@@ -649,7 +650,7 @@ async fn handle_wake(
     project_id: &str,
     instance_id: &str,
     payload: Option<&serde_json::Value>,
-    actor_redis: Option<SharedRedis>,
+    actor_redis: Option<ActorRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,

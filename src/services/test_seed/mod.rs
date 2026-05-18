@@ -17,7 +17,7 @@ mod workflow_units;
 use crate::actor_schema::{actor_alarms, actor_snapshots};
 use crate::configs::Settings;
 use crate::database::{DbPool, SharedRedisConn};
-use crate::services::actor_engine::ACTOR_NATS_STREAM;
+use crate::services::actor_engine::{ActorRedis, ACTOR_NATS_STREAM};
 use crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM;
 use crate::services::workflow_engine::SharedRedis;
 use diesel::delete;
@@ -638,11 +638,11 @@ fn test_mode_alarm_zset_member_is_seeded(m: &str) -> bool {
     }
 }
 
-pub async fn clear_test_actor_redis(actor: &Option<SharedRedis>) -> Result<(), redis::RedisError> {
+pub async fn clear_test_actor_redis(actor: &Option<ActorRedis>) -> Result<(), redis::RedisError> {
     let Some(rc) = actor else {
         return Ok(());
     };
-    let mut conn = rc.lock().await;
+    let mut conn = rc.clone();
     for prefix in [
         format!("actor:p:{TEST_PROJECT_ID}:"),
         format!("actor:p:{TEST_ALT_PROJECT_ID}:"),
@@ -650,7 +650,7 @@ pub async fn clear_test_actor_redis(actor: &Option<SharedRedis>) -> Result<(), r
         format!("actor:s:{TEST_STAGE_B_RUNTIME_ID}:"),
     ] {
         let pattern = format!("{prefix}*");
-        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut conn).await?;
         for key in keys {
             let _: () = conn.del(key).await?;
         }
@@ -660,7 +660,7 @@ pub async fn clear_test_actor_redis(actor: &Option<SharedRedis>) -> Result<(), r
         .arg(global_key)
         .arg(0isize)
         .arg(-1isize)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or_default();
     for m in members {
@@ -668,7 +668,7 @@ pub async fn clear_test_actor_redis(actor: &Option<SharedRedis>) -> Result<(), r
             let _: () = redis::cmd("ZREM")
                 .arg(global_key)
                 .arg(&m)
-                .query_async(&mut *conn)
+                .query_async(&mut conn)
                 .await?;
         }
     }
@@ -703,7 +703,7 @@ pub struct TestModeTeardown {
     pub redis_conn: SharedRedisConn,
     pub wf_redis: Option<SharedRedis>,
     pub wq_redis: Option<SharedRedis>,
-    pub actor_redis: Option<SharedRedis>,
+    pub actor_redis: Option<ActorRedis>,
     pub wf_jetstream: Option<async_nats::jetstream::Context>,
     pub wq_jetstream: Option<async_nats::jetstream::Context>,
     pub actor_jetstream: Option<async_nats::jetstream::Context>,
@@ -753,7 +753,7 @@ pub async fn teardown_test_mode_persistence(
     redis_conn: &SharedRedisConn,
     wf_redis: &Option<SharedRedis>,
     wq_redis: &Option<SharedRedis>,
-    actor_redis: &Option<SharedRedis>,
+    actor_redis: &Option<ActorRedis>,
     wf_jetstream: &Option<async_nats::jetstream::Context>,
     wq_jetstream: &Option<async_nats::jetstream::Context>,
     actor_jetstream: &Option<async_nats::jetstream::Context>,

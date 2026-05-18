@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let client = redis::Client::open(actor_redis_url)?;
         let conn = client.get_multiplexed_async_connection().await?;
         info!("[actor_redis] actor Redis connected");
-        Arc::new(Mutex::new(conn))
+        conn
     };
 
     let actor_nats = baal_runtime_actix::configs::connect_nats(actor_nats_url).await?;

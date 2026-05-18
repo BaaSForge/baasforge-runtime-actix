@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::database::DbPool;
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
+use crate::services::actor_engine::ActorRedis;
 use crate::models::actor_store::ActorPgPool;
 use crate::libs::unit_js::queue_worker_runner::{
     BatchConfig, QueueWorkerRunContext, QueueWorkerRunOutcome,
@@ -32,7 +33,7 @@ pub async fn run_work_consumer(
     consumer_name: &str,
     wf_redis: Option<SharedRedis>,
     wf_nats: Option<async_nats::Client>,
-    actor_redis: Option<SharedRedis>,
+    actor_redis: Option<ActorRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
@@ -135,7 +136,7 @@ async fn handle_work_message(
     wf_redis: Option<SharedRedis>,
     wf_nats: Option<async_nats::Client>,
     wf_js: Option<async_nats::jetstream::Context>,
-    actor_redis: Option<SharedRedis>,
+    actor_redis: Option<ActorRedis>,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,

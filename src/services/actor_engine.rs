@@ -1,11 +1,9 @@
 use async_nats::jetstream::{self, stream};
 use redis::AsyncCommands;
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
-pub type ActorRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
+pub type ActorRedis = redis::aio::MultiplexedConnection;
 
 pub const ACTOR_NATS_STREAM: &str = "ACTOR_MAIL";
 pub const ACTOR_NATS_STREAM_SUBJECTS: &[&str] = &["actor.*.*.*.*.msg"];
@@ -129,7 +127,7 @@ pub async fn load_hot_state(
 ) -> Option<(Value, i64)> {
     let state_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "state");
     let version_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "version");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let state_raw: Option<String> = conn.get(&state_key).await.unwrap_or(None);
     let version: Option<i64> = conn.get(&version_key).await.unwrap_or(None);
     if let (Some(s), Some(v)) = (state_raw, version) {
@@ -174,7 +172,7 @@ pub async fn refresh_actor_idle_deadline(
     max_idle_ms: u64,
 ) {
     let last_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "last_access");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let last_raw: Option<String> = conn.get(&last_key).await.unwrap_or(None);
     let Some(last_s) = last_raw else {
         return;
@@ -188,7 +186,7 @@ pub async fn refresh_actor_idle_deadline(
         .arg(ACTOR_IDLE_DUE_ZSET)
         .arg(deadline)
         .arg(&member)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
 }
@@ -201,11 +199,11 @@ pub async fn clear_actor_idle_deadline(
     actor_id: &str,
 ) {
     let member = idle_due_member(stage_runtime_id, project_id, unit_path, actor_id);
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let _: () = redis::cmd("ZREM")
         .arg(ACTOR_IDLE_DUE_ZSET)
         .arg(&member)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
 }
@@ -219,7 +217,7 @@ pub async fn bump_actor_last_access_if_present(
 ) -> bool {
     let state_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "state");
     let last_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "last_access");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let exists: bool = conn.exists(&state_key).await.unwrap_or(false);
     if !exists {
         return false;
@@ -228,7 +226,7 @@ pub async fn bump_actor_last_access_if_present(
     let _: () = redis::cmd("SET")
         .arg(&last_key)
         .arg(now)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
     true
@@ -248,7 +246,7 @@ pub async fn commit_state(
     let last_access_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "last_access");
     let state_json = serde_json::to_string(new_state).map_err(|e| e.to_string())?;
     let now_ms = chrono::Utc::now().timestamp_millis().to_string();
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let result: i64 = redis::Script::new(COMMIT_STATE_LUA)
         .key(&state_key)
         .key(&version_key)
@@ -256,7 +254,7 @@ pub async fn commit_state(
         .arg(&state_json)
         .arg(new_version)
         .arg(&now_ms)
-        .invoke_async(&mut *conn)
+        .invoke_async(&mut conn)
         .await
         .map_err(|e| format!("commit_state lua error: {e}"))?;
     Ok(result)
@@ -273,11 +271,11 @@ pub async fn evict_actor_hot_cache_keep_alarms(
         .iter()
         .map(|s| actor_key(project_id, stage_runtime_id, unit_path, actor_id, s))
         .collect();
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     for key in &keys {
         let _: () = redis::cmd("DEL")
             .arg(key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .unwrap_or(());
     }
@@ -295,17 +293,17 @@ pub async fn delete_actor_state(
         .map(|s| actor_key(project_id, stage_runtime_id, unit_path, actor_id, s))
         .collect();
     let alarms_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "alarms");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     for key in &keys {
         let _: () = redis::cmd("DEL")
             .arg(key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .unwrap_or(());
     }
     let _: () = redis::cmd("DEL")
         .arg(&alarms_key)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
 
@@ -314,7 +312,7 @@ pub async fn delete_actor_state(
         .arg(&alarm_global)
         .arg("-inf")
         .arg("+inf")
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or_default();
     let prefix_prod = format!("prod\t{project_id}\t{unit_path}\t{actor_id}\t");
@@ -329,7 +327,7 @@ pub async fn delete_actor_state(
             let _: () = redis::cmd("ZREM")
                 .arg(&alarm_global)
                 .arg(member)
-                .query_async(&mut *conn)
+                .query_async(&mut conn)
                 .await
                 .unwrap_or(());
         }
@@ -352,19 +350,19 @@ pub async fn set_alarm(
         Some(rid) => format!("stage\t{rid}\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
     };
     let score = fire_at_ms as f64;
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let _: () = redis::cmd("ZADD")
         .arg(&alarms_key)
         .arg(score)
         .arg(alarm_name)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
     let _: () = redis::cmd("ZADD")
         .arg(&global_key)
         .arg(score)
         .arg(&global_member)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
 }
@@ -383,20 +381,32 @@ pub async fn cancel_alarm(
         None => format!("prod\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
         Some(rid) => format!("stage\t{rid}\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
     };
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let _: () = redis::cmd("ZREM")
         .arg(&alarms_key)
         .arg(alarm_name)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
     let _: () = redis::cmd("ZREM")
         .arg(&global_key)
         .arg(&global_member)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
 }
+
+const POP_DUE_ALARMS_LUA: &str = r#"
+local key = KEYS[1]
+local score = ARGV[1]
+local members = redis.call('ZRANGEBYSCORE', key, '-inf', score)
+if #members > 0 then
+    for i = 1, #members do
+        redis.call('ZREM', key, members[i])
+    end
+end
+return members
+"#;
 
 pub async fn pop_due_alarms(
     redis: &ActorRedis,
@@ -404,63 +414,53 @@ pub async fn pop_due_alarms(
 ) -> Vec<(Option<Uuid>, String, String, String, String)> {
     let global_key = global_alarm_key();
     let score = now_ms as f64;
-    let mut conn = redis.lock().await;
-    let members: Vec<String> = redis::cmd("ZRANGEBYSCORE")
-        .arg(&global_key)
-        .arg("-inf")
-        .arg(score)
-        .query_async(&mut *conn)
-        .await
-        .unwrap_or_default();
-    let mut result = Vec::new();
-    for member in &members {
-        let parts_tab: Vec<&str> = member.split('\t').collect();
-        let parsed: Option<(Option<Uuid>, String, String, String, String)> = match parts_tab.as_slice()
-        {
-            [scope, project_id, unit_path, actor_id, alarm_name] if *scope == "prod" => Some((
-                None,
-                (*project_id).to_string(),
-                (*unit_path).to_string(),
-                (*actor_id).to_string(),
-                (*alarm_name).to_string(),
-            )),
-            [scope, rid, project_id, unit_path, actor_id, alarm_name] if *scope == "stage" => {
-                Uuid::parse_str(rid).ok().map(|r| {
-                    (
-                        Some(r),
-                        (*project_id).to_string(),
-                        (*unit_path).to_string(),
-                        (*actor_id).to_string(),
-                        (*alarm_name).to_string(),
-                    )
-                })
-            }
-            _ => {
-                let parts: Vec<&str> = member.splitn(4, '|').collect();
-                if parts.len() == 4 {
-                    Some((
-                        None,
-                        parts[0].to_string(),
-                        parts[1].to_string(),
-                        parts[2].to_string(),
-                        parts[3].to_string(),
-                    ))
-                } else {
-                    None
+    let members: Vec<String> = {
+        let mut conn = redis.clone();
+        redis::Script::new(POP_DUE_ALARMS_LUA)
+            .key(&global_key)
+            .arg(score)
+            .invoke_async(&mut conn)
+            .await
+            .unwrap_or_default()
+    };
+    members
+        .iter()
+        .filter_map(|member| {
+            let parts_tab: Vec<&str> = member.split('\t').collect();
+            match parts_tab.as_slice() {
+                [scope, project_id, unit_path, actor_id, alarm_name] if *scope == "prod" => Some((
+                    None,
+                    (*project_id).to_string(),
+                    (*unit_path).to_string(),
+                    (*actor_id).to_string(),
+                    (*alarm_name).to_string(),
+                )),
+                [scope, rid, project_id, unit_path, actor_id, alarm_name] if *scope == "stage" => {
+                    Uuid::parse_str(rid).ok().map(|r| {
+                        (
+                            Some(r),
+                            (*project_id).to_string(),
+                            (*unit_path).to_string(),
+                            (*actor_id).to_string(),
+                            (*alarm_name).to_string(),
+                        )
+                    })
+                }
+                _ => {
+                    let parts: Vec<&str> = member.splitn(4, '|').collect();
+                    (parts.len() == 4).then(|| {
+                        (
+                            None,
+                            parts[0].to_string(),
+                            parts[1].to_string(),
+                            parts[2].to_string(),
+                            parts[3].to_string(),
+                        )
+                    })
                 }
             }
-        };
-        if let Some(row) = parsed {
-            result.push(row);
-            let _: () = redis::cmd("ZREM")
-                .arg(&global_key)
-                .arg(member)
-                .query_async(&mut *conn)
-                .await
-                .unwrap_or(());
-        }
-    }
-    result
+        })
+        .collect()
 }
 
 pub async fn get_actor_state_and_version(

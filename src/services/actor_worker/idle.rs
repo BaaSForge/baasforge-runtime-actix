@@ -23,7 +23,7 @@ async fn sweep_once(comm: &Arc<SdkCommCtx>) {
     };
     let now = chrono::Utc::now().timestamp_millis() as f64;
     let members: Vec<String> = {
-        let mut c = redis.lock().await;
+        let mut c = redis.clone();
         redis::cmd("ZRANGEBYSCORE")
             .arg(ACTOR_IDLE_DUE_ZSET)
             .arg("-inf")
@@ -31,17 +31,17 @@ async fn sweep_once(comm: &Arc<SdkCommCtx>) {
             .arg("LIMIT")
             .arg(0)
             .arg(64)
-            .query_async(&mut *c)
+            .query_async(&mut c)
             .await
             .unwrap_or_default()
     };
     for m in members {
         let Some((pid, stage, up, aid)) = parse_idle_member(&m) else {
-            let mut c = redis.lock().await;
+            let mut c = redis.clone();
             let _: () = redis::cmd("ZREM")
                 .arg(ACTOR_IDLE_DUE_ZSET)
                 .arg(&m)
-                .query_async(&mut *c)
+                .query_async(&mut c)
                 .await
                 .unwrap_or(());
             continue;
