@@ -69,19 +69,29 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
                 Some(&extras),
             );
 
-            if let Err(e) = (async move { run_actor_with_lock(input, comm_for_alarm, None).await })
-                .with_context(consumer_cx)
-                .await
-            {
-                warn!(
-                    project_id = %project_id,
-                    unit_path = %unit_path,
-                    actor_id = %actor_id,
-                    alarm_name = %alarm_name,
-                    error = %e,
-                    "[alarm_sweeper] alarm run failed"
-                );
-            }
+            tokio::spawn(
+                async move {
+                    let result = run_actor_with_lock(input, comm_for_alarm, None).await;
+                    match result {
+                        Ok(_) => tracing::debug!(
+                            project_id = %project_id,
+                            unit_path = %unit_path,
+                            actor_id = %actor_id,
+                            alarm_name = %alarm_name,
+                            "[alarm_sweeper] alarm run ok"
+                        ),
+                        Err(e) => warn!(
+                            project_id = %project_id,
+                            unit_path = %unit_path,
+                            actor_id = %actor_id,
+                            alarm_name = %alarm_name,
+                            error = %e,
+                            "[alarm_sweeper] alarm run failed"
+                        ),
+                    }
+                }
+                .with_context(consumer_cx),
+            );
         }
     }
 }

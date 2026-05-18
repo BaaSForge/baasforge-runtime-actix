@@ -130,7 +130,7 @@ async fn run_actor_inner(
         None => return Err("actor unit has no compiled code".to_string()),
     };
 
-    let source = match crate::libs::unit_js::prepare_source_for_comm(&source, &comm).await {
+    let source = match crate::libs::unit_js::prepare_source_scoped(&source, &comm.pool, &comm.redis_conn, project_uuid, comm.stage_runtime_id).await {
         Ok(s) => s,
         Err(crate::libs::unit_js::PrepareError::WrongImport) => {
             return Err(crate::libs::unit_js::WRONG_IMPORT_MSG.to_string());
