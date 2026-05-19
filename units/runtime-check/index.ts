@@ -1912,7 +1912,12 @@ function checkCollections(): GroupedTests {
 
     runTest("Symbol.iterator protocol", () => {
       class Range {
-        constructor(private start: number, private end: number) {}
+        private start: number;
+        private end: number;
+        constructor(start: number, end: number) {
+          this.start = start;
+          this.end = end;
+        }
         [Symbol.iterator]() {
           let current = this.start;
           const end = this.end;
@@ -3507,7 +3512,14 @@ function checkAdvancedObjectReflectProxy(): GroupedTests {
     }),
 
     runTest("Reflect.construct", () => {
-      class Pair { constructor(public x: number, public y: number) {} }
+      class Pair {
+        x: number;
+        y: number;
+        constructor(x: number, y: number) {
+          this.x = x;
+          this.y = y;
+        }
+      }
       const p = Reflect.construct(Pair, [10, 20]) as Pair;
       assert(p.x === 10 && p.y === 20 && p instanceof Pair);
     }),
@@ -3539,7 +3551,12 @@ function checkAdvancedObjectReflectProxy(): GroupedTests {
     }),
 
     runTest("Proxy construct trap", () => {
-      class Original { constructor(public val: number) {} }
+      class Original {
+        val: number;
+        constructor(val: number) {
+          this.val = val;
+        }
+      }
       const Proxied = new Proxy(Original, {
         construct(target, args) {
           const instance = Reflect.construct(target, args) as Original;
@@ -3655,7 +3672,10 @@ function checkWellKnownSymbols(): GroupedTests {
   return group([
     runTest("Symbol.toPrimitive", () => {
       class Money {
-        constructor(private amount: number) {}
+        private amount: number;
+        constructor(amount: number) {
+          this.amount = amount;
+        }
         [Symbol.toPrimitive](hint: string) {
           if (hint === "number") return this.amount;
           if (hint === "string") return `$${this.amount}`;
@@ -3685,7 +3705,10 @@ function checkWellKnownSymbols(): GroupedTests {
 
     runTest("Symbol.iterator custom class", () => {
       class Countdown {
-        constructor(private n: number) {}
+        private n: number;
+        constructor(n: number) {
+          this.n = n;
+        }
         [Symbol.iterator]() {
           let current = this.n;
           return {
