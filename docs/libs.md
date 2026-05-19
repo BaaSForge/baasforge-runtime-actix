@@ -4,9 +4,17 @@ XXX email queue -> delegate to others for now, we can't beat them unless we have
 
 XXX image / video worker -> delegate, we only add some libs, nothing more
 
+https://chat.deepseek.com/share/snc3wigvkugu6idycm
+
 ---------
 
-req body parser?
+[X] formidable
+[X] qs
+[X] cookie
+[X] form-data
+[X] statuses
+
+---------
 
 logging
 
@@ -29,16 +37,6 @@ marked
 cheerio
 
 ms
-
-qs
-
-cookie
-
-form-data
-
-http-errors
-
-statuses
 
 escape-html
 

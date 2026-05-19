@@ -1,12 +1,13 @@
 {
   "name": "units-runtime-check",
+  "description": "The packages installed in the `package.json` here needs to be synced with `src/tsgo/package.json` on the backend project to make sure typescript is doing the same when LLM writes code and when the types are checked in tests here.",
   "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.0.0 <23.0.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "node scripts/build.mjs",
     "start": "node dist/server.js"
   },
   "devDependencies": {

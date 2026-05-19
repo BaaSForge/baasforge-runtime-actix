@@ -43,7 +43,7 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
   echo "==> Installing npm deps & building TypeScript…"
   cd "$SCRIPT_DIR"
   npm ci --silent 2>&1
-  npx tsc --noEmit false --outDir dist
+  npm run build
   echo "    dist/index.js ready"
 
   echo "==> Building main server binary (release)…"
