@@ -14,6 +14,7 @@ use std::sync::LazyLock;
 use uuid::Uuid;
 
 use super::common_imports::{PrepareError, UNNAMED_IMPORT_MSG, WRONG_IMPORT_MSG};
+use super::module_shims::{self as shims, SDK};
 use super::modules::sdk::get_comm_ctx;
 
 pub const ENTRY_MODULE: &str = "baal-unit-entry";
@@ -40,95 +41,6 @@ static UNNAMED_STAR_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
 static UNNAMED_BARE_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*import\s+from\s+['"]"#).expect("UNNAMED_BARE_IMPORT_RE")
 });
-
-const SDK_MODULE: &str = r#"
-export const sdk = globalThis.sdk;
-export function actor(config) {
-  return globalThis.actor(config);
-}
-export function workflow(config) {
-  return globalThis.workflow(config);
-}
-export function queueWorker(configOrHandler) {
-  return globalThis.queueWorker(configOrHandler);
-}
-"#;
-
-const NODE_BUFFER: &str = "export const Buffer = globalThis.Buffer;";
-
-const NODE_UTIL: &str = r#"
-export const TextEncoder = globalThis.TextEncoder;
-export const TextDecoder = globalThis.TextDecoder;
-"#;
-
-const NODE_URL: &str = r#"
-export const URL = globalThis.URL;
-export const URLSearchParams = globalThis.URLSearchParams;
-"#;
-
-const NODE_QUERYSTRING: &str = r#"
-function parseQuerystring(str, sep, eq) {
-  var out = Object.create(null);
-  if (!str) return out;
-  sep = sep || "&";
-  eq = eq || "=";
-  var parts = str.split(sep);
-  for (var p = 0; p < parts.length; p++) {
-    var part = parts[p];
-    if (!part) continue;
-    var i = part.indexOf(eq);
-    var key, val;
-    if (i < 0) {
-      key = decodeURIComponent(part.replace(/\+/g, " "));
-      val = "";
-    } else {
-      key = decodeURIComponent(part.slice(0, i).replace(/\+/g, " "));
-      val = decodeURIComponent(part.slice(i + eq.length).replace(/\+/g, " "));
-    }
-    if (key in out) {
-      if (Array.isArray(out[key])) {
-        out[key].push(val);
-      } else {
-        out[key] = [out[key], val];
-      }
-    } else {
-      out[key] = val;
-    }
-  }
-  return out;
-}
-export { parseQuerystring as parse };
-"#;
-
-const NODE_STREAM_CONSUMERS: &str = r#"
-export function text(req) {
-  return Promise.resolve(req.__bodyText !== undefined ? req.__bodyText : "");
-}
-"#;
-
-const NODE_TIMERS_PROMISES: &str = r#"
-export const setTimeout = globalThis.setTimeoutPromise;
-"#;
-
-const NODE_CRYPTO: &str = r#"
-const c = globalThis.crypto;
-export const randomUUID = c.randomUUID.bind(c);
-export const randomBytes = c.randomBytes.bind(c);
-export const randomInt = c.randomInt.bind(c);
-export const randomFillSync = c.randomFillSync.bind(c);
-export const createHash = c.createHash.bind(c);
-export const createHmac = c.createHmac.bind(c);
-export const getHashes = c.getHashes.bind(c);
-export const getCiphers = c.getCiphers.bind(c);
-export const pbkdf2Sync = c.pbkdf2Sync.bind(c);
-export const scryptSync = c.scryptSync.bind(c);
-export const timingSafeEqual = c.timingSafeEqual.bind(c);
-export const createCipheriv = c.createCipheriv.bind(c);
-export const createDecipheriv = c.createDecipheriv.bind(c);
-export const subtle = c.subtle;
-export const getRandomValues = c.getRandomValues.bind(c);
-export const webcrypto = c.webcrypto;
-"#;
 
 struct BaalModulesState {
     entry_source: String,
@@ -219,19 +131,6 @@ fn is_common_path(unit_path: &str) -> bool {
         .is_some_and(|p| p.unit_type == "common")
 }
 
-fn node_module_source(name: &str) -> Option<&'static str> {
-    match name {
-        "node:buffer" | "buffer" => Some(NODE_BUFFER),
-        "node:util" => Some(NODE_UTIL),
-        "node:url" => Some(NODE_URL),
-        "node:querystring" => Some(NODE_QUERYSTRING),
-        "node:stream/consumers" => Some(NODE_STREAM_CONSUMERS),
-        "node:timers/promises" => Some(NODE_TIMERS_PROMISES),
-        "node:crypto" | "crypto" => Some(NODE_CRYPTO),
-        _ => None,
-    }
-}
-
 /// Static import-policy checks that must run before module compilation.
 pub fn validate_import_policy(source: &str) -> std::result::Result<(), PrepareError> {
     if DEFAULT_UNITS_IMPORT_RE.is_match(source) {
@@ -288,9 +187,9 @@ impl Loader for BaalModules {
             return self.declare_module(ctx, name, &source);
         }
         if name == "@sdk" {
-            return self.declare_module(ctx, name, SDK_MODULE);
+            return self.declare_module(ctx, name, SDK);
         }
-        if let Some(src) = node_module_source(name) {
+        if let Some(src) = shims::node_module_source(name) {
             return self.declare_module(ctx, name, src);
         }
         if let Some(unit_path) = units_specifier(name) {

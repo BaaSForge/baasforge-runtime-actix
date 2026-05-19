@@ -8,7 +8,7 @@
 Every unit type (api, actor, queue_worker, workflow) runs user TypeScript/JavaScript inside a QuickJS runtime via `rquickjs`. Before `eval`, we inject:
 
 1. `scripts/runtime-shared.js` — shared globals (`sdk`, etc.).
-2. QuickJS ES module loader (`module_loader.rs`) — resolves `@units/*` common units, `@sdk`, and `node:*` on demand (nested imports recurse through the loader).
+2. QuickJS ES module loader (`module_loader.rs`) — resolves `@units/*` common units, `@sdk`, and `node:*` on demand (nested imports recurse through the loader). Shim sources live in [`scripts/modules/`](scripts/modules/).
 3. One per-unit-type script — `api-runtime.js` / `actor-runtime.js` / `queue-worker-runtime.js` / `workflow-runtime.js` — imports `baal-unit-entry` (user compiled code) and wires the result serialization.
 
 These scripts are **not** where business logic lives. They are the glue between user code and the Rust runtime.
@@ -65,7 +65,7 @@ Early versions shipped `__baal_actor_base_url`, `__baal_actor_project_id`, `__ba
 | Add a new `sdk.fooBar(...)` method | 1. Add `__baal_foo_bar` in [modules/sdk.rs](modules/sdk.rs). 2. Add a 5-line proxy in [scripts/runtime-shared.js](scripts/runtime-shared.js). 3. Update [units/shared/@sdk.d.ts](../../../units/shared/@sdk.d.ts). |
 | Change how actor calls work under the hood | Edit the host function in `modules/sdk.rs` and/or `services/actor_engine.rs`. Do **not** touch the JS proxy unless its signature changes. |
 | Give workflows a different behaviour for an existing `sdk.*` method | Override it inside [scripts/workflow-runtime.js](scripts/workflow-runtime.js) — still as a thin proxy (e.g. to `__baal_start_call`). |
-| Add a Node-like module polyfill (e.g. `node:crypto`) | Add a module under `modules/` and register it in `modules/mod.rs`. Keep JS wrappers in `scripts/` minimal. |
+| Add a Node-like module polyfill (e.g. `node:crypto`) | Bootstrap globals in `scripts/` + `modules/` (Rust). If user code imports it as ES module, add a thin shim in [`scripts/modules/`](scripts/modules/) and register it in [`module_shims.rs`](module_shims.rs). |
 
 ## Review checklist
 

@@ -5,6 +5,7 @@
 
 pub mod actor_runner;
 pub mod common_imports;
+mod module_shims;
 pub mod module_loader;
 pub mod modules;
 pub mod queue_worker_runner;
