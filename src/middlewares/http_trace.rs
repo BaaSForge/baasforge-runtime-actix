@@ -130,7 +130,7 @@ fn copy_headers_to_response_builder(src: &HeaderMap, dst: &mut HttpResponseBuild
         if HOP_HEADERS.iter().any(|h| name_s.eq_ignore_ascii_case(h)) {
             continue;
         }
-        dst.insert_header((name.clone(), value.clone()));
+        dst.append_header((name.clone(), value.clone()));
     }
 }
 
@@ -145,7 +145,7 @@ fn copy_headers_for_sized_body(src: &HeaderMap, dst: &mut HttpResponseBuilder) {
         {
             continue;
         }
-        dst.insert_header((name.clone(), value.clone()));
+        dst.append_header((name.clone(), value.clone()));
     }
 }
 
