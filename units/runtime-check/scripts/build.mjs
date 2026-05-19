@@ -51,7 +51,10 @@ function createRecordingCompilerHost(options) {
       return;
     }
     const normalized = ts.normalizePath(fileName);
-    if (normalized.includes("/node_modules/typescript/")) {
+    if (
+      normalized.includes("/node_modules/typescript/") ||
+      normalized.endsWith(".json")
+    ) {
       return;
     }
     usedNodeModulesFiles.add(normalized);
@@ -83,7 +86,7 @@ function writeTypeDepsReport(usedNodeModulesFiles, parsed) {
   const report = {
     generatedNotice: GENERATED_NOTICE,
     method:
-      "Recorded from the TypeScript compiler host while type-checking (readFile, getSourceFile) — only files the checker actually loaded. Excludes the typescript built-in lib. Packages in node_modules that are never imported (and not in tsconfig types) do not appear.",
+      "Recorded from the TypeScript compiler host while type-checking (readFile, getSourceFile) — only files the checker actually loaded. Excludes the typescript built-in lib and .json files (e.g. package.json). Packages in node_modules that are never imported (and not in tsconfig types) do not appear.",
     compilerOptionsLib: parsed.options.lib ?? [],
     fileCount: files.length,
     packages: Object.fromEntries(
