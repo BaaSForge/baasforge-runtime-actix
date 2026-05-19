@@ -2,6 +2,7 @@
   "extends": "../tsconfig.base.json",
   "include": [
     "../shared/@sdk.d.ts",
+    "formidable/ambient/**/*.d.ts",
     "**/*.ts"
   ]
 }

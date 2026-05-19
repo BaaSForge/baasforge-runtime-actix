@@ -24,8 +24,8 @@ PORT="${TEST_PORT:-3333}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-120}"
 
 TEST_PROJECT_ID="00000000-aaaa-bbbb-cccc-000000000010"
-TRIGGER_PATH="/api/v1/trigger/${TEST_PROJECT_ID}/test/runtime/check"
-BASE_URL="http://127.0.0.1:${PORT}${TRIGGER_PATH}"
+RUNTIME_CHECK_URL="http://127.0.0.1:${PORT}/api/v1/trigger/${TEST_PROJECT_ID}/test/runtime/check"
+FORMIDABLE_URL="http://127.0.0.1:${PORT}/api/v1/trigger/${TEST_PROJECT_ID}/test/runtime/formidable"
 
 SERVER_PID=""
 cleanup() {
@@ -44,13 +44,18 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
   cd "$SCRIPT_DIR"
   npm ci --silent 2>&1
   npm run build
-  echo "    dist/index.js ready"
+  SEED_DIR="$SCRIPT_DIR/dist/.api-seed"
+  rm -rf "$SEED_DIR"
+  mkdir -p "$SEED_DIR"
+  cp -R "$SCRIPT_DIR/dist/module-loader" "$SCRIPT_DIR/dist/formidable" "$SEED_DIR/"
+  echo "    dist/index.js ready (api seed: module-loader + formidable)"
 
   echo "==> Building main server binary (release)…"
   cd "$PROJECT_ROOT"
   cargo build --release 2>&1
 else
   echo "==> Skipping build (SKIP_BUILD=1)"
+  SEED_DIR="$SCRIPT_DIR/dist/.api-seed"
 fi
 
 # ------------------------------------------------------------------
@@ -60,8 +65,8 @@ echo "==> Starting server on port ${PORT} (TEST_MODE)…"
 TEST_MODE=1 \
 APP_ENV=production \
 PORT="$PORT" \
-TEST_UNIT_FILES="runtime-check=$SCRIPT_DIR/dist/index.js" \
-TEST_COMMON_DIR="$SCRIPT_DIR/dist/module-loader" \
+TEST_UNIT_FILES="runtime-check=$SCRIPT_DIR/dist/index.js,runtime-check-formidable=$SCRIPT_DIR/dist/formidable/index.js" \
+TEST_COMMON_DIR="${SEED_DIR:-$SCRIPT_DIR/dist/.api-seed}" \
   "$PROJECT_ROOT/target/release/baal-runtime-actix" &
 SERVER_PID=$!
 
@@ -80,22 +85,32 @@ fi
 echo "    server ready (pid $SERVER_PID)"
 
 echo ""
-echo "  TRIGGER URL: $BASE_URL"
+echo "  RUNTIME CHECK: $RUNTIME_CHECK_URL"
+echo "  FORMIDABLE:    $FORMIDABLE_URL"
 echo ""
 
 # ------------------------------------------------------------------
-# 3. Hit the trigger and write the response to file
+# 3. Hit triggers and write responses
 # ------------------------------------------------------------------
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
-echo "==> Running trigger (timeout ${HEALTH_CHECK_TIMEOUT}s)…"
-curl -s --max-time "$HEALTH_CHECK_TIMEOUT" "$BASE_URL" > "$OUTPUT_FILE"
-echo "==> Done. Output written to:"
+FORMIDABLE_OUTPUT="$SCRIPT_DIR/.output-formidable.log"
+
+echo "==> Running runtime-check (timeout ${HEALTH_CHECK_TIMEOUT}s)…"
+curl -s --max-time "$HEALTH_CHECK_TIMEOUT" "$RUNTIME_CHECK_URL" > "$OUTPUT_FILE"
 echo "    $OUTPUT_FILE"
+
+echo "==> Running formidable (timeout ${HEALTH_CHECK_TIMEOUT}s)…"
+curl -s --max-time "$HEALTH_CHECK_TIMEOUT" "$FORMIDABLE_URL" > "$FORMIDABLE_OUTPUT"
+echo "    $FORMIDABLE_OUTPUT"
 echo ""
 
 if command -v jq &>/dev/null; then
-  PASSED=$(jq -r '.summary.total_passed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  TOTAL=$(jq -r '.summary.total_tests'    "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  FAILED=$(jq -r '.summary.total_failed'  "$OUTPUT_FILE" 2>/dev/null || echo "?")
-  echo "==> ${PASSED}/${TOTAL} passed, ${FAILED} failed"
+  for label in "runtime-check:$OUTPUT_FILE" "formidable:$FORMIDABLE_OUTPUT"; do
+    name="${label%%:*}"
+    file="${label#*:}"
+    PASSED=$(jq -r '.summary.total_passed' "$file" 2>/dev/null || echo "?")
+    TOTAL=$(jq -r '.summary.total_tests'   "$file" 2>/dev/null || echo "?")
+    FAILED=$(jq -r '.summary.total_failed' "$file" 2>/dev/null || echo "?")
+    echo "==> ${name}: ${PASSED}/${TOTAL} passed, ${FAILED} failed"
+  done
 fi

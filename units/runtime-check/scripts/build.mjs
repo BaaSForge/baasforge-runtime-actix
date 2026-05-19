@@ -126,8 +126,18 @@ if (configDiagnostics.some((d) => d.category === ts.DiagnosticCategory.Error)) {
   process.exit(1);
 }
 
-const { host, usedNodeModulesFiles } = createRecordingCompilerHost(parsed.options);
-const program = ts.createProgram(parsed.fileNames, parsed.options, host);
+const compilerOptions = {
+  ...parsed.options,
+  noEmit: false,
+  outDir: join(projectDir, "dist"),
+  sourceMap: false,
+  declaration: false,
+  noUnusedLocals: false,
+  noUnusedParameters: false,
+};
+
+const { host, usedNodeModulesFiles } = createRecordingCompilerHost(compilerOptions);
+const program = ts.createProgram(parsed.fileNames, compilerOptions, host);
 
 const checkDiagnostics = ts.getPreEmitDiagnostics(program);
 const emitResult = program.emit();
@@ -147,3 +157,4 @@ if (
 }
 
 writeTypeDepsReport(usedNodeModulesFiles, parsed);
+console.log(`Emitted JS to ${relative(projectDir, compilerOptions.outDir)}/`);

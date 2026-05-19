@@ -9,13 +9,22 @@ use serde_json::json;
 use std::path::Path;
 
 const SKIP_API_DISCOVERY_PREFIXES: &[&str] = &[
-    "lib/",
     "companion-actors/",
     "companion-workflows/",
     "companion-queue-workers/",
 ];
 
+fn is_common_lib_path(rel_path: &str) -> bool {
+    rel_path.starts_with("lib/") || rel_path.contains("/lib/")
+}
+
 fn should_skip_api_discovery(rel_path: &str) -> bool {
+    if is_common_lib_path(rel_path) {
+        return true;
+    }
+    if rel_path.starts_with("formidable/") && !rel_path.starts_with("formidable/units/") {
+        return true;
+    }
     SKIP_API_DISCOVERY_PREFIXES
         .iter()
         .any(|p| rel_path.starts_with(p))
@@ -25,7 +34,10 @@ fn api_unit_seed_metadata(unit_name_slug: &str, rel_path: &str) -> Option<serde_
     if unit_name_slug == "index" {
         return Some(json!({ "method": "GET", "timeout_seconds": 120 }));
     }
-    if rel_path.starts_with("sdk-chain/") || rel_path.starts_with("cross-unit/") {
+    if rel_path.starts_with("sdk-chain/")
+        || rel_path.starts_with("cross-unit/")
+        || rel_path.starts_with("formidable/units/")
+    {
         return Some(json!({ "method": "POST" }));
     }
     Some(json!({ "method": "GET" }))
@@ -89,7 +101,7 @@ pub(super) fn collect() -> Vec<UnitSpec> {
 
     let mut out = Vec::new();
     for (rel_path, code) in files {
-        if rel_path.starts_with("lib/") {
+        if is_common_lib_path(&rel_path) {
             match spec_from_common_lib_path(&rel_path, code) {
                 Some(spec) => out.push(spec),
                 None => tracing::warn!(

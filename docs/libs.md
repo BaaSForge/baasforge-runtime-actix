@@ -60,7 +60,7 @@ oauth4webapi | arctic | openid-client?
 
 passport?
 
-@casl/ability | @casl/ability ????
+@casl/ability ????
 
 standardwebhooks
 

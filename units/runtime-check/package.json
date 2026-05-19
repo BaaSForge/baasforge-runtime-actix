@@ -13,5 +13,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@types/formidable": "^3.5.1",
+    "formidable": "^3.5.4"
   }
 }
