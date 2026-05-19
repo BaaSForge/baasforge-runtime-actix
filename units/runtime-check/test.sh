@@ -61,6 +61,7 @@ TEST_MODE=1 \
 APP_ENV=production \
 PORT="$PORT" \
 TEST_UNIT_FILES="runtime-check=$SCRIPT_DIR/dist/index.js" \
+TEST_COMMON_DIR="$SCRIPT_DIR/dist/module-loader" \
   "$PROJECT_ROOT/target/release/baal-runtime-actix" &
 SERVER_PID=$!
 

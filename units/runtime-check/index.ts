@@ -43,6 +43,8 @@ import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 // Test harness
 // ---------------------------------------------------------------------------
 
+const TEST_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
+
 interface TestResult {
   name: string;
   pass: boolean;
@@ -77,6 +79,96 @@ async function runTestAsync(name: string, fn: () => Promise<string | void>): Pro
 
 function group(tests: TestResult[]): GroupedTests {
   return { pass: tests.every((t) => t.pass), tests };
+}
+
+function moduleLoaderHarnessUrl(baseUrl: string, slug: string): string {
+  return `${baseUrl}/api/v1/trigger/${TEST_PROJECT_ID}/test/common/${slug}`;
+}
+
+async function fetchHarness(
+  url: string,
+): Promise<{ status: number; body: unknown }> {
+  const resp = await fetch(url);
+  const text = await resp.text();
+  try {
+    return { status: resp.status, body: JSON.parse(text) };
+  } catch {
+    return { status: resp.status, body: text };
+  }
+}
+
+function responseText(body: unknown): string {
+  return typeof body === "string" ? body : JSON.stringify(body);
+}
+
+function expectJsExecutionFailed(
+  resp: { status: number; body: unknown },
+  substr: string,
+): void {
+  const text = responseText(resp.body);
+  if (resp.status !== 400) {
+    throw new Error(`expected 400, got ${resp.status}: ${text}`);
+  }
+  if (!text.includes("javascript execution failed")) {
+    throw new Error(`expected javascript execution failed: ${text}`);
+  }
+  if (!text.includes(substr)) {
+    throw new Error(`expected "${substr}" in response: ${text}`);
+  }
+}
+
+function harnessJsonBody(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new Error(`expected JSON object, got ${responseText(body)}`);
+  }
+  return body as Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// Module loader: node:* only when imported (seeded harness units)
+// ---------------------------------------------------------------------------
+
+async function checkModuleLoaderDynamicImports(baseUrl: string): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
+
+  tests.push(
+    await runTestAsync("no-import: parse without node:querystring import fails", async () => {
+      const resp = await fetchHarness(moduleLoaderHarnessUrl(baseUrl, "no-import-uses-parse"));
+      expectJsExecutionFailed(resp, "parse");
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("import: disallowed node:fs rejected at load", async () => {
+      const resp = await fetchHarness(moduleLoaderHarnessUrl(baseUrl, "disallowed-node-fs-import"));
+      expectJsExecutionFailed(resp, "unknown or disallowed module");
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("import: node:buffer works when explicitly imported", async () => {
+      const resp = await fetchHarness(moduleLoaderHarnessUrl(baseUrl, "import-node-buffer-ok"));
+      if (resp.status !== 200) {
+        throw new Error(`expected 200, got ${resp.status}: ${responseText(resp.body)}`);
+      }
+      const b = harnessJsonBody(resp.body);
+      if (b["ok"] !== true) throw new Error(`ok: ${JSON.stringify(b)}`);
+      if (b["length"] !== 2) throw new Error(`length: ${JSON.stringify(b)}`);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("nested: api → common → node:querystring loads dynamically", async () => {
+      const resp = await fetchHarness(moduleLoaderHarnessUrl(baseUrl, "via-common-querystring"));
+      if (resp.status !== 200) {
+        throw new Error(`expected 200, got ${resp.status}: ${responseText(resp.body)}`);
+      }
+      const b = harnessJsonBody(resp.body);
+      if (b["a"] !== "1") throw new Error(`parsed: ${JSON.stringify(b)}`);
+    }),
+  );
+
+  return group(tests);
 }
 
 // ---------------------------------------------------------------------------
@@ -4072,7 +4164,7 @@ async function runHealthCheck(
   const host = req.headers.host ?? "localhost";
   const baseUrl = `http://${host}`;
 
-  const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep] = await Promise.all([
+  const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep, moduleLoader] = await Promise.all([
     checkTimers(),
     checkTimerSemantics(),
     checkAsyncPatterns(),
@@ -4082,6 +4174,7 @@ async function runHealthCheck(
     checkWebCryptoSubtle(),
     checkFetchHTTPMethods(baseUrl),
     checkReqResDeep(baseUrl),
+    checkModuleLoaderDynamicImports(baseUrl),
   ]);
 
   const sections: Record<string, GroupedTests> = {
@@ -4118,6 +4211,7 @@ async function runHealthCheck(
     data_manipulation: checkDataManipulation(),
     fetch_http_methods: fetchMethods,
     req_res_deep: reqResDeep,
+    module_loader_dynamic_imports: moduleLoader,
   };
 
   const tests = flattenLabeledTests(sections);
