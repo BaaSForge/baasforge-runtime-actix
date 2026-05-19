@@ -19,8 +19,6 @@ var TerminalError = (function () {
 
 globalThis.TerminalError = TerminalError;
 
-var __actorDef = null;
-
 function actor(config) {
   var def = {
     __actor_def: true,
@@ -30,70 +28,60 @@ function actor(config) {
     __on_dead_letter: config.onDeadLetter || null,
     __metadata: config.metadata || {},
   };
-  __actorDef = def;
   return def;
 }
 
 globalThis.actor = actor;
-globalThis.__baalModules = globalThis.__baalModules || {};
-globalThis.__baalModules['@sdk'] = Object.assign(globalThis.__baalModules['@sdk'] || {}, { actor: actor });
-
-var __actorCode = __stripImports(__userSource)
-  .replace(/^export\s+default\s+/m, "var __actorExport = ");
-
-(0, eval)(__actorCode);
-
-if (typeof __actorExport !== "undefined" && __actorExport && __actorExport.__actor_def) {
-  __actorDef = __actorExport;
-}
-
-if (!__actorDef) {
-  throw new Error("Actor unit must export a default actor() definition");
-}
-
-var __actorCtx = globalThis.__baal_actor_ctx;
-var __kind = globalThis.__baal_actor_kind || "handler";
-var __stateLimitBytes = globalThis.__baal_actor_state_limit_bytes || (1024 * 1024);
-
-var __loadedState = __actorCtx.state;
-if (__loadedState === null || __loadedState === undefined) {
-  var __defState = __actorDef.__initial_state;
-  __loadedState = typeof __defState === "object" && __defState !== null
-    ? JSON.parse(JSON.stringify(__defState))
-    : __defState;
-}
-
-var __isFirstActivation = __actorCtx.state === null || __actorCtx.state === undefined;
-var __stateBefore = JSON.stringify(__loadedState);
-var __currentState = JSON.parse(JSON.stringify(__loadedState !== undefined ? __loadedState : {}));
-
-var __pendingAlarms = [];
-var __cancelledAlarms = [];
-
-var ctx = {
-  id: __actorCtx.id,
-  attempt: __actorCtx.attempt,
-  get state() { return __currentState; },
-  set state(v) {
-    __currentState = v === null || v === undefined ? {} : v;
-  },
-  setAlarm: function (name, at) {
-    if (typeof at === "object" && at !== null && typeof at.fireAfterMs === "number") {
-      var ms = at.fireAfterMs;
-      if (!Number.isFinite(ms) || ms < 0) return;
-      __pendingAlarms.push({ name: String(name), fireAfterMs: Math.floor(ms) });
-      return;
-    }
-    var ts = typeof at === "number" ? at : Date.parse(at);
-    __pendingAlarms.push({ name: String(name), at: ts, relative: false });
-  },
-  cancelAlarm: function (name) {
-    __cancelledAlarms.push(String(name));
-  },
-  TerminalError: TerminalError,
-};
 
 globalThis.__baal_actor_result = (async function () {
+  var __entry = await import("baal-unit-entry");
+  var __actorDef = __entry.default;
+  if (!__actorDef || !__actorDef.__actor_def) {
+    throw new Error("Actor unit must export a default actor() definition");
+  }
+
+  var __actorCtx = globalThis.__baal_actor_ctx;
+  var __kind = globalThis.__baal_actor_kind || "handler";
+  var __stateLimitBytes = globalThis.__baal_actor_state_limit_bytes || (1024 * 1024);
+
+  var __loadedState = __actorCtx.state;
+  if (__loadedState === null || __loadedState === undefined) {
+    var __defState = __actorDef.__initial_state;
+    __loadedState = typeof __defState === "object" && __defState !== null
+      ? JSON.parse(JSON.stringify(__defState))
+      : __defState;
+  }
+
+  var __isFirstActivation = __actorCtx.state === null || __actorCtx.state === undefined;
+  var __stateBefore = JSON.stringify(__loadedState);
+  var __currentState = JSON.parse(JSON.stringify(__loadedState !== undefined ? __loadedState : {}));
+
+  var __pendingAlarms = [];
+  var __cancelledAlarms = [];
+
+  var ctx = {
+    id: __actorCtx.id,
+    attempt: __actorCtx.attempt,
+    get state() { return __currentState; },
+    set state(v) {
+      __currentState = v === null || v === undefined ? {} : v;
+    },
+    setAlarm: function (name, at) {
+      if (typeof at === "object" && at !== null && typeof at.fireAfterMs === "number") {
+        var ms = at.fireAfterMs;
+        if (!Number.isFinite(ms) || ms < 0) return;
+        __pendingAlarms.push({ name: String(name), fireAfterMs: Math.floor(ms) });
+        return;
+      }
+      var ts = typeof at === "number" ? at : Date.parse(at);
+      __pendingAlarms.push({ name: String(name), at: ts, relative: false });
+    },
+    cancelAlarm: function (name) {
+      __cancelledAlarms.push(String(name));
+    },
+    TerminalError: TerminalError,
+  };
+
   try {
     var handlerName = __actorCtx.handler;
     var payload = __actorCtx.payload;

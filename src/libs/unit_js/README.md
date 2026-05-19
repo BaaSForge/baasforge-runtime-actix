@@ -7,8 +7,9 @@
 
 Every unit type (api, actor, queue_worker, workflow) runs user TypeScript/JavaScript inside a QuickJS runtime via `rquickjs`. Before `eval`, we inject:
 
-1. `scripts/runtime-shared.js` — shared globals (`sdk`, `__stripImports`, module registry).
-2. One per-unit-type script — `api-runtime.js` / `actor-runtime.js` / `queue-worker-runtime.js` / `workflow-runtime.js` — wires up the unit's entry point and result serialization.
+1. `scripts/runtime-shared.js` — shared globals (`sdk`, etc.).
+2. QuickJS ES module loader (`module_loader.rs`) — resolves `@units/*` common units, `@sdk`, and `node:*` on demand (nested imports recurse through the loader).
+3. One per-unit-type script — `api-runtime.js` / `actor-runtime.js` / `queue-worker-runtime.js` / `workflow-runtime.js` — imports `baal-unit-entry` (user compiled code) and wires the result serialization.
 
 These scripts are **not** where business logic lives. They are the glue between user code and the Rust runtime.
 

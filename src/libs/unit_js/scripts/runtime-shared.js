@@ -3,72 +3,6 @@
 // No fetch() to internal trigger routes, no Redis/NATS logic, no duplication.
 // See src/libs/unit_js/README.md.
 
-// --- node:querystring ---
-
-function parseQuerystring(str, sep, eq) {
-  var out = Object.create(null);
-  if (!str) return out;
-  sep = sep || "&";
-  eq = eq || "=";
-  var parts = str.split(sep);
-  for (var p = 0; p < parts.length; p++) {
-    var part = parts[p];
-    if (!part) continue;
-    var i = part.indexOf(eq);
-    var key, val;
-    if (i < 0) {
-      key = decodeURIComponent(part.replace(/\+/g, " "));
-      val = "";
-    } else {
-      key = decodeURIComponent(part.slice(0, i).replace(/\+/g, " "));
-      val = decodeURIComponent(part.slice(i + eq.length).replace(/\+/g, " "));
-    }
-    if (key in out) {
-      if (Array.isArray(out[key])) {
-        out[key].push(val);
-      } else {
-        out[key] = [out[key], val];
-      }
-    } else {
-      out[key] = val;
-    }
-  }
-  return out;
-}
-
-// --- node:stream/consumers ---
-
-function __streamConsumersText(req) {
-  return Promise.resolve(req.__bodyText !== undefined ? req.__bodyText : "");
-}
-
-// --- Module registry ---
-
-globalThis.__baalModules = globalThis.__baalModules || {};
-globalThis.__baalModules['node:querystring'] = { parse: parseQuerystring };
-globalThis.__baalModules['node:stream/consumers'] = { text: __streamConsumersText };
-
-// --- Import rewriting ---
-
-function __stripImports(source) {
-  var modules = globalThis.__baalModules || {};
-  var s = source
-    .replace(
-      /^\s*import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"];?\s*$/gm,
-      function (_m, names, mod) {
-        if (modules[mod]) {
-          var escaped = mod.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-          return 'var {' + names.replace(/\bas\b/g, ':') + '} = globalThis.__baalModules["' + escaped + '"];';
-        }
-        return '';
-      }
-    )
-    .replace(/^\s*import\s+.*\s+from\s+['"][^'"]*['"];?\s*$/gm, '')
-    .replace(/^\s*import\s+['"][^'"]*['"];?\s*$/gm, '');
-  s = s.replace(/^\s*export\s+(?!default\b)/gm, '');
-  return s;
-}
-
 // --- sdk (inter-unit communication) ---
 // Thin proxies to Rust __baal_* host functions. No fetch(), no business logic.
 // All methods are synchronous and return plain values — never Promises.
@@ -138,7 +72,7 @@ var sdk = {
     var resultJson = __baal_call_workflow_handler_sync(unitPath, instanceId, handler, inputJson, timeoutMs);
     var parsed = JSON.parse(resultJson);
     if (!parsed.ok) throw new Error(parsed.error || 'sdk.callWorkflowHandlerAndWaitForResultSync failed');
-    return parsed.value;
+    return parsed.result;
   },
 
   getApiUnitTriggerUrl: function (args) {
@@ -160,5 +94,3 @@ var sdk = {
 };
 
 globalThis.sdk = sdk;
-globalThis.__baalModules = globalThis.__baalModules || {};
-globalThis.__baalModules['@sdk'] = { sdk: sdk };

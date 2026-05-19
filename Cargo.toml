@@ -118,13 +118,12 @@ chrono = { version = "0.4.43", features = ["serde"] }
 anyhow = "1.0.100"
 thiserror = "2.0.18"
 regex = { version = "1.12.2", features = ["unicode-perl", "perf"] }
-async-recursion = "1.1.1"
 
 base64 = "0.22.1"
 rustls = { version = "0.23.36", features = ["ring"] }
 tokio-stream = "0.1.18"
 async-nats = "0.46"
-rquickjs = { version = "0.11", features = ["classes", "macro"] }
+rquickjs = { version = "0.11", features = ["classes", "macro", "loader"] }
 rquickjs-serde = "0.5"
 rquickjs-extra-url = "0.2"
 rquickjs-extra-console = "0.2"

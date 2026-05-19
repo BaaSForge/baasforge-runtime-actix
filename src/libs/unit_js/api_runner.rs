@@ -2,6 +2,7 @@ use rquickjs::{Context, Ctx, Promise, Runtime, Value};
 use std::sync::Arc;
 
 use super::error::{format_js_error, log_js_failure};
+use super::module_loader::install_user_module_loader;
 use super::modules;
 use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx, get_project_id};
 use super::types::{JsResponseRaw, TriggerHttpResponse, TriggerHttpSnapshot};
@@ -25,6 +26,11 @@ pub fn run_unit_handler(
     let rt = Runtime::new().map_err(|e| {
         let msg = e.to_string();
         log_js_failure("runtime init", &msg);
+        msg
+    })?;
+    install_user_module_loader(&rt, source).map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("module loader init", &msg);
         msg
     })?;
     let ctx = Context::full(&rt).map_err(|e| {
@@ -83,10 +89,6 @@ fn run_in_ctx(
     ctx.globals()
         .set("__snap", snap_val)
         .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__userSource", source)
-        .map_err(|e| e.to_string())?;
-
     ctx.eval::<(), _>(API_RUNTIME_JS).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("eval_setup", &msg);

@@ -260,28 +260,22 @@ function workflow(configOrHandler) {
 }
 
 globalThis.workflow = workflow;
-globalThis.__baalModules = globalThis.__baalModules || {};
-globalThis.__baalModules['@sdk'] = Object.assign(globalThis.__baalModules['@sdk'] || {}, { workflow: workflow });
 
 // --- Execute workflow ---
 // __baal_workflow_ctx is injected by Rust before eval, containing:
 //   __instanceId, __steps, __sleeps, __promises, __dateNow, __stepIndex,
 //   __handlerName (null for run, string for shared handler), __handlerInput
 
-var __code = __stripImports(__userSource)
-  .replace(/^export\s+default\s+/m, "var __wfDef = ");
-
-(0, eval)(__code);
-
-if (typeof __wfDef === "undefined" || !__wfDef || !__wfDef.run) {
-  throw new Error(
-    "Workflow unit must export a default workflow() definition"
-  );
-}
-
 var __wfCtx = __baal_workflow_ctx;
 
-globalThis.__baal_wf_result = (function () {
+globalThis.__baal_wf_result = (async function () {
+  var __entry = await import("baal-unit-entry");
+  var __wfDef = __entry.default;
+  if (typeof __wfDef === "undefined" || !__wfDef || !__wfDef.run) {
+    throw new Error(
+      "Workflow unit must export a default workflow() definition"
+    );
+  }
   if (__wfCtx.__handlerName) {
     // Shared handler invocation
     var handlerFn = __wfDef.handlers[__wfCtx.__handlerName];

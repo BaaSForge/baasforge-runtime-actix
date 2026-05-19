@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use super::error::{format_js_error, log_js_failure};
+use super::module_loader::install_user_module_loader;
 use super::modules;
 use super::modules::sdk::{self, SdkCommCtx, WorkflowHostCtx};
 
@@ -74,6 +75,11 @@ fn run_workflow_in_quickjs(
         log_js_failure("workflow runtime init", &msg);
         msg
     })?;
+    install_user_module_loader(&rt, source).map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("workflow module loader init", &msg);
+        msg
+    })?;
     let ctx = Context::full(&rt).map_err(|e| {
         let msg = e.to_string();
         log_js_failure("workflow context init", &msg);
@@ -117,10 +123,6 @@ fn run_workflow_in_ctx(
     ctx.globals()
         .set("__baal_workflow_ctx", wf_ctx_val)
         .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__userSource", source)
-        .map_err(|e| e.to_string())?;
-
     ctx.eval::<(), _>(WORKFLOW_RUNTIME_JS).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("workflow eval_setup", &msg);

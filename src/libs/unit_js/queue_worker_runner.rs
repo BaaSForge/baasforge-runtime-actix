@@ -2,6 +2,7 @@ use rquickjs::{Context, Promise, Runtime};
 use std::sync::Arc;
 
 use super::error::{format_js_error, log_js_failure};
+use super::module_loader::install_user_module_loader;
 use super::modules;
 use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
 
@@ -42,11 +43,15 @@ pub fn extract_worker_metadata(source: &str) -> WorkerMetadata {
     let default = WorkerMetadata::default();
     let result_json: Option<String> = (|| {
         let rt = Runtime::new().ok()?;
+        install_user_module_loader(&rt, source).ok()?;
         let ctx = Context::full(&rt).ok()?;
         ctx.with(|ctx| -> Option<String> {
             modules::register_all(&ctx).ok()?;
-            ctx.globals().set("__userSource", source).ok()?;
-            ctx.eval::<String, _>(QUEUE_WORKER_METADATA_JS).ok()
+            ctx.eval::<(), _>(QUEUE_WORKER_METADATA_JS).ok()?;
+            let promise = ctx
+                .eval::<Promise, _>("globalThis.__baal_qw_metadata_p")
+                .ok()?;
+            promise.finish::<String>().ok()
         })
     })();
     let Some(json_str) = result_json else {
@@ -120,6 +125,11 @@ fn run_worker_handler_inner(
         log_js_failure("queue_worker runtime init", &msg);
         msg
     })?;
+    install_user_module_loader(&rt, source).map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("queue_worker module loader init", &msg);
+        msg
+    })?;
     let ctx = Context::full(&rt).map_err(|e| {
         let msg = e.to_string();
         log_js_failure("queue_worker context init", &msg);
@@ -157,10 +167,6 @@ fn run_queue_worker_in_ctx(
     ctx.globals()
         .set("__baal_qw_ctx", qw_ctx_val)
         .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__userSource", source)
-        .map_err(|e| e.to_string())?;
-
     ctx.eval::<(), _>(QUEUE_WORKER_RUNTIME_JS).map_err(|e| {
         let msg = format_js_error(ctx, e);
         log_js_failure("queue_worker eval_runtime", &msg);

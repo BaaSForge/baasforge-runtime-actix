@@ -73,19 +73,6 @@ function queueWorker(configOrHandler) {
 
 globalThis.queueWorker = queueWorker;
 globalThis.TerminalError = TerminalError;
-globalThis.__baalModules = globalThis.__baalModules || {};
-globalThis.__baalModules['@sdk'] = Object.assign(globalThis.__baalModules['@sdk'] || {}, { queueWorker: queueWorker });
-
-var __qwCode = __stripImports(__userSource)
-  .replace(/^export\s+default\s+/m, "var __qwDef = ");
-
-(0, eval)(__qwCode);
-
-if (typeof __qwDef === "undefined" || !__qwDef || !__qwDef.__qw_process) {
-  throw new Error("Queue worker unit must export a default queueWorker() definition with a process handler");
-}
-
-var __qwNormalizedMeta = __normalizeQueueWorkerMetadata(__qwDef.__qw_metadata);
 
 var __qwCtx = __baal_qw_ctx;
 
@@ -104,6 +91,13 @@ try {
 }
 
 globalThis.__baal_qw_result = (async function () {
+  var __entry = await import("baal-unit-entry");
+  var __qwDef = __entry.default;
+  if (typeof __qwDef === "undefined" || !__qwDef || !__qwDef.__qw_process) {
+    throw new Error("Queue worker unit must export a default queueWorker() definition with a process handler");
+  }
+  var __qwNormalizedMeta = __normalizeQueueWorkerMetadata(__qwDef.__qw_metadata);
+
   try {
     var result = await __qwDef.__qw_process(ctx, data);
     return JSON.stringify({

@@ -127,16 +127,13 @@ function __createRes() {
   };
 }
 
-var __code = __stripImports(__userSource)
-  .replace(/^export\s+/gm, '');
-
-(0, eval)(__code);
-
-if (typeof handleRequest !== 'function') {
-  throw new Error('Unit must export a handleRequest(req, res) function');
-}
-
-var __req = __buildReq(__snap);
-var __res = __createRes();
-globalThis.__baal_res = __res;
-globalThis.__baal_p = (async () => { await handleRequest(__req, __res); })();
+globalThis.__baal_p = (async function () {
+  var mod = await import("baal-unit-entry");
+  if (typeof mod.handleRequest !== "function") {
+    throw new Error("Unit must export a handleRequest(req, res) function");
+  }
+  var __req = __buildReq(__snap);
+  var __res = __createRes();
+  globalThis.__baal_res = __res;
+  await mod.handleRequest(__req, __res);
+})();

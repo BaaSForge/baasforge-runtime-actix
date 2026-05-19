@@ -294,7 +294,4 @@
   URL.prototype.toJSON = function () { return this.href; };
 
   globalThis.URL = URL;
-
-  globalThis.__baalModules = globalThis.__baalModules || {};
-  globalThis.__baalModules['node:url'] = { URL: URL, URLSearchParams: URLSearchParams };
 })();

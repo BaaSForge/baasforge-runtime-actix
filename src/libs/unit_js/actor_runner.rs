@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::error::{format_js_error, log_js_failure};
+use super::module_loader::install_user_module_loader;
 use super::modules;
 use super::modules::polyfills::EXECUTION_DEADLINE;
 use super::modules::sdk::{SdkCommCtx, clear_comm_ctx, set_comm_ctx};
@@ -96,6 +97,11 @@ fn run_actor_handler_inner(
         log_js_failure("actor runtime init", &msg);
         msg
     })?;
+    install_user_module_loader(&rt, source).map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("actor module loader init", &msg);
+        msg
+    })?;
     let ctx = Context::full(&rt).map_err(|e| {
         let msg = e.to_string();
         log_js_failure("actor context init", &msg);
@@ -143,7 +149,6 @@ fn run_actor_in_ctx(
         })?;
 
     ctx.globals().set("__baal_actor_ctx", ctx_val).map_err(|e| e.to_string())?;
-    ctx.globals().set("__userSource", source).map_err(|e| e.to_string())?;
     ctx.globals()
         .set("__baal_actor_kind", actor_ctx.kind.as_str())
         .map_err(|e| e.to_string())?;
@@ -320,6 +325,9 @@ pub fn extract_actor_metadata(source: &str) -> ActorMetadata {
         Ok(rt) => rt,
         Err(_) => return ActorMetadata::default(),
     };
+    if install_user_module_loader(&rt, source).is_err() {
+        return ActorMetadata::default();
+    }
     let ctx = match Context::full(&rt) {
         Ok(ctx) => ctx,
         Err(_) => return ActorMetadata::default(),
@@ -330,9 +338,8 @@ pub fn extract_actor_metadata(source: &str) -> ActorMetadata {
             include_str!("scripts/runtime-shared.js"),
             "\n",
             r#"
-var __actorDef = null;
 function actor(config) {
-  var def = {
+  return {
     __actor_def: true,
     __initial_state: config.state !== undefined ? config.state : {},
     __handlers: config.handlers || {},
@@ -340,17 +347,14 @@ function actor(config) {
     __on_dead_letter: config.onDeadLetter || null,
     __metadata: config.metadata || {},
   };
-  __actorDef = def;
-  return def;
 }
 globalThis.actor = actor;
-var __actorCode = __stripImports(__userSource)
-  .replace(/^export\s+default\s+/m, "var __actorExport = ");
-try { (0, eval)(__actorCode); } catch(_) {}
-if (typeof __actorExport !== "undefined" && __actorExport && __actorExport.__actor_def) {
-  __actorDef = __actorExport;
-}
-if (__actorDef) {
+globalThis.__baal_actor_metadata_p = (async function () {
+  var __entry = await import("baal-unit-entry");
+  var __actorDef = __entry.default;
+  if (!__actorDef || !__actorDef.__actor_def) {
+    return JSON.stringify({});
+  }
   var meta = __actorDef.__metadata || {};
   var handlers = Object.keys(__actorDef.__handlers || {});
   function __maxIdleToMs(v) {
@@ -367,20 +371,23 @@ if (__actorDef) {
     if (u === "h") return n * 60 * 60 * 1000;
     return null;
   }
-  JSON.stringify({
+  return JSON.stringify({
     handlers: (meta.handlers && Array.isArray(meta.handlers)) ? meta.handlers : handlers,
     retry: meta.retry || null,
     timeout: meta.timeout || null,
     maxIdleTimeMs: __maxIdleToMs(meta.maxIdleTime),
     stateLimitBytes: meta.stateLimitBytes || null,
   });
-} else {
-  JSON.stringify({});
-}
+})();
 "#
         );
-        let _ = ctx.globals().set("__userSource", source);
-        let result = ctx.eval::<String, _>(metadata_js).unwrap_or_default();
+        let _ = ctx.eval::<(), _>(metadata_js);
+        let promise = ctx
+            .eval::<Promise, _>("globalThis.__baal_actor_metadata_p")
+            .ok();
+        let result = promise
+            .and_then(|p| p.finish::<String>().ok())
+            .unwrap_or_default();
         serde_json::from_str(&result).unwrap_or_default()
     })
 }

@@ -271,8 +271,4 @@
   }
 
   globalThis.Buffer = Buffer;
-
-  globalThis.__baalModules = globalThis.__baalModules || {};
-  globalThis.__baalModules['node:buffer'] = { Buffer: Buffer };
-  globalThis.__baalModules['buffer'] = { Buffer: Buffer };
 })();
