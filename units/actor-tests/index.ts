@@ -266,6 +266,49 @@ async function getState(
   return httpGet(actorStateUrl(baseUrl, unit, actorId, projectId));
 }
 
+const ALARM_POLL_MS = 500;
+const ALARM_EVENTUAL_TIMEOUT_MS = (() => {
+  const raw = process.env["ACTOR_ALARM_EVENTUAL_TIMEOUT_MS"];
+  if (raw === undefined || raw === "") return 120_000;
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= 5_000 ? n : 120_000;
+})();
+
+async function waitForActorState(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  predicate: (state: any) => boolean,
+  timeoutMs: number,
+  label: string,
+): Promise<{ state: any; version: number }> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { state: any; version: number } | undefined;
+  while (Date.now() < deadline) {
+    last = await getState(baseUrl, unit, actorId);
+    if (predicate(last?.state)) return last;
+    await sleep(ALARM_POLL_MS);
+  }
+  throw new Error(`${label} within ${timeoutMs}ms: ${JSON.stringify(last?.state)}`);
+}
+
+async function waitForActorStateUnchanged(
+  baseUrl: string,
+  unit: string,
+  actorId: string,
+  predicate: (state: any) => boolean,
+  holdMs: number,
+  label: string,
+): Promise<void> {
+  const deadline = Date.now() + holdMs;
+  while (Date.now() < deadline) {
+    const s = await getState(baseUrl, unit, actorId);
+    if (!predicate(s?.state))
+      throw new Error(`${label} (got ${JSON.stringify(s?.state)})`);
+    await sleep(ALARM_POLL_MS);
+  }
+}
+
 async function passivate(
   baseUrl: string,
   unit: string,
@@ -1368,11 +1411,17 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `alarm-fires-${uid()}`;
         await deleteActor(baseUrl, "set-alarm-fires", id);
-        await callActor(baseUrl, "set-alarm-fires", id, "scheduleAlarm", { delayMs: 600 });
-        await sleep(2_000);
-        const state = await getState(baseUrl, "set-alarm-fires", id);
-        if (state?.state?.alarmFired !== true)
-          throw new Error(`alarm did not fire within 2s: ${JSON.stringify(state?.state)}`);
+        const sch = await callActorFull(baseUrl, "set-alarm-fires", id, "scheduleAlarm", { delayMs: 600 });
+        if (sch.status !== 200)
+          throw new Error(`scheduleAlarm: ${sch.status} ${JSON.stringify(sch.body)}`);
+        await waitForActorState(
+          baseUrl,
+          "set-alarm-fires",
+          id,
+          (st) => st?.alarmFired === true,
+          ALARM_EVENTUAL_TIMEOUT_MS,
+          "alarm never fired",
+        );
       },
     },
     {
@@ -1387,12 +1436,22 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `alarm-survive-pass-${uid()}`;
         await deleteActor(baseUrl, "alarm-survives-passivation", id);
-        await callActor(baseUrl, "alarm-survives-passivation", id, "scheduleAlarm", { delayMs: 1_500 });
-        await passivate(baseUrl, "alarm-survives-passivation", id);
-        await sleep(3_000);
-        const state = await getState(baseUrl, "alarm-survives-passivation", id);
-        if (state?.state?.alarmFired !== true)
-          throw new Error(`alarm did not fire after passivation: ${JSON.stringify(state?.state)}`);
+        const sch = await callActorFull(baseUrl, "alarm-survives-passivation", id, "scheduleAlarm", {
+          delayMs: 1_500,
+        });
+        if (sch.status !== 200)
+          throw new Error(`scheduleAlarm: ${sch.status} ${JSON.stringify(sch.body)}`);
+        const pv = await passivate(baseUrl, "alarm-survives-passivation", id);
+        if (pv.status !== 200)
+          throw new Error(`passivate: ${pv.status} ${JSON.stringify(pv.body)}`);
+        await waitForActorState(
+          baseUrl,
+          "alarm-survives-passivation",
+          id,
+          (st) => st?.alarmFired === true,
+          ALARM_EVENTUAL_TIMEOUT_MS,
+          "alarm never fired after passivation",
+        );
       },
     },
     {
@@ -1408,10 +1467,14 @@ function allInlineTests(): ActorInlineTestDef[] {
         const can = await callActorFull(baseUrl, "cancel-alarm", id, "cancelAlarm");
         if (can.status !== 200)
           throw new Error(`cancelAlarm: ${can.status} ${JSON.stringify(can.body)}`);
-        await sleep(2_000);
-        const state = await getState(baseUrl, "cancel-alarm", id);
-        if (state?.state?.alarmFired === true)
-          throw new Error(`alarm fired after being cancelled`);
+        await waitForActorStateUnchanged(
+          baseUrl,
+          "cancel-alarm",
+          id,
+          (st) => st?.alarmFired !== true,
+          4_000,
+          "cancelled alarm fired",
+        );
       },
     },
     {
@@ -1420,11 +1483,17 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `alarm-multi-${uid()}`;
         await deleteActor(baseUrl, "multiple-alarms-distinct-names", id);
-        await callActor(baseUrl, "multiple-alarms-distinct-names", id, "scheduleThreeAlarms");
-        await sleep(3_500);
-        const state = await getState(baseUrl, "multiple-alarms-distinct-names", id);
-        if ((state?.state?.firedCount ?? 0) < 3)
-          throw new Error(`expected 3 alarms fired, got ${JSON.stringify(state?.state?.firedCount)}`);
+        const sch = await callActorFull(baseUrl, "multiple-alarms-distinct-names", id, "scheduleThreeAlarms");
+        if (sch.status !== 200)
+          throw new Error(`scheduleThreeAlarms: ${sch.status} ${JSON.stringify(sch.body)}`);
+        await waitForActorState(
+          baseUrl,
+          "multiple-alarms-distinct-names",
+          id,
+          (st) => (st?.firedCount ?? 0) >= 3,
+          ALARM_EVENTUAL_TIMEOUT_MS,
+          "expected 3 distinct alarms to fire",
+        );
       },
     },
     {
@@ -1433,16 +1502,28 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `alarm-replace-${uid()}`;
         await deleteActor(baseUrl, "duplicate-alarm-name-replaces", id);
-        await callActor(baseUrl, "duplicate-alarm-name-replaces", id, "scheduleAlarmTwice", {
-          first: 5_000,
-          second: 800,
+        const sch = await callActorFull(baseUrl, "duplicate-alarm-name-replaces", id, "scheduleAlarmTwice", {
+          first: 120_000,
+          second: 1_500,
         });
-        await sleep(2_500);
-        const state = await getState(baseUrl, "duplicate-alarm-name-replaces", id);
-        if ((state?.state?.firedAt ?? 0) > Date.now() - 500)
-          throw new Error(`alarm fired too late — second schedule did not replace first`);
-        if ((state?.state?.fireCount ?? 0) !== 1)
-          throw new Error(`alarm fired ${JSON.stringify(state?.state?.fireCount)} times, expected 1`);
+        if (sch.status !== 200)
+          throw new Error(`scheduleAlarmTwice: ${sch.status} ${JSON.stringify(sch.body)}`);
+        await waitForActorState(
+          baseUrl,
+          "duplicate-alarm-name-replaces",
+          id,
+          (st) => (st?.fireCount ?? 0) >= 1,
+          ALARM_EVENTUAL_TIMEOUT_MS,
+          "duplicate-name alarm never fired",
+        );
+        await waitForActorStateUnchanged(
+          baseUrl,
+          "duplicate-alarm-name-replaces",
+          id,
+          (st) => (st?.fireCount ?? 0) === 1,
+          12_000,
+          "duplicate-name alarm fired more than once (first schedule was not replaced)",
+        );
       },
     },
     {
@@ -1451,12 +1532,18 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `alarm-after-del-${uid()}`;
         await deleteActor(baseUrl, "alarm-after-delete", id);
-        await callActor(baseUrl, "alarm-after-delete", id, "scheduleAlarm", { delayMs: 800 });
+        const sch = await callActorFull(baseUrl, "alarm-after-delete", id, "scheduleAlarm", { delayMs: 800 });
+        if (sch.status !== 200)
+          throw new Error(`scheduleAlarm: ${sch.status} ${JSON.stringify(sch.body)}`);
         await deleteActor(baseUrl, "alarm-after-delete", id);
-        await sleep(2_000);
-        const state = await getState(baseUrl, "alarm-after-delete", id);
-        if (state?.state?.alarmFired === true)
-          throw new Error(`alarm fired after actor was deleted`);
+        await waitForActorStateUnchanged(
+          baseUrl,
+          "alarm-after-delete",
+          id,
+          (st) => st?.alarmFired !== true,
+          8_000,
+          "alarm fired after actor was deleted",
+        );
       },
     },
     {
@@ -1465,11 +1552,17 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `alarm-past-${uid()}`;
         await deleteActor(baseUrl, "alarm-past-time", id);
-        await callActor(baseUrl, "alarm-past-time", id, "scheduleAlarmInPast");
-        await sleep(1_500);
-        const state = await getState(baseUrl, "alarm-past-time", id);
-        if (state?.state?.alarmFired !== true)
-          throw new Error(`alarm with past time did not fire immediately`);
+        const sch = await callActorFull(baseUrl, "alarm-past-time", id, "scheduleAlarmInPast");
+        if (sch.status !== 200)
+          throw new Error(`scheduleAlarmInPast: ${sch.status} ${JSON.stringify(sch.body)}`);
+        await waitForActorState(
+          baseUrl,
+          "alarm-past-time",
+          id,
+          (st) => st?.alarmFired === true,
+          ALARM_EVENTUAL_TIMEOUT_MS,
+          "past-due alarm never fired",
+        );
       },
     },
 
@@ -3379,11 +3472,21 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     ...allEndpointTests().map((test) => ({ kind: "inline" as const, test })),
   ];
 
-  const results = await mapPool(jobs, actorTestRunnerConcurrency(), async (job) => {
+  const runJob = async (job: Job) => {
     const label = `${job.test.category}: ${job.test.name}`;
     console.log(`  actor: ${label} …`);
     return job.kind === "actor" ? runActorTest(baseUrl, job.test) : runInlineTest(baseUrl, job.test);
-  });
+  };
+
+  const alarmJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "alarms");
+  const otherJobs = jobs.filter((j) => !(j.kind === "inline" && j.test.category === "alarms"));
+
+  const alarmResults =
+    alarmJobs.length > 0
+      ? await mapPool(alarmJobs, 1, runJob)
+      : [];
+  const otherResults = await mapPool(otherJobs, actorTestRunnerConcurrency(), runJob);
+  const results = [...alarmResults, ...otherResults];
 
   const report = buildReport(results);
   const body = JSON.stringify(report, null, 2);

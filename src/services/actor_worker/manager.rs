@@ -15,7 +15,7 @@ use crate::services::project_release::{
 };
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{error, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -392,7 +392,12 @@ async fn run_actor_inner(
                     )
                     .await;
                 }
+                let mut pending_by_name: HashMap<&str, &crate::libs::unit_js::actor_runner::PendingAlarm> =
+                    HashMap::new();
                 for alarm in &pending_alarms {
+                    pending_by_name.insert(alarm.name.as_str(), alarm);
+                }
+                for alarm in pending_by_name.into_values() {
                     if cancelled_names.contains(alarm.name.as_str()) {
                         continue;
                     }

@@ -7,7 +7,7 @@ export default actor<State>({
   state: { alarmFired: false },
   handlers: {
     scheduleAlarm(ctx, { delayMs }: ScheduleAlarmInput) {
-      ctx.setAlarm("post-delete", Date.now() + delayMs);
+      ctx.setAlarm("post-delete", { fireAfterMs: delayMs });
     },
   },
   onAlarm(ctx, name) {

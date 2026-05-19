@@ -6,7 +6,7 @@ export default actor<State>({
   state: { alarmFired: false },
   handlers: {
     scheduleAlarmInPast(ctx) {
-      ctx.setAlarm("past", Date.now() - 10000);
+      ctx.setAlarm("past", { fireAfterMs: 0 });
     },
   },
   onAlarm(ctx, name) {

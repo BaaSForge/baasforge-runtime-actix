@@ -16,7 +16,7 @@ export default actor<State>({
   handlers: {
     scheduleAlarm(ctx, { delayMs }: ScheduleAlarmInput) {
       ctx.state.scheduledAt = Date.now();
-      ctx.setAlarm("test", Date.now() + delayMs);
+      ctx.setAlarm("test", { fireAfterMs: delayMs });
     },
   },
   onAlarm(ctx, name) {

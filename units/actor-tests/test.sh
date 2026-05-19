@@ -86,6 +86,7 @@ echo "==> Starting server on port ${PORT} (TEST_MODE)…"
 TEST_MODE=1 \
 APP_ENV=production \
 PORT="$PORT" \
+ACTOR_TEST_RUNNER_CONCURRENCY=8 \
 ACTOR_IDLE_SWEEP_SECS=1 \
 TEST_UNIT_FILES="actor-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_ACTOR_DIR="$SCRIPT_DIR/dist" \
@@ -113,20 +114,19 @@ echo "  TEST RUNNER URL: $TEST_RUNNER_URL"
 echo ""
 
 # ------------------------------------------------------------------
-# 3–4. QuickJS actor suite + WebSocket tests (parallel jobs)
+# 3–4. QuickJS actor suite, then WebSocket tests (sequential — WS load
+#     starves the alarm sweeper and causes false alarm-loss failures)
 # ------------------------------------------------------------------
-echo "==> Running actor trigger + WebSocket tests in parallel (timeout ${TEST_TIMEOUT}s for curl)…"
+echo "==> Running actor trigger (timeout ${TEST_TIMEOUT}s)…"
 ACTOR_OUTPUT="$SCRIPT_DIR/.actor-output.tmp.json"
 WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
-curl -s --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" >"$ACTOR_OUTPUT" &
-curl_pid=$!
-node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" >"$WS_OUTPUT" &
-ws_pid=$!
-fail=0
-wait $curl_pid || fail=1
-wait $ws_pid || fail=1
-if (( fail != 0 )); then
-  echo "ERROR: actor curl and/or WebSocket job failed" >&2
+if ! curl -s --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" >"$ACTOR_OUTPUT"; then
+  echo "ERROR: actor trigger failed" >&2
+  exit 1
+fi
+echo "==> Running WebSocket tests…"
+if ! node "$SCRIPT_DIR/ws-tests.mjs" "http://127.0.0.1:${PORT}" >"$WS_OUTPUT"; then
+  echo "ERROR: WebSocket tests failed" >&2
   exit 1
 fi
 

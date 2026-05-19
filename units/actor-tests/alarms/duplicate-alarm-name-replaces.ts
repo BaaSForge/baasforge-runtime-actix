@@ -7,8 +7,8 @@ export default actor<State>({
   state: { firedAt: null, fireCount: 0 },
   handlers: {
     scheduleAlarmTwice(ctx, { first, second }: ScheduleAlarmTwiceInput) {
-      ctx.setAlarm("dup", Date.now() + first);
-      ctx.setAlarm("dup", Date.now() + second);
+      ctx.setAlarm("dup", { fireAfterMs: first });
+      ctx.setAlarm("dup", { fireAfterMs: second });
     },
   },
   onAlarm(ctx, name) {

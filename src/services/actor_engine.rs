@@ -28,6 +28,57 @@ fn global_alarm_key() -> String {
     "actor:alarms:global".to_string()
 }
 
+fn alarm_global_member(
+    project_id: &str,
+    stage_runtime_id: Option<Uuid>,
+    unit_path: &str,
+    actor_id: &str,
+    alarm_name: &str,
+) -> String {
+    match stage_runtime_id {
+        None => format!("prod\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
+        Some(rid) => format!("stage\t{rid}\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
+    }
+}
+
+fn parse_alarm_global_member(
+    member: &str,
+) -> Option<(Option<Uuid>, String, String, String, String)> {
+    let parts_tab: Vec<&str> = member.split('\t').collect();
+    match parts_tab.as_slice() {
+        [scope, project_id, unit_path, actor_id, alarm_name] if *scope == "prod" => Some((
+            None,
+            (*project_id).to_string(),
+            (*unit_path).to_string(),
+            (*actor_id).to_string(),
+            (*alarm_name).to_string(),
+        )),
+        [scope, rid, project_id, unit_path, actor_id, alarm_name] if *scope == "stage" => {
+            Uuid::parse_str(rid).ok().map(|r| {
+                (
+                    Some(r),
+                    (*project_id).to_string(),
+                    (*unit_path).to_string(),
+                    (*actor_id).to_string(),
+                    (*alarm_name).to_string(),
+                )
+            })
+        }
+        _ => {
+            let parts: Vec<&str> = member.splitn(4, '|').collect();
+            (parts.len() == 4).then(|| {
+                (
+                    None,
+                    parts[0].to_string(),
+                    parts[1].to_string(),
+                    parts[2].to_string(),
+                    parts[3].to_string(),
+                )
+            })
+        }
+    }
+}
+
 fn encode_nats_component(s: &str) -> String {
     s.replace('.', "~")
 }
@@ -343,28 +394,39 @@ pub async fn set_alarm(
     alarm_name: &str,
     fire_at_ms: i64,
 ) {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let fire_at_ms = fire_at_ms.max(now_ms);
     let alarms_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "alarms");
     let global_key = global_alarm_key();
-    let global_member = match stage_runtime_id {
-        None => format!("prod\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
-        Some(rid) => format!("stage\t{rid}\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
-    };
+    let global_member = alarm_global_member(project_id, stage_runtime_id, unit_path, actor_id, alarm_name);
     let score = fire_at_ms as f64;
     let mut conn = redis.clone();
-    let _: () = redis::cmd("ZADD")
+    let r1: redis::RedisResult<()> = redis::cmd("ZADD")
         .arg(&alarms_key)
         .arg(score)
         .arg(alarm_name)
         .query_async(&mut conn)
-        .await
-        .unwrap_or(());
-    let _: () = redis::cmd("ZADD")
+        .await;
+    if let Err(ref e) = r1 {
+        tracing::warn!(error = %e, "[set_alarm] ZADD actor alarms_key failed");
+    }
+    let r2: redis::RedisResult<()> = redis::cmd("ZADD")
         .arg(&global_key)
         .arg(score)
         .arg(&global_member)
         .query_async(&mut conn)
-        .await
-        .unwrap_or(());
+        .await;
+    if let Err(ref e) = r2 {
+        tracing::warn!(error = %e, "[set_alarm] ZADD global_key failed");
+    }
+    tracing::info!(
+        unit_path = %unit_path,
+        actor_id = %actor_id,
+        alarm_name = %alarm_name,
+        fire_at_ms = fire_at_ms,
+        global_member = %global_member,
+        "[set_alarm] alarm registered"
+    );
 }
 
 pub async fn cancel_alarm(
@@ -377,10 +439,7 @@ pub async fn cancel_alarm(
 ) {
     let alarms_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "alarms");
     let global_key = global_alarm_key();
-    let global_member = match stage_runtime_id {
-        None => format!("prod\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
-        Some(rid) => format!("stage\t{rid}\t{project_id}\t{unit_path}\t{actor_id}\t{alarm_name}"),
-    };
+    let global_member = alarm_global_member(project_id, stage_runtime_id, unit_path, actor_id, alarm_name);
     let mut conn = redis.clone();
     let _: () = redis::cmd("ZREM")
         .arg(&alarms_key)
@@ -399,7 +458,8 @@ pub async fn cancel_alarm(
 const POP_DUE_ALARMS_LUA: &str = r#"
 local key = KEYS[1]
 local score = ARGV[1]
-local members = redis.call('ZRANGEBYSCORE', key, '-inf', score)
+local limit = tonumber(ARGV[2])
+local members = redis.call('ZRANGEBYSCORE', key, '-inf', score, 'LIMIT', 0, limit)
 if #members > 0 then
     for i = 1, #members do
         redis.call('ZREM', key, members[i])
@@ -407,6 +467,8 @@ if #members > 0 then
 end
 return members
 "#;
+
+const MAX_ALARMS_POPPED_PER_SWEEP: isize = 32;
 
 pub async fn pop_due_alarms(
     redis: &ActorRedis,
@@ -416,51 +478,54 @@ pub async fn pop_due_alarms(
     let score = now_ms as f64;
     let members: Vec<String> = {
         let mut conn = redis.clone();
-        redis::Script::new(POP_DUE_ALARMS_LUA)
+        let result: redis::RedisResult<Vec<String>> = redis::Script::new(POP_DUE_ALARMS_LUA)
             .key(&global_key)
             .arg(score)
+            .arg(MAX_ALARMS_POPPED_PER_SWEEP)
             .invoke_async(&mut conn)
-            .await
-            .unwrap_or_default()
+            .await;
+        match result {
+            Err(ref e) => {
+                tracing::warn!(error = %e, "[pop_due_alarms] Lua script failed");
+                vec![]
+            }
+            Ok(v) => v,
+        }
     };
     members
         .iter()
-        .filter_map(|member| {
-            let parts_tab: Vec<&str> = member.split('\t').collect();
-            match parts_tab.as_slice() {
-                [scope, project_id, unit_path, actor_id, alarm_name] if *scope == "prod" => Some((
-                    None,
-                    (*project_id).to_string(),
-                    (*unit_path).to_string(),
-                    (*actor_id).to_string(),
-                    (*alarm_name).to_string(),
-                )),
-                [scope, rid, project_id, unit_path, actor_id, alarm_name] if *scope == "stage" => {
-                    Uuid::parse_str(rid).ok().map(|r| {
-                        (
-                            Some(r),
-                            (*project_id).to_string(),
-                            (*unit_path).to_string(),
-                            (*actor_id).to_string(),
-                            (*alarm_name).to_string(),
-                        )
-                    })
-                }
-                _ => {
-                    let parts: Vec<&str> = member.splitn(4, '|').collect();
-                    (parts.len() == 4).then(|| {
-                        (
-                            None,
-                            parts[0].to_string(),
-                            parts[1].to_string(),
-                            parts[2].to_string(),
-                            parts[3].to_string(),
-                        )
-                    })
-                }
-            }
-        })
+        .filter_map(|member| parse_alarm_global_member(member))
         .collect()
+}
+
+pub async fn restore_alarm_to_global(
+    redis: &ActorRedis,
+    project_id: &str,
+    stage_runtime_id: Option<Uuid>,
+    unit_path: &str,
+    actor_id: &str,
+    alarm_name: &str,
+) {
+    let alarms_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "alarms");
+    let global_key = global_alarm_key();
+    let global_member = alarm_global_member(project_id, stage_runtime_id, unit_path, actor_id, alarm_name);
+    let mut conn = redis.clone();
+    let score: Option<f64> = redis::cmd("ZSCORE")
+        .arg(&alarms_key)
+        .arg(alarm_name)
+        .query_async(&mut conn)
+        .await
+        .ok()
+        .flatten();
+    let Some(score) = score else {
+        return;
+    };
+    let _: redis::RedisResult<()> = redis::cmd("ZADD")
+        .arg(&global_key)
+        .arg(score)
+        .arg(&global_member)
+        .query_async(&mut conn)
+        .await;
 }
 
 pub async fn get_actor_state_and_version(
