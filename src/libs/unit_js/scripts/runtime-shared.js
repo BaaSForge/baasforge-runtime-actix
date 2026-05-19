@@ -72,7 +72,7 @@ var sdk = {
     var resultJson = __baal_call_workflow_handler_sync(unitPath, instanceId, handler, inputJson, timeoutMs);
     var parsed = JSON.parse(resultJson);
     if (!parsed.ok) throw new Error(parsed.error || 'sdk.callWorkflowHandlerAndWaitForResultSync failed');
-    return parsed.result;
+    return parsed.value;
   },
 
   getApiUnitTriggerUrl: function (args) {

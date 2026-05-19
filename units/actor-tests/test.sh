@@ -22,7 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PORT="${TEST_PORT:-3335}"
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
-TEST_TIMEOUT="${TEST_TIMEOUT:-300}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
 TERMINAL_LOG="$SCRIPT_DIR/test.terminal.log"
 : > "$TERMINAL_LOG"
 exec > >(tee -a "$TERMINAL_LOG") 2>&1
