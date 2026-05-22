@@ -1018,9 +1018,12 @@ fn host_start_workflow_fire_forget(
                     rid_bg.as_deref(),
                 );
                 let drive_span = tracing::Span::current();
-                tokio::spawn(
-                    async move {
-                        if let Err(e) = drive_workflow(
+                let instance_id_log = instance_id_bg.clone();
+                tokio::task::spawn_blocking(move || {
+                    let handle = super::super::module_loader::get_tokio_handle()
+                        .expect("tokio handle not initialized");
+                    let drive_future = async move {
+                        drive_workflow(
                             &wf_redis_bg,
                             &wf_nats_bg,
                             &wf_js_bg,
@@ -1033,13 +1036,14 @@ fn host_start_workflow_fire_forget(
                             comm_bg,
                         )
                         .await
-                        {
-                            tracing::error!(error = %e, unit_path = %unit_path_bg, instance_id = %instance_id_bg, "fire-and-forget workflow drive failed");
-                        }
+                        .map_err(|e| e.to_string())
                     }
                     .instrument(drive_span)
-                    .with_context(parent_ctx_bg),
-                );
+                    .with_context(parent_ctx_bg);
+                    if let Err(e) = handle.block_on(drive_future) {
+                        tracing::error!(error = %e, unit_path = %unit_path_bg, instance_id = %instance_id_log, "fire-and-forget workflow drive failed");
+                    }
+                });
             }
 
             Ok(serde_json::json!({ "instanceId": effective_id }).to_string())

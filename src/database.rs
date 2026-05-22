@@ -49,29 +49,13 @@ impl From<diesel::result::Error> for BlockingDbError {
 }
 
 /// Runs blocking DB work on a dedicated thread so the async worker is not blocked.
-/// Use this for all pool.get() + Diesel work in actix handlers and middlewares to avoid 408 timeouts.
+/// Use this for all pool.get() + Diesel work in actix handlers, middlewares, and background consumers.
 pub async fn block_on_db<F, R>(pool: &DbPool, f: F) -> Result<R, BlockingDbError>
 where
     F: FnOnce(&mut PooledConn) -> Result<R, diesel::result::Error> + Send + 'static,
     R: Send + 'static,
 {
-    crate::rt_enter!("db.block_on_db.actix");
-    let pool = pool.clone();
-    let out = match actix_web::web::block(move || {
-        crate::rt_step!("db.block_on_db.actix.thread", action = "pool.get");
-        let mut conn = pool.get().map_err(BlockingDbError::Pool)?;
-        f(&mut conn).map_err(BlockingDbError::Query)
-    })
-    .await
-    {
-        Ok(r) => r,
-        Err(_) => Err(BlockingDbError::Blocking),
-    };
-    match &out {
-        Ok(_) => crate::rt_exit_ok!("db.block_on_db.actix"),
-        Err(e) => crate::rt_exit_err!("db.block_on_db.actix", error = %e),
-    }
-    out
+    block_on_db_tokio(pool, f).await
 }
 
 /// Same as `block_on_db` but for tokio runtimes (e.g. the workflow_worker binary).

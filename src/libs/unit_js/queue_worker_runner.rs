@@ -123,6 +123,19 @@ pub struct QueueWorkerRunResult {
     pub retry_policy: QueueWorkerRetryPolicy,
 }
 
+pub async fn run_worker_handler_on_blocking_pool(
+    source: &str,
+    run_ctx: &QueueWorkerRunContext,
+    comm: Arc<SdkCommCtx>,
+) -> Result<QueueWorkerRunResult, String> {
+    let source = source.to_string();
+    let run_ctx = run_ctx.clone();
+    crate::libs::runtime_bridge::run_async_on_blocking_pool(async move {
+        run_worker_handler(&source, &run_ctx, comm).await
+    })
+    .await
+}
+
 pub async fn run_worker_handler(
     source: &str,
     run_ctx: &QueueWorkerRunContext,

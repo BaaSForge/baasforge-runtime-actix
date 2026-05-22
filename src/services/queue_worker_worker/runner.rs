@@ -13,7 +13,7 @@ use crate::services::actor_engine::ActorRedis;
 use crate::models::actor_store::ActorPgPool;
 use crate::libs::unit_js::queue_worker_runner::{
     BatchConfig, QueueWorkerRunContext, QueueWorkerRunOutcome,
-    extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler,
+    extract_worker_metadata, queue_worker_backoff_delay, run_worker_handler_on_blocking_pool,
 };
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::{
@@ -451,7 +451,7 @@ async fn handle_work_message(
         rid.as_deref(),
     );
     drop(parent_ctx.attach());
-    let run_future = run_worker_handler(&source, &run_ctx, comm);
+    let run_future = run_worker_handler_on_blocking_pool(&source, &run_ctx, comm);
 
     let run_result = if let Some(timeout_ms) = timeout_ms {
         match tokio::time::timeout(
@@ -871,7 +871,7 @@ async fn dispatch_batch(
             rid.as_deref(),
         );
         drop(parent_ctx.attach());
-        let first_result = run_worker_handler(&src, &run_ctx, comm_first).await;
+        let first_result = run_worker_handler_on_blocking_pool(&src, &run_ctx, comm_first).await;
         match first_result {
             Ok(r) => {
                 let max = r.retry_policy.max_attempts;
@@ -931,7 +931,7 @@ async fn dispatch_batch(
             rid.as_deref(),
         );
         drop(parent_ctx.attach());
-        let run_result = run_worker_handler(&src, &run_ctx, comm_retry).await;
+        let run_result = run_worker_handler_on_blocking_pool(&src, &run_ctx, comm_retry).await;
 
         match run_result {
             Ok(r) => match r.outcome {
