@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::sdk::{CommCtxGuard, HostCtxGuard, SdkCommCtx, WorkflowHostCtx, set_comm_ctx, set_host_ctx};
+use super::modules::sdk::{CommCtxGuard, HostCtxGuard, SdkCommCtx, WorkflowHostCtx};
 
 const WORKFLOW_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
@@ -86,10 +86,8 @@ pub async fn run_workflow_handler(
     let wf_ctx_js = build_workflow_ctx_json(wf_ctx);
 
     let result = rquickjs::async_with!(ctx => |ctx| {
-        set_host_ctx(host_ctx);
-        let _hguard = HostCtxGuard;
-        set_comm_ctx(comm);
-        let _cguard = CommCtxGuard;
+        let _hguard = HostCtxGuard::install(host_ctx);
+        let _cguard = CommCtxGuard::install(comm);
 
         let outcome: Result<WorkflowExecutionResult, String> = async {
             attachment.attach(&ctx).map_err(|e| {

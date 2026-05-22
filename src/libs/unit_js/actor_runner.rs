@@ -6,7 +6,7 @@ use std::sync::Arc;
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::sdk::{CommCtxGuard, SdkCommCtx, set_comm_ctx};
+use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
 
 const ACTOR_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
@@ -134,8 +134,7 @@ async fn run_actor_handler_inner(
     let state_limit = state_limit_bytes.unwrap_or(1024 * 1024);
 
     let result = rquickjs::async_with!(ctx => |ctx| {
-        set_comm_ctx(comm);
-        let _guard = CommCtxGuard;
+        let _guard = CommCtxGuard::install(comm);
 
         let outcome: Result<ActorOutcome, String> = async {
             attachment.attach(&ctx).map_err(|e| {

@@ -172,19 +172,41 @@ where
     out
 }
 
-pub struct CommCtxGuard;
+pub struct CommCtxGuard(Option<Arc<SdkCommCtx>>);
 
-impl Drop for CommCtxGuard {
-    fn drop(&mut self) {
-        clear_comm_ctx();
+impl CommCtxGuard {
+    pub fn install(ctx: Arc<SdkCommCtx>) -> Self {
+        let previous = COMM_CTX.with(|c| {
+            let prev = c.borrow().clone();
+            *c.borrow_mut() = Some(ctx);
+            prev
+        });
+        CommCtxGuard(previous)
     }
 }
 
-pub struct HostCtxGuard;
+impl Drop for CommCtxGuard {
+    fn drop(&mut self) {
+        COMM_CTX.with(|c| *c.borrow_mut() = self.0.take());
+    }
+}
+
+pub struct HostCtxGuard(Option<Arc<WorkflowHostCtx>>);
+
+impl HostCtxGuard {
+    pub fn install(ctx: Arc<WorkflowHostCtx>) -> Self {
+        let previous = HOST_CTX.with(|c| {
+            let prev = c.borrow().clone();
+            *c.borrow_mut() = Some(ctx);
+            prev
+        });
+        HostCtxGuard(previous)
+    }
+}
 
 impl Drop for HostCtxGuard {
     fn drop(&mut self) {
-        clear_host_ctx();
+        HOST_CTX.with(|c| *c.borrow_mut() = self.0.take());
     }
 }
 

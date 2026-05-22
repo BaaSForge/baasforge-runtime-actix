@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::sdk::{CommCtxGuard, SdkCommCtx, set_comm_ctx};
+use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
 
 const QUEUE_WORKER_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
@@ -158,8 +158,7 @@ pub async fn run_worker_handler(
     let qw_ctx_js = build_qw_ctx_json(run_ctx);
 
     let result = rquickjs::async_with!(ctx => |ctx| {
-        set_comm_ctx(comm);
-        let _guard = CommCtxGuard;
+        let _guard = CommCtxGuard::install(comm);
 
         let outcome: Result<QueueWorkerRunResult, String> = async {
             attachment.attach(&ctx).map_err(|e| {

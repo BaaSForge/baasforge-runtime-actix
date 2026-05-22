@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::sdk::{CommCtxGuard, SdkCommCtx, set_comm_ctx};
+use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
 use super::types::{JsResponseRaw, TriggerHttpResponse, TriggerHttpSnapshot};
 
 const API_RUNTIME_JS: &str = concat!(
@@ -64,10 +64,7 @@ pub async fn run_unit_handler(
     let snapshot_json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
 
     let result = rquickjs::async_with!(ctx => |ctx| {
-        if let Some(c) = comm {
-            set_comm_ctx(c);
-        }
-        let _guard = CommCtxGuard;
+        let _comm_guard = comm.map(CommCtxGuard::install);
 
         let outcome: Result<TriggerHttpResponse, String> = async {
             attachment.attach(&ctx).map_err(|e| {
