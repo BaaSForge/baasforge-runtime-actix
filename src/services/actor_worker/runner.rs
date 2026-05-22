@@ -149,8 +149,10 @@ async fn handle_actor_message(
     actor_pg: Option<ActorPgPool>,
     locks: ActorLocks,
 ) {
+    crate::rt_enter!("actor.consumer.handle_message", subject = %msg.subject);
     let payload: Option<serde_json::Value> = serde_json::from_slice(&msg.payload).ok();
     let Some(payload) = payload else {
+        crate::rt_exit_err!("actor.consumer.handle_message", error = "invalid_payload");
         warn!("[actor_consumer] invalid payload, acking");
         let _ = msg.ack().await;
         return;
@@ -374,6 +376,7 @@ async fn handle_actor_message(
         }
     }
 
+    crate::rt_exit_ok!("actor.consumer.handle_message", subject = %msg.subject);
     let _ = msg.ack().await;
     })
     .instrument(dispatch_span_run)

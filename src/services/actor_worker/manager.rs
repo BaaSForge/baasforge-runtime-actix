@@ -75,6 +75,15 @@ pub async fn run_actor_with_lock(
     comm: Arc<SdkCommCtx>,
     precomputed_scope_trace_ids: Option<crate::telemetry::BaalHttpTriggerTraceIds>,
 ) -> Result<ActorRunOutput, String> {
+    crate::rt_enter!(
+        "actor.run_with_lock",
+        project_id = %input.project_id,
+        unit_path = %input.unit_path,
+        actor_id = %input.actor_id,
+        handler = %input.handler,
+        kind = ?input.kind,
+        stage = comm.stage_runtime_id.is_some()
+    );
     let actor_redis = comm
         .actor_redis
         .clone()
@@ -94,9 +103,24 @@ pub async fn run_actor_with_lock(
             .clone()
     };
 
+    crate::rt_step!(
+        "actor.run_with_lock.acquire",
+        actor_id = %input.actor_id,
+        unit_path = %input.unit_path
+    );
     let _guard = actor_mutex.lock().await;
+    crate::rt_step!(
+        "actor.run_with_lock.acquired",
+        actor_id = %input.actor_id,
+        unit_path = %input.unit_path
+    );
 
-    run_actor_inner(input, actor_redis, comm, precomputed_scope_trace_ids).await
+    let out = run_actor_inner(input, actor_redis, comm, precomputed_scope_trace_ids).await;
+    match &out {
+        Ok(_) => crate::rt_exit_ok!("actor.run_with_lock"),
+        Err(e) => crate::rt_exit_err!("actor.run_with_lock", error = %e),
+    }
+    out
 }
 
 async fn run_actor_inner(

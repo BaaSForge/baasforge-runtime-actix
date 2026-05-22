@@ -429,10 +429,17 @@ pub async fn load_unit_for_path_production(
     unit_type: ProjectUnitType,
     unit_path: &str,
 ) -> Result<Option<ProjectUnitRow>, ServiceError> {
+    crate::rt_enter!(
+        "release.load_unit.production",
+        %project_id,
+        unit_type = ?unit_type,
+        unit_path
+    );
     let Some(rel) = load_latest_production_release(pool, redis, project_id).await? else {
+        crate::rt_exit_ok!("release.load_unit.production", found = false, unit_path);
         return Ok(None);
     };
-    load_unit_for_path_with_release(
+    let out = load_unit_for_path_with_release(
         pool,
         redis,
         project_id,
@@ -441,7 +448,13 @@ pub async fn load_unit_for_path_production(
         unit_path,
         &rel,
     )
-    .await
+    .await;
+    crate::rt_exit_ok!(
+        "release.load_unit.production",
+        found = matches!(&out, Ok(Some(_))),
+        unit_path
+    );
+    out
 }
 
 /// Loads the **stage** runtime’s live release, then resolves `unit_path` via that release’s
@@ -454,12 +467,20 @@ pub async fn load_unit_for_path_stage(
     unit_type: ProjectUnitType,
     unit_path: &str,
 ) -> Result<Option<ProjectUnitRow>, ServiceError> {
+    crate::rt_enter!(
+        "release.load_unit.stage",
+        %project_id,
+        %runtime_id,
+        unit_type = ?unit_type,
+        unit_path
+    );
     let Some(rel) =
         load_latest_stage_release_for_runtime(pool, redis, project_id, runtime_id).await?
     else {
+        crate::rt_exit_ok!("release.load_unit.stage", found = false, unit_path, %runtime_id);
         return Ok(None);
     };
-    load_unit_for_path_with_release(
+    let out = load_unit_for_path_with_release(
         pool,
         redis,
         project_id,
@@ -468,7 +489,14 @@ pub async fn load_unit_for_path_stage(
         unit_path,
         &rel,
     )
-    .await
+    .await;
+    crate::rt_exit_ok!(
+        "release.load_unit.stage",
+        found = matches!(&out, Ok(Some(_))),
+        unit_path,
+        %runtime_id
+    );
+    out
 }
 
 pub async fn load_unit_for_path_scoped(

@@ -71,6 +71,15 @@ pub async fn handle_trigger_api_unit_production(
     body: web::Bytes,
 ) -> HttpResponse {
     let params = path.into_inner();
+    crate::rt_enter!(
+        "api.trigger.production",
+        project_id = %params.project_id,
+        context = %params.context_slug,
+        module = %params.module_slug,
+        unit = %params.unit_name_slug,
+        method = %http_req.method(),
+        body_bytes = body.len()
+    );
     let unit_type = ProjectUnitType::Api;
     let unit_path = match logical_unit_path(&params, unit_type) {
         Ok(p) => p,
@@ -80,7 +89,7 @@ pub async fn handle_trigger_api_unit_production(
         }
     };
 
-    match load_unit_for_path_production(
+    let resp = match load_unit_for_path_production(
         &ctx.pool,
         &ctx.redis_conn,
         params.project_id,
@@ -90,13 +99,23 @@ pub async fn handle_trigger_api_unit_production(
     .await
     {
         Ok(Some(unit)) => {
+            crate::rt_step!("api.trigger.production.unit_loaded", unit_path = %unit_path, unit_id = %unit.id);
             let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
             let project_id_str = params.project_id.to_string();
             respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path, None).await
         }
-        Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
+        Ok(None) => {
+            crate::rt_step!("api.trigger.production.unit_not_found", unit_path = %unit_path);
+            HttpResponse::NotFound().json(api_error("unit not found", json!({})))
+        }
         Err(e) => map_service_err(e),
-    }
+    };
+    crate::rt_exit_ok!(
+        "api.trigger.production",
+        status = resp.status().as_u16(),
+        unit_path = %unit_path
+    );
+    resp
 }
 
 pub async fn handle_trigger_api_unit_stage(
@@ -106,6 +125,16 @@ pub async fn handle_trigger_api_unit_stage(
     body: web::Bytes,
 ) -> HttpResponse {
     let params = path.into_inner();
+    crate::rt_enter!(
+        "api.trigger.stage",
+        project_id = %params.project_id,
+        runtime_id = %params.runtime_id,
+        context = %params.context_slug,
+        module = %params.module_slug,
+        unit = %params.unit_name_slug,
+        method = %http_req.method(),
+        body_bytes = body.len()
+    );
     let prod = ProdUnitPath {
         project_id: params.project_id,
         context_slug: params.context_slug.clone(),
@@ -121,7 +150,7 @@ pub async fn handle_trigger_api_unit_stage(
         }
     };
 
-    match load_unit_for_path_stage(
+    let resp = match load_unit_for_path_stage(
         &ctx.pool,
         &ctx.redis_conn,
         params.project_id,
@@ -132,13 +161,29 @@ pub async fn handle_trigger_api_unit_stage(
     .await
     {
         Ok(Some(unit)) => {
+            crate::rt_step!(
+                "api.trigger.stage.unit_loaded",
+                unit_path = %unit_path,
+                unit_id = %unit.id,
+                runtime_id = %params.runtime_id
+            );
             let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
             let project_id_str = params.project_id.to_string();
             respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path, Some(params.runtime_id)).await
         }
-        Ok(None) => HttpResponse::NotFound().json(api_error("unit not found", json!({}))),
+        Ok(None) => {
+            crate::rt_step!("api.trigger.stage.unit_not_found", unit_path = %unit_path);
+            HttpResponse::NotFound().json(api_error("unit not found", json!({})))
+        }
         Err(e) => map_service_err(e),
-    }
+    };
+    crate::rt_exit_ok!(
+        "api.trigger.stage",
+        status = resp.status().as_u16(),
+        unit_path = %unit_path,
+        runtime_id = %params.runtime_id
+    );
+    resp
 }
 
 fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes, server_port: u16) -> Result<TriggerHttpSnapshot, &'static str> {
@@ -202,6 +247,14 @@ async fn invoke_api_unit(
     unit_path: String,
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
+    crate::rt_enter!(
+        "api.invoke_unit",
+        unit_path = %unit_path,
+        unit_id = %unit.id,
+        revision = unit.revision,
+        stage = stage_runtime_id.is_some(),
+        method = %http_req.method()
+    );
     let span = tracing::Span::current();
     span.record("baal.unit.path", unit_path.as_str());
     span.record("baal.unit.id", unit.id.as_str());
@@ -319,9 +372,11 @@ async fn invoke_api_unit(
         rid_owned.as_deref(),
     );
     let _otel = parent_ctx.attach();
+    crate::rt_step!("api.invoke_unit.run_unit_handler.start", unit_path = %unit_path);
     let run_result = match unit_js::run_unit_handler(&code, &snapshot, Some(comm), Some(unit_path.as_str())).await {
         Ok(r) => r,
         Err(e) => {
+            crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = %e);
             tracing::error!(
                 unit_id = %unit_id,
                 revision,
@@ -334,6 +389,12 @@ async fn invoke_api_unit(
             ));
         }
     };
+    crate::rt_step!(
+        "api.invoke_unit.run_unit_handler.done",
+        unit_path = %unit_path,
+        status = run_result.status,
+        body_bytes = run_result.body.len()
+    );
 
     let status =
         StatusCode::from_u16(run_result.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -341,7 +402,9 @@ async fn invoke_api_unit(
     for (name, value) in run_result.headers {
         resp.append_header((name, value));
     }
-    resp.body(run_result.body)
+    let http_resp = resp.body(run_result.body);
+    crate::rt_exit_ok!("api.invoke_unit", unit_path = %unit_path, status = status.as_u16());
+    http_resp
 }
 
 fn map_service_err(e: ServiceError) -> HttpResponse {

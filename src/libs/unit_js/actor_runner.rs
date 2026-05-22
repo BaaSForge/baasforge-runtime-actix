@@ -78,14 +78,26 @@ pub async fn run_actor_handler(
     state_limit_bytes: Option<u64>,
     timeout_ms: Option<u64>,
 ) -> Result<ActorOutcome, String> {
+    crate::rt_enter!(
+        "js.actor.run_actor_handler",
+        actor_id = %ctx_json.actor_id,
+        handler = %ctx_json.handler,
+        kind = %ctx_json.kind.as_str(),
+        timeout_ms = timeout_ms.unwrap_or(0)
+    );
     let fut = run_actor_handler_inner(source, ctx_json, comm, state_limit_bytes);
-    if let Some(ms) = timeout_ms {
+    let out = if let Some(ms) = timeout_ms {
         tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
             .await
             .map_err(|_| "actor timeout expired".to_string())?
     } else {
         fut.await
+    };
+    match &out {
+        Ok(_) => crate::rt_exit_ok!("js.actor.run_actor_handler", actor_id = %ctx_json.actor_id),
+        Err(e) => crate::rt_exit_err!("js.actor.run_actor_handler", actor_id = %ctx_json.actor_id, error = %e),
     }
+    out
 }
 
 async fn run_actor_handler_inner(

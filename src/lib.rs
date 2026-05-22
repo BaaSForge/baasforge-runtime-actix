@@ -1,3 +1,4 @@
+pub mod runtime_trace;
 pub mod actor_schema;
 pub mod configs;
 pub mod database;

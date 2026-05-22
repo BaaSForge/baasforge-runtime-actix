@@ -55,8 +55,10 @@ where
     F: FnOnce(&mut PooledConn) -> Result<R, diesel::result::Error> + Send + 'static,
     R: Send + 'static,
 {
+    crate::rt_enter!("db.block_on_db.actix");
     let pool = pool.clone();
-    match actix_web::web::block(move || {
+    let out = match actix_web::web::block(move || {
+        crate::rt_step!("db.block_on_db.actix.thread", action = "pool.get");
         let mut conn = pool.get().map_err(BlockingDbError::Pool)?;
         f(&mut conn).map_err(BlockingDbError::Query)
     })
@@ -64,7 +66,12 @@ where
     {
         Ok(r) => r,
         Err(_) => Err(BlockingDbError::Blocking),
+    };
+    match &out {
+        Ok(_) => crate::rt_exit_ok!("db.block_on_db.actix"),
+        Err(e) => crate::rt_exit_err!("db.block_on_db.actix", error = %e),
     }
+    out
 }
 
 /// Same as `block_on_db` but for tokio runtimes (e.g. the workflow_worker binary).
@@ -74,8 +81,10 @@ where
     F: FnOnce(&mut PooledConn) -> Result<R, diesel::result::Error> + Send + 'static,
     R: Send + 'static,
 {
+    crate::rt_enter!("db.block_on_db_tokio");
     let pool = pool.clone();
-    match tokio::task::spawn_blocking(move || {
+    let out = match tokio::task::spawn_blocking(move || {
+        crate::rt_step!("db.block_on_db_tokio.thread", action = "pool.get");
         let mut conn = pool.get().map_err(BlockingDbError::Pool)?;
         f(&mut conn).map_err(BlockingDbError::Query)
     })
@@ -83,7 +92,12 @@ where
     {
         Ok(r) => r,
         Err(_) => Err(BlockingDbError::Blocking),
+    };
+    match &out {
+        Ok(_) => crate::rt_exit_ok!("db.block_on_db_tokio"),
+        Err(e) => crate::rt_exit_err!("db.block_on_db_tokio", error = %e),
     }
+    out
 }
 
 /// Shared metadata cache (`shared:units:*`, `shared:env:*`) on `REDIS_URL`.

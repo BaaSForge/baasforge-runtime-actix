@@ -139,10 +139,23 @@ fn block_async<F, R>(future: F) -> Result<R, String>
 where
     F: std::future::Future<Output = Result<R, String>>,
 {
+    let caller_unit = COMM_CTX.with(|c| {
+        c.borrow()
+            .as_ref()
+            .map(|x| x.source_unit_path.clone())
+            .unwrap_or_default()
+    });
+    crate::rt_enter!("sdk.block_async", caller_unit = %caller_unit);
     let cx = tracing::Span::current().context();
-    tokio::task::block_in_place(|| {
+    let out = tokio::task::block_in_place(|| {
+        crate::rt_step!("sdk.block_async.block_in_place", caller_unit = %caller_unit);
         tokio::runtime::Handle::current().block_on(future.with_context(cx))
-    })
+    });
+    match &out {
+        Ok(_) => crate::rt_exit_ok!("sdk.block_async", caller_unit = %caller_unit),
+        Err(e) => crate::rt_exit_err!("sdk.block_async", caller_unit = %caller_unit, error = %e),
+    }
+    out
 }
 
 pub struct CommCtxGuard;

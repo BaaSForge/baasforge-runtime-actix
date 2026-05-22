@@ -50,7 +50,9 @@ pub fn get_secure_env_blocking(
     key: &str,
 ) -> Result<String, RuntimeEnvError> {
     let key = key.trim();
+    crate::rt_enter!("runtime_env.get_secure_env", %project_id, %runtime_id, key);
     if key.is_empty() {
+        crate::rt_exit_err!("runtime_env.get_secure_env", error = "invalid_key");
         return Err(RuntimeEnvError::InvalidKey);
     }
 
@@ -78,6 +80,7 @@ pub fn get_secure_env_blocking(
     if redis.is_some() {
         tracing::debug!(%cache_key, "runtime env cache set");
     }
+    crate::rt_exit_ok!("runtime_env.get_secure_env", key);
     Ok(plaintext)
 }
 

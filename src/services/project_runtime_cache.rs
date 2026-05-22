@@ -20,13 +20,17 @@ pub(crate) async fn redis_get_json<T: DeserializeOwned>(
     key: &str,
 ) -> Result<Option<T>, redis::RedisError> {
     let Some(rc) = redis else {
+        crate::rt_step!("redis.get_json.skip", key, reason = "no_conn");
         return Ok(None);
     };
+    crate::rt_step!("redis.get_json", key);
     let mut conn = rc.lock().await;
     let s: Option<String> = conn.get(key).await?;
     let Some(raw) = s else {
+        crate::rt_step!("redis.get_json.miss", key);
         return Ok(None);
     };
+    crate::rt_step!("redis.get_json.hit", key);
     Ok(serde_json::from_str(&raw).ok())
 }
 
@@ -36,8 +40,10 @@ pub(crate) async fn redis_set_json<T: Serialize>(
     value: &T,
 ) -> Result<(), redis::RedisError> {
     let Some(rc) = redis else {
+        crate::rt_step!("redis.set_json.skip", key, reason = "no_conn");
         return Ok(());
     };
+    crate::rt_step!("redis.set_json", key);
     let mut conn = rc.lock().await;
     let raw = serde_json::to_string(value).expect("serialize redis cache value");
     let _: () = conn.set(key, raw).await?;

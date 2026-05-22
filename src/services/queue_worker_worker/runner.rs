@@ -162,6 +162,7 @@ async fn handle_work_message(
     let messaging_subject = subject.clone();
 
     (async move {
+    crate::rt_enter!("wq.consumer.handle_work_message", project_id = %project_id, subject = %messaging_subject);
     let run_id = payload
         .get("runId")
         .and_then(|v| v.as_str())

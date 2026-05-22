@@ -59,6 +59,12 @@ pub async fn enqueue_queue_worker_run(
     data_json: &str,
     stage_runtime_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
+    crate::rt_enter!(
+        "wq.enqueue",
+        project_id,
+        unit_path,
+        stage_runtime_id = stage_runtime_id.map(|u| u.to_string()).unwrap_or_default()
+    );
     let run_id = crate::libs::ids::new_uuid().to_string();
     let enqueued_at = chrono::Utc::now().timestamp_millis();
 
@@ -113,6 +119,7 @@ pub async fn enqueue_queue_worker_run(
         return Err("NATS not configured: cannot enqueue queue worker run".to_string());
     }
 
+    crate::rt_exit_ok!("wq.enqueue", run_id = %run_id, unit_path);
     Ok(serde_json::json!({
         "runId": run_id,
         "status": "queued",

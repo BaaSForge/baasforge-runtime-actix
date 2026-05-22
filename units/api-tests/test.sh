@@ -19,6 +19,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../test-server-lib.sh
+source "$SCRIPT_DIR/../test-server-lib.sh"
 PORT="${TEST_PORT:-3336}"
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
 TEST_TIMEOUT="${TEST_TIMEOUT:-300}"
@@ -40,13 +42,16 @@ TEST_PROJECT_ID="00000000-aaaa-bbbb-cccc-000000000010"
 TEST_RUNNER_URL="http://127.0.0.1:${PORT}/api/v1/trigger/${TEST_PROJECT_ID}/test/api-tests/index"
 
 SERVER_PID=""
+CLEANED_UP=0
 cleanup() {
-  if [[ -n "$SERVER_PID" ]]; then
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
+  if (( CLEANED_UP != 0 )); then
+    return 0
   fi
+  CLEANED_UP=1
+  stop_test_server "$SERVER_PID" "$PORT"
+  SERVER_PID=""
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # ------------------------------------------------------------------
 # 1. Build
@@ -71,8 +76,10 @@ fi
 # ------------------------------------------------------------------
 # 2. Start the real server in TEST_MODE
 # ------------------------------------------------------------------
+free_listen_port "$PORT"
 echo "==> Starting server on port ${PORT} (TEST_MODE)…"
 TEST_MODE=1 \
+RUST_LOG="${RUST_LOG:-runtime_trace=info,baal_runtime_actix=info}" \
 APP_ENV=production \
 PORT="$PORT" \
 TEST_UNIT_FILES="api-tests=$SCRIPT_DIR/dist/index.js" \

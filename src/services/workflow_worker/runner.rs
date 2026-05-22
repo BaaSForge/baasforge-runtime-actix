@@ -677,6 +677,7 @@ async fn handle_wake(
     let wq_js = wq_js.clone();
 
     (async move {
+    crate::rt_enter!("wf.consumer.handle_wake", project_id = %project_id, instance_id = %instance_id);
     let payload = wake_payload.as_ref();
 
     // Load the workflow meta to get the unit path

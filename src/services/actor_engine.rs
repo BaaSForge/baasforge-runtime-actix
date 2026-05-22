@@ -114,6 +114,15 @@ pub async fn publish_actor_message(
     reply_to: Option<&str>,
     stage_runtime_id: Option<&str>,
 ) -> Result<String, String> {
+    crate::rt_enter!(
+        "actor.nats.publish",
+        project_id,
+        unit_path,
+        actor_id,
+        handler,
+        stage_runtime_id = stage_runtime_id.unwrap_or(""),
+        reply_to = reply_to.unwrap_or("")
+    );
     let encoded_unit_path = encode_nats_component(unit_path);
     let subject = format!("actor.{project_id}.{encoded_unit_path}.{actor_id}.{handler}.msg");
     let msg_id = crate::libs::ids::new_uuid().to_string();
@@ -132,9 +141,11 @@ pub async fn publish_actor_message(
     if let Some(obj) = msg_payload.as_object_mut() {
         crate::telemetry::inject_traceparent_json_field(obj);
     }
-    js.publish(subject, bytes::Bytes::from(msg_payload.to_string()))
+    crate::rt_step!("actor.nats.publish.jetstream", subject = %subject, msg_id = %msg_id);
+    js.publish(subject.clone(), bytes::Bytes::from(msg_payload.to_string()))
         .await
         .map_err(|e| format!("actor mailbox publish failed: {e}"))?;
+    crate::rt_exit_ok!("actor.nats.publish", subject = %subject, msg_id = %msg_id);
     Ok(msg_id)
 }
 

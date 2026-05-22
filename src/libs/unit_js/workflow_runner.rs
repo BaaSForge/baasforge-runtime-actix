@@ -49,6 +49,11 @@ pub async fn run_workflow_handler(
     nats: &Option<async_nats::Client>,
     comm: Arc<SdkCommCtx>,
 ) -> Result<WorkflowExecutionResult, String> {
+    crate::rt_enter!(
+        "js.wf.run_workflow_handler",
+        instance_id = %wf_ctx.instance_id,
+        handler = wf_ctx.handler_name.as_deref().unwrap_or("")
+    );
     let host_ctx = Arc::new(WorkflowHostCtx {
         redis: redis.clone(),
         nats: nats.clone(),
@@ -139,6 +144,11 @@ pub async fn run_workflow_handler(
     rt.idle().await;
     rt.run_gc().await;
 
+    crate::rt_exit_ok!(
+        "js.wf.run_workflow_handler",
+        instance_id = %wf_ctx.instance_id,
+        outcome = ?std::mem::discriminant(&result)
+    );
     Ok(result)
 }
 

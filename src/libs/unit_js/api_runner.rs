@@ -21,6 +21,13 @@ pub async fn run_unit_handler(
     comm: Option<Arc<SdkCommCtx>>,
     unit_path: Option<&str>,
 ) -> Result<TriggerHttpResponse, String> {
+    crate::rt_enter!(
+        "js.api.run_unit_handler",
+        unit_path = unit_path.unwrap_or(""),
+        method = %snapshot.method,
+        trigger_path = %snapshot.trigger_path,
+        body_bytes = snapshot.body_text.len()
+    );
     let unit_entry_dir = unit_path
         .and_then(|p| p.rsplit_once('/').map(|(dir, _)| dir.to_string()));
     let baal = validate_and_prepare_loader(source, unit_entry_dir).map_err(|e| e.to_string())?;
@@ -116,6 +123,12 @@ pub async fn run_unit_handler(
     rt.idle().await;
     rt.run_gc().await;
 
+    crate::rt_exit_ok!(
+        "js.api.run_unit_handler",
+        unit_path = unit_path.unwrap_or(""),
+        status = result.status,
+        body_bytes = result.body.len()
+    );
     Ok(result)
 }
 

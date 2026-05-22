@@ -128,6 +128,11 @@ pub async fn run_worker_handler(
     run_ctx: &QueueWorkerRunContext,
     comm: Arc<SdkCommCtx>,
 ) -> Result<QueueWorkerRunResult, String> {
+    crate::rt_enter!(
+        "js.qw.run_worker_handler",
+        run_id = %run_ctx.run_id,
+        attempt = run_ctx.attempt
+    );
     let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
@@ -205,6 +210,11 @@ pub async fn run_worker_handler(
     rt.idle().await;
     rt.run_gc().await;
 
+    crate::rt_exit_ok!(
+        "js.qw.run_worker_handler",
+        run_id = %run_ctx.run_id,
+        outcome = ?std::mem::discriminant(&result.outcome)
+    );
     Ok(result)
 }
 

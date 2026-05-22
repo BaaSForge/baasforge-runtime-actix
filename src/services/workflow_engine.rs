@@ -96,6 +96,13 @@ pub async fn prepare_workflow_instance_for_start(
     source: &str,
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
+    crate::rt_enter!(
+        "wf.prepare_start",
+        project_id,
+        unit_path,
+        instance_id,
+        stage = comm.stage_runtime_id.is_some()
+    );
     let name_key = workflow_dedup_name_key(project_id, unit_path, comm.stage_runtime_id);
     {
         let mut conn = redis.lock().await;
@@ -169,6 +176,7 @@ pub async fn prepare_workflow_instance_for_start(
     )
     .await;
 
+    crate::rt_exit_ok!("wf.prepare_start", instance_id);
     Ok(instance_id.to_string())
 }
 
@@ -228,6 +236,7 @@ pub async fn call_handler(
     source: &str,
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
+    crate::rt_enter!("wf.call_handler", project_id, instance_id, handler_name);
     {
         let meta_key = redis_key(project_id, instance_id, "meta");
         let mut conn = redis.lock().await;
@@ -253,6 +262,7 @@ pub async fn call_handler(
 
     let _ = resume_workflow(redis, nats, js, project_id, instance_id, source, comm).await;
 
+    crate::rt_exit_ok!("wf.call_handler", instance_id);
     Ok(handler_result)
 }
 
@@ -686,6 +696,13 @@ pub(crate) async fn drive_workflow(
     handler_input_json: Option<&str>,
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
+    crate::rt_enter!(
+        "wf.drive",
+        project_id,
+        instance_id,
+        handler = handler_name.unwrap_or(""),
+        stage = comm.stage_runtime_id.is_some()
+    );
     let pid = project_id.to_string();
     let iid = instance_id.to_string();
 
@@ -721,8 +738,14 @@ pub(crate) async fn drive_workflow(
     );
     drop(parent_ctx.clone().attach());
 
+    crate::rt_step!("wf.drive.run_workflow_handler", instance_id = %iid);
     let result = run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn)
         .await?;
+    crate::rt_step!(
+        "wf.drive.run_workflow_handler.done",
+        instance_id = %iid,
+        outcome = ?std::mem::discriminant(&result)
+    );
 
     match &result {
         WorkflowExecutionResult::Completed(value) => {
