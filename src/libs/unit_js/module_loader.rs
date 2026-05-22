@@ -17,6 +17,13 @@ pub fn init_tokio_handle(handle: tokio::runtime::Handle) {
     let _ = TOKIO_HANDLE.set(handle);
 }
 
+pub fn get_tokio_handle() -> Option<tokio::runtime::Handle> {
+    TOKIO_HANDLE
+        .get()
+        .cloned()
+        .or_else(|| tokio::runtime::Handle::try_current().ok())
+}
+
 use super::common_imports::{PrepareError, UNNAMED_IMPORT_MSG, WRONG_IMPORT_MSG};
 use super::module_shims::{self as shims, SDK};
 use super::modules::sdk::get_comm_ctx;

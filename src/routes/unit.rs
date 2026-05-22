@@ -371,11 +371,29 @@ async fn invoke_api_unit(
         trigger_runtime,
         rid_owned.as_deref(),
     );
+    let parent_ctx_for_js = parent_ctx.clone();
     let _otel = parent_ctx.attach();
     crate::rt_step!("api.invoke_unit.run_unit_handler.start", unit_path = %unit_path);
-    let run_result = match unit_js::run_unit_handler(&code, &snapshot, Some(comm), Some(unit_path.as_str())).await {
-        Ok(r) => r,
-        Err(e) => {
+    // JS + sync SDK host calls run on the Tokio blocking pool (not Actix arbiters) so hundreds of
+    // concurrent triggers can each block_in_place without pinning the small arbiter thread set.
+    // Shared DbPool / Redis / NATS handles in SdkCommCtx are cloned per request; I/O is async on
+    // the same runtime while only the QuickJS thread blocks.
+    let unit_path_for_js = unit_path.clone();
+    let run_result = match actix_web::web::block(move || {
+        let handle = crate::libs::unit_js::module_loader::get_tokio_handle()
+            .expect("tokio handle not initialized; call init_tokio_handle at startup");
+        let _otel = parent_ctx_for_js.attach();
+        handle.block_on(unit_js::run_unit_handler(
+            &code,
+            &snapshot,
+            Some(comm),
+            Some(unit_path_for_js.as_str()),
+        ))
+    })
+    .await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = %e);
             tracing::error!(
                 unit_id = %unit_id,
@@ -386,6 +404,13 @@ async fn invoke_api_unit(
             return HttpResponse::BadRequest().json(api_error(
                 "javascript execution failed",
                 json!({ "detail": e }),
+            ));
+        }
+        Err(_) => {
+            crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = "blocking task cancelled");
+            return HttpResponse::InternalServerError().json(api_error(
+                "javascript execution interrupted",
+                json!({}),
             ));
         }
     };

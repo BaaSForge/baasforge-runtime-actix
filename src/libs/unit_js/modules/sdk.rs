@@ -135,6 +135,12 @@ where
     })
 }
 
+fn on_actix_arbiter_thread() -> bool {
+    std::thread::current()
+        .name()
+        .is_some_and(|n| n.contains("arbiter"))
+}
+
 fn block_async<F, R>(future: F) -> Result<R, String>
 where
     F: std::future::Future<Output = Result<R, String>>,
@@ -146,10 +152,18 @@ where
             .unwrap_or_default()
     });
     crate::rt_enter!("sdk.block_async", caller_unit = %caller_unit);
+    if on_actix_arbiter_thread() {
+        return Err(
+            "sdk.block_async: called from Actix worker thread; API units must run JS via web::block"
+                .to_string(),
+        );
+    }
     let cx = tracing::Span::current().context();
+    let handle = super::super::module_loader::get_tokio_handle()
+        .ok_or_else(|| "sdk.block_async: tokio runtime handle not available".to_string())?;
     let out = tokio::task::block_in_place(|| {
         crate::rt_step!("sdk.block_async.block_in_place", caller_unit = %caller_unit);
-        tokio::runtime::Handle::current().block_on(future.with_context(cx))
+        handle.block_on(future.with_context(cx))
     });
     match &out {
         Ok(_) => crate::rt_exit_ok!("sdk.block_async", caller_unit = %caller_unit),

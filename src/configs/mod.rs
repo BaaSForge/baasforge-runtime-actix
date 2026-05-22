@@ -1,6 +1,8 @@
 //! Application configuration loaded from environment variables.
-//! All settings must be set via .env (or the environment); there are no defaults.
-//! Load order: .env first (base), then .env.local overrides if present.
+//!
+//! Do not add in-code defaults for settings (`unwrap_or`, `unwrap_or_else`, etc.).
+//! Every variable the process needs must be set explicitly in `.env` (or the environment).
+//! Load order: `.env` first (base), then `.env.local` overrides if present.
 
 use dotenvy::from_filename;
 use dotenvy::from_filename_override;
@@ -33,6 +35,8 @@ pub struct Settings {
     /// Per-process pool size. Total DB connections = (API_replicas + worker_replicas) × this. Keep under PostgreSQL max_connections.
     pub database_pool_size: u32,
     pub database_connection_timeout_secs: u64,
+    /// Max Tokio blocking threads for `web::block` (API unit JS + sync SDK). Set via `API_WORKER_MAX_BLOCKING_THREADS`.
+    pub api_worker_max_blocking_threads: usize,
     pub redis_url: String,
     /// When false, no Redis connection is opened for cache (API / runtime_cache_listener); all project release/unit paths hit Postgres only.
     pub redis_cache_enabled: bool,
@@ -120,6 +124,10 @@ impl Settings {
             .expect("DATABASE_CONNECTION_TIMEOUT_SECS must be set")
             .parse()
             .expect("DATABASE_CONNECTION_TIMEOUT_SECS must be a valid u64");
+        let api_worker_max_blocking_threads: usize = env::var("API_WORKER_MAX_BLOCKING_THREADS")
+            .expect("API_WORKER_MAX_BLOCKING_THREADS must be set")
+            .parse()
+            .expect("API_WORKER_MAX_BLOCKING_THREADS must be a valid usize");
 
         let redis_cache_enabled = match env::var("REDIS_CACHE_ENABLED") {
             Ok(s) => parse_env_bool(&s).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
@@ -289,6 +297,7 @@ impl Settings {
             pg_database_url,
             database_pool_size,
             database_connection_timeout_secs,
+            api_worker_max_blocking_threads,
             redis_url,
             redis_cache_enabled,
             nats_url,
