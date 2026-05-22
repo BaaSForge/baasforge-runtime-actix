@@ -175,11 +175,7 @@ async fn run_actor_inner(
         cur.record("baal.release.id", tracing::field::display(rel));
     }
 
-    let source_for_meta = source.clone();
-    let metadata: ActorMetadata =
-        tokio::task::spawn_blocking(move || extract_actor_metadata(&source_for_meta))
-            .await
-            .unwrap_or_default();
+    let metadata: ActorMetadata = extract_actor_metadata(&source).await;
 
     if input.kind == ActorKind::Handler && !metadata.handlers.is_empty() {
         if !metadata.handlers.contains(&input.handler) {
@@ -304,15 +300,10 @@ async fn run_actor_inner(
             rid_owned.as_deref(),
         );
 
-        let outcome =
-            tokio::task::spawn_blocking(move || {
-                let _trace = handler_span.enter();
-                let _otel = parent_ctx.attach();
-                run_actor_handler(&src, &ctx_json, comm_for_spawn, limit, timeout)
-            })
-                .await
-                .map_err(|e| format!("spawn_blocking panicked: {e}"))?
-                .map_err(|e| format!("actor JS error: {e}"))?;
+        drop(parent_ctx.attach());
+        let outcome = run_actor_handler(&src, &ctx_json, comm_for_spawn, limit, timeout)
+            .await
+            .map_err(|e| format!("actor JS error: {e}"))?;
 
         match outcome {
             ActorOutcome::Completed {
@@ -636,15 +627,11 @@ async fn run_dead_letter(
         rid_owned_dl.as_deref(),
     );
 
-    let outcome = tokio::task::spawn_blocking(move || {
-        let _trace = dl_span.enter();
-        let _otel = parent_ctx.attach();
-        run_actor_handler(&src, &dl_ctx, comm_for_spawn, limit, None)
-    })
-    .await;
+    drop(parent_ctx.attach());
+    let outcome = run_actor_handler(&src, &dl_ctx, comm_for_spawn, limit, None).await;
 
     match outcome {
-        Ok(Ok(ActorOutcome::Completed { new_state, state_touched, .. })) => {
+        Ok(ActorOutcome::Completed { new_state, state_touched, .. }) => {
             if state_touched {
                 let new_version = loaded_version + attempt as i64 + 1;
                 if let Err(e) = commit_state(
@@ -676,8 +663,10 @@ async fn run_dead_letter(
                 }
             }
         }
-        Ok(Err(e)) => warn!(error = %e, "[actor_manager] dead_letter JS error"),
-        Err(e) => warn!(error = %e, "[actor_manager] dead_letter spawn_blocking panicked"),
+        Ok(ActorOutcome::Retriable(e, _)) | Ok(ActorOutcome::Terminal { error: e, .. }) => {
+            warn!(error = %e, "[actor_manager] dead_letter JS error")
+        }
+        Err(e) => warn!(error = %e, "[actor_manager] dead_letter JS error"),
         _ => {}
     }
 

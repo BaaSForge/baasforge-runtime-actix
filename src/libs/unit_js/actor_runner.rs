@@ -1,22 +1,20 @@
-use rquickjs::{Context, Promise, Runtime};
+use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Instant;
 
-use super::error::{format_js_error, log_js_failure};
-use super::module_loader::install_user_module_loader;
+use super::error::log_js_failure;
+use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::polyfills::EXECUTION_DEADLINE;
-use super::modules::sdk::{SdkCommCtx, clear_comm_ctx, set_comm_ctx};
+use super::modules::sdk::{CommCtxGuard, SdkCommCtx, set_comm_ctx};
 
 const ACTOR_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
     "\n",
+    include_str!("scripts/platform-patches.js"),
+    "\n",
     include_str!("scripts/actor-runtime.js")
 );
-
-const DEFAULT_STATE_LIMIT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ActorCtxJson {
@@ -73,119 +71,200 @@ pub enum ActorOutcome {
     StateLimitExceeded(String),
 }
 
-pub fn run_actor_handler(
+pub async fn run_actor_handler(
     source: &str,
     ctx_json: &ActorCtxJson,
     comm: Arc<SdkCommCtx>,
     state_limit_bytes: Option<u64>,
     timeout_ms: Option<u64>,
 ) -> Result<ActorOutcome, String> {
-    set_comm_ctx(comm);
-    let result = run_actor_handler_inner(source, ctx_json, state_limit_bytes, timeout_ms);
-    clear_comm_ctx();
-    result
+    let fut = run_actor_handler_inner(source, ctx_json, comm, state_limit_bytes);
+    if let Some(ms) = timeout_ms {
+        tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
+            .await
+            .map_err(|_| "actor timeout expired".to_string())?
+    } else {
+        fut.await
+    }
 }
 
-fn run_actor_handler_inner(
+async fn run_actor_handler_inner(
     source: &str,
     ctx_json: &ActorCtxJson,
+    comm: Arc<SdkCommCtx>,
     state_limit_bytes: Option<u64>,
-    timeout_ms: Option<u64>,
 ) -> Result<ActorOutcome, String> {
-    let rt = Runtime::new().map_err(|e| {
+    let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
+
+    let (llrt_resolver, llrt_loader, attachment) =
+        llrt_modules::module_builder::ModuleBuilder::default().build();
+
+    let rt = AsyncRuntime::new().map_err(|e| {
         let msg = e.to_string();
         log_js_failure("actor runtime init", &msg);
         msg
     })?;
-    install_user_module_loader(&rt, source).map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("actor module loader init", &msg);
-        msg
-    })?;
-    let ctx = Context::full(&rt).map_err(|e| {
+
+    rt.set_loader(
+        (baal.clone(), llrt_resolver),
+        (llrt_loader, baal),
+    )
+    .await;
+
+    let ctx = AsyncContext::full(&rt).await.map_err(|e| {
         let msg = e.to_string();
         log_js_failure("actor context init", &msg);
         msg
     })?;
 
-    if let Some(ms) = timeout_ms {
-        let deadline = Instant::now() + std::time::Duration::from_millis(ms);
-        EXECUTION_DEADLINE.with(|d: &std::cell::Cell<Option<Instant>>| d.set(Some(deadline)));
-        rt.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)));
-    } else {
-        EXECUTION_DEADLINE.with(|d: &std::cell::Cell<Option<Instant>>| d.set(None));
-    }
+    let actor_ctx_js = build_actor_ctx_js(ctx_json);
+    let actor_kind = ctx_json.kind.as_str();
+    let state_limit = state_limit_bytes.unwrap_or(1024 * 1024);
 
-    let result = ctx.with(|ctx| run_actor_in_ctx(&ctx, source, ctx_json, state_limit_bytes));
+    let result = rquickjs::async_with!(ctx => |ctx| {
+        set_comm_ctx(comm);
+        let _guard = CommCtxGuard;
 
-    EXECUTION_DEADLINE.with(|d: &std::cell::Cell<Option<Instant>>| d.set(None));
-    result
+        let outcome: Result<ActorOutcome, String> = async {
+            attachment.attach(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
+
+            modules::register_sdk_comm(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
+
+            let ctx_val = ctx
+                .eval::<rquickjs::Value, _>(format!("({})", actor_ctx_js))
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            ctx.globals()
+                .set("__baal_actor_ctx", ctx_val)
+                .map_err(|e| e.to_string())?;
+            ctx.globals()
+                .set("__baal_actor_kind", actor_kind)
+                .map_err(|e| e.to_string())?;
+            ctx.globals()
+                .set("__baal_actor_state_limit_bytes", state_limit)
+                .map_err(|e| e.to_string())?;
+
+            ctx.eval::<(), _>(ACTOR_RUNTIME_JS)
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+
+            let promise: rquickjs::Promise = ctx
+                .eval("globalThis.__baal_actor_result")
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            let result_val = promise
+                .into_future::<rquickjs::Value>()
+                .await
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+
+            let result_str: String = result_val
+                .as_string()
+                .ok_or("actor result is not a string")?
+                .to_string()
+                .map_err(|e| e.to_string())?;
+
+            parse_actor_result(&result_str)
+        }
+        .await;
+
+        if let Err(ref msg) = outcome {
+            log_js_failure("actor run", msg);
+        }
+        Ok(outcome)
+    })
+    .await
+    .map_err(|e: rquickjs::Error| e.to_string())??;
+
+    drop(ctx);
+    rt.idle().await;
+    rt.run_gc().await;
+
+    Ok(result)
 }
 
-fn run_actor_in_ctx(
-    ctx: &rquickjs::Ctx<'_>,
-    source: &str,
-    actor_ctx: &ActorCtxJson,
-    state_limit_bytes: Option<u64>,
-) -> Result<ActorOutcome, String> {
-    modules::register_all(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("actor register_globals", &msg);
-        msg
-    })?;
-
-    modules::register_sdk_comm(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("actor register_sdk_comm", &msg);
-        msg
-    })?;
-
-    let ctx_val = ctx
-        .eval::<rquickjs::Value, _>(format!("({})", build_actor_ctx_js(actor_ctx)))
-        .map_err(|e| {
-            let msg = format_js_error(ctx, e);
-            log_js_failure("actor parse_ctx", &msg);
-            msg
-        })?;
-
-    ctx.globals().set("__baal_actor_ctx", ctx_val).map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__baal_actor_kind", actor_ctx.kind.as_str())
-        .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set(
-            "__baal_actor_state_limit_bytes",
-            state_limit_bytes.unwrap_or(DEFAULT_STATE_LIMIT_BYTES),
+pub async fn extract_actor_metadata(source: &str) -> ActorMetadata {
+    let result: Option<String> = (async {
+        let baal = validate_and_prepare_loader(source, None).ok()?;
+        let (llrt_resolver, llrt_loader, attachment) =
+            llrt_modules::module_builder::ModuleBuilder::default().build();
+        let rt = AsyncRuntime::new().ok()?;
+        rt.set_loader(
+            (baal.clone(), llrt_resolver),
+            (llrt_loader, baal),
         )
-        .map_err(|e| e.to_string())?;
+        .await;
+        let ctx = AsyncContext::full(&rt).await.ok()?;
 
-    ctx.eval::<(), _>(ACTOR_RUNTIME_JS).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("actor eval_runtime", &msg);
-        msg
-    })?;
+        const METADATA_JS: &str = concat!(
+            include_str!("scripts/runtime-shared.js"),
+            "\n",
+            include_str!("scripts/platform-patches.js"),
+            "\n",
+            r#"
+function actor(config) {
+  return {
+    __actor_def: true,
+    __initial_state: config.state !== undefined ? config.state : {},
+    __handlers: config.handlers || {},
+    __on_alarm: config.onAlarm || null,
+    __on_dead_letter: config.onDeadLetter || null,
+    __metadata: config.metadata || {},
+  };
+}
+globalThis.actor = actor;
+globalThis.__baal_actor_metadata_p = (async function () {
+  var __entry = await import("baal-unit-entry");
+  var __actorDef = __entry.default;
+  if (!__actorDef || !__actorDef.__actor_def) {
+    return JSON.stringify({});
+  }
+  var meta = __actorDef.__metadata || {};
+  var handlers = Object.keys(__actorDef.__handlers || {});
+  function __maxIdleToMs(v) {
+    if (v == null || v === "") return null;
+    if (typeof v === "number" && !isNaN(v)) return v;
+    if (typeof v !== "string") return null;
+    var m = String(v).trim().toLowerCase().match(/^(\d+)\s*(ms|s|m|h)$/);
+    if (!m) return null;
+    var n = parseInt(m[1], 10);
+    var u = m[2];
+    if (u === "ms") return n;
+    if (u === "s") return n * 1000;
+    if (u === "m") return n * 60 * 1000;
+    if (u === "h") return n * 60 * 60 * 1000;
+    return null;
+  }
+  return JSON.stringify({
+    handlers: (meta.handlers && Array.isArray(meta.handlers)) ? meta.handlers : handlers,
+    retry: meta.retry || null,
+    timeout: meta.timeout || null,
+    maxIdleTimeMs: __maxIdleToMs(meta.maxIdleTime),
+    stateLimitBytes: meta.stateLimitBytes || null,
+  });
+})();
+"#
+        );
 
-    let promise: Promise = ctx
-        .eval::<Promise, _>("globalThis.__baal_actor_result")
-        .map_err(|e| {
-            let msg = format_js_error(ctx, e);
-            log_js_failure("actor read_promise", &msg);
-            msg
-        })?;
+        let r = rquickjs::async_with!(ctx => |ctx| {
+            attachment.attach(&ctx).ok()?;
+            ctx.eval::<(), _>(METADATA_JS).ok()?;
+            let promise = ctx
+                .eval::<rquickjs::Promise, _>("globalThis.__baal_actor_metadata_p")
+                .ok()?;
+            promise.into_future::<String>().await.ok()
+        })
+        .await;
+        drop(ctx);
+        rt.idle().await;
+        rt.run_gc().await;
+        r
+    })
+    .await;
 
-    let result_val: rquickjs::Value = promise.finish().map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("actor promise_finish", &msg);
-        msg
-    })?;
-
-    let result_str: String = result_val
-        .as_string()
-        .ok_or("actor result is not a string")?
-        .to_string()
-        .map_err(|e| e.to_string())?;
-
-    parse_actor_result(&result_str)
+    result
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn build_actor_ctx_js(ctx: &ActorCtxJson) -> String {
@@ -320,78 +399,6 @@ fn parse_actor_result(result_json: &str) -> Result<ActorOutcome, String> {
     }
 }
 
-pub fn extract_actor_metadata(source: &str) -> ActorMetadata {
-    let rt = match Runtime::new() {
-        Ok(rt) => rt,
-        Err(_) => return ActorMetadata::default(),
-    };
-    if install_user_module_loader(&rt, source).is_err() {
-        return ActorMetadata::default();
-    }
-    let ctx = match Context::full(&rt) {
-        Ok(ctx) => ctx,
-        Err(_) => return ActorMetadata::default(),
-    };
-    ctx.with(|ctx| -> ActorMetadata {
-        let _ = modules::register_all(&ctx);
-        let metadata_js = concat!(
-            include_str!("scripts/runtime-shared.js"),
-            "\n",
-            r#"
-function actor(config) {
-  return {
-    __actor_def: true,
-    __initial_state: config.state !== undefined ? config.state : {},
-    __handlers: config.handlers || {},
-    __on_alarm: config.onAlarm || null,
-    __on_dead_letter: config.onDeadLetter || null,
-    __metadata: config.metadata || {},
-  };
-}
-globalThis.actor = actor;
-globalThis.__baal_actor_metadata_p = (async function () {
-  var __entry = await import("baal-unit-entry");
-  var __actorDef = __entry.default;
-  if (!__actorDef || !__actorDef.__actor_def) {
-    return JSON.stringify({});
-  }
-  var meta = __actorDef.__metadata || {};
-  var handlers = Object.keys(__actorDef.__handlers || {});
-  function __maxIdleToMs(v) {
-    if (v == null || v === "") return null;
-    if (typeof v === "number" && !isNaN(v)) return v;
-    if (typeof v !== "string") return null;
-    var m = String(v).trim().toLowerCase().match(/^(\d+)\s*(ms|s|m|h)$/);
-    if (!m) return null;
-    var n = parseInt(m[1], 10);
-    var u = m[2];
-    if (u === "ms") return n;
-    if (u === "s") return n * 1000;
-    if (u === "m") return n * 60 * 1000;
-    if (u === "h") return n * 60 * 60 * 1000;
-    return null;
-  }
-  return JSON.stringify({
-    handlers: (meta.handlers && Array.isArray(meta.handlers)) ? meta.handlers : handlers,
-    retry: meta.retry || null,
-    timeout: meta.timeout || null,
-    maxIdleTimeMs: __maxIdleToMs(meta.maxIdleTime),
-    stateLimitBytes: meta.stateLimitBytes || null,
-  });
-})();
-"#
-        );
-        let _ = ctx.eval::<(), _>(metadata_js);
-        let promise = ctx
-            .eval::<Promise, _>("globalThis.__baal_actor_metadata_p")
-            .ok();
-        let result = promise
-            .and_then(|p| p.finish::<String>().ok())
-            .unwrap_or_default();
-        serde_json::from_str(&result).unwrap_or_default()
-    })
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ActorMetadata {
     #[serde(default)]
@@ -416,18 +423,10 @@ pub struct ActorRetryPolicy {
     pub max_interval_ms: u64,
 }
 
-fn default_max_attempts() -> u32 {
-    3
-}
-fn default_initial_interval_ms() -> u64 {
-    1000
-}
-fn default_backoff_factor() -> f64 {
-    2.0
-}
-fn default_max_interval_ms() -> u64 {
-    300_000
-}
+fn default_max_attempts() -> u32 { 3 }
+fn default_initial_interval_ms() -> u64 { 1000 }
+fn default_backoff_factor() -> f64 { 2.0 }
+fn default_max_interval_ms() -> u64 { 300_000 }
 
 impl Default for ActorRetryPolicy {
     fn default() -> Self {

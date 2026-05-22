@@ -325,10 +325,7 @@ async fn handle_work_message(
         }
     };
 
-    let source_for_meta = source.clone();
-    let worker_meta = tokio::task::spawn_blocking(move || extract_worker_metadata(&source_for_meta))
-        .await
-        .unwrap_or_default();
+    let worker_meta = extract_worker_metadata(&source).await;
 
     if let Some(ref batch_cfg) = worker_meta.batch {
         let batch_cfg = batch_cfg.clone();
@@ -452,11 +449,8 @@ async fn handle_work_message(
         trigger_runtime,
         rid.as_deref(),
     );
-    let run_future = tokio::task::spawn_blocking(move || {
-        let _trace = caller_span.enter();
-        let _otel = parent_ctx.attach();
-        run_worker_handler(&source, &run_ctx, comm)
-    });
+    drop(parent_ctx.attach());
+    let run_future = run_worker_handler(&source, &run_ctx, comm);
 
     let run_result = if let Some(timeout_ms) = timeout_ms {
         match tokio::time::timeout(
@@ -509,7 +503,7 @@ async fn handle_work_message(
     };
 
     match run_result {
-        Ok(Ok(result)) => {
+        Ok(result) => {
             let was_cancelled = check_cancelled(&wq_redis, &meta_key).await;
             if was_cancelled {
                 release_exec_lock(&wq_redis, &lock_key).await;
@@ -569,21 +563,11 @@ async fn handle_work_message(
                 }
             }
         }
-        Ok(Err(js_error)) => {
+        Err(js_error) => {
             error!(error = %js_error, run_id = %run_id, "[queue_worker_consumer] JS execution error");
             move_to_dead_letter(
                 &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
                 &unit_path, &js_error, wq_stage,
-            )
-            .await;
-            release_exec_lock(&wq_redis, &lock_key).await;
-            let _ = msg.ack().await;
-        }
-        Err(join_error) => {
-            error!(error = %join_error, run_id = %run_id, "[queue_worker_consumer] spawn_blocking panicked");
-            move_to_dead_letter(
-                &wq_redis, &nats_opt, &project_id, &run_id, attempt, enqueued_at,
-                &unit_path, "internal execution error", wq_stage,
             )
             .await;
             release_exec_lock(&wq_redis, &lock_key).await;
@@ -885,14 +869,10 @@ async fn dispatch_batch(
             trigger_runtime,
             rid.as_deref(),
         );
-        let first_result = tokio::task::spawn_blocking(move || {
-            let _trace = caller_span.enter();
-            let _otel = parent_ctx.attach();
-            run_worker_handler(&src, &run_ctx, comm_first)
-        })
-        .await;
+        drop(parent_ctx.attach());
+        let first_result = run_worker_handler(&src, &run_ctx, comm_first).await;
         match first_result {
-            Ok(Ok(r)) => {
+            Ok(r) => {
                 let max = r.retry_policy.max_attempts;
                 match r.outcome {
                     QueueWorkerRunOutcome::Completed(value_json) => {
@@ -915,14 +895,9 @@ async fn dispatch_batch(
                     }
                 }
             }
-            Ok(Err(js_error)) => {
+            Err(js_error) => {
                 error!(error = %js_error, "[batch] JS execution error");
                 batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, &js_error, wq_stage).await;
-                return;
-            }
-            Err(join_error) => {
-                error!(error = %join_error, "[batch] spawn_blocking panicked");
-                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, initial_attempt, enqueued_at, "internal batch execution error", wq_stage).await;
                 return;
             }
         }
@@ -954,15 +929,11 @@ async fn dispatch_batch(
             trigger_runtime,
             rid.as_deref(),
         );
-        let run_result = tokio::task::spawn_blocking(move || {
-            let _trace = caller_span.enter();
-            let _otel = parent_ctx.attach();
-            run_worker_handler(&src, &run_ctx, comm_retry)
-        })
-        .await;
+        drop(parent_ctx.attach());
+        let run_result = run_worker_handler(&src, &run_ctx, comm_retry).await;
 
         match run_result {
-            Ok(Ok(r)) => match r.outcome {
+            Ok(r) => match r.outcome {
                 QueueWorkerRunOutcome::Completed(value_json) => {
                     batch_complete(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &value_json, wq_stage).await;
                     return;
@@ -982,14 +953,9 @@ async fn dispatch_batch(
                     attempt += 1;
                 }
             },
-            Ok(Err(js_error)) => {
+            Err(js_error) => {
                 error!(error = %js_error, "[batch] JS execution error");
                 batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, &js_error, wq_stage).await;
-                return;
-            }
-            Err(join_error) => {
-                error!(error = %join_error, "[batch] spawn_blocking panicked");
-                batch_dead_letter(&wq_redis, &nats_opt, &project_id, &unit_path, &all_run_ids, attempt, enqueued_at, "internal batch execution error", wq_stage).await;
                 return;
             }
         }

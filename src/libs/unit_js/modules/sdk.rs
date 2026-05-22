@@ -137,10 +137,28 @@ where
 
 fn block_async<F, R>(future: F) -> Result<R, String>
 where
-    F: std::future::Future<Output = Result<R, String>> + Send,
+    F: std::future::Future<Output = Result<R, String>>,
 {
     let cx = tracing::Span::current().context();
-    tokio::runtime::Handle::current().block_on(future.with_context(cx))
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(future.with_context(cx))
+    })
+}
+
+pub struct CommCtxGuard;
+
+impl Drop for CommCtxGuard {
+    fn drop(&mut self) {
+        clear_comm_ctx();
+    }
+}
+
+pub struct HostCtxGuard;
+
+impl Drop for HostCtxGuard {
+    fn drop(&mut self) {
+        clear_host_ctx();
+    }
 }
 
 const MAX_SDK_TRACE_CHARS: usize = 8192;

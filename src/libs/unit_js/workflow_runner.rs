@@ -1,35 +1,35 @@
-use rquickjs::{Context, Promise, Runtime};
+use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use super::error::{format_js_error, log_js_failure};
-use super::module_loader::install_user_module_loader;
+use super::error::log_js_failure;
+use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::sdk::{self, SdkCommCtx, WorkflowHostCtx};
+use super::modules::sdk::{CommCtxGuard, HostCtxGuard, SdkCommCtx, WorkflowHostCtx, set_comm_ctx, set_host_ctx};
 
-const WORKFLOW_RUNTIME_JS: &str = concat!(include_str!("scripts/runtime-shared.js"), "\n", include_str!("scripts/workflow-runtime.js"));
+const WORKFLOW_RUNTIME_JS: &str = concat!(
+    include_str!("scripts/runtime-shared.js"),
+    "\n",
+    include_str!("scripts/platform-patches.js"),
+    "\n",
+    include_str!("scripts/workflow-runtime.js")
+);
 
-/// Context data passed into the QuickJS workflow runtime.
 #[derive(Debug, Clone)]
 pub struct WorkflowExecutionContext {
     pub project_id: String,
     pub instance_id: String,
     pub input: String,
-    /// `step_name` -> JSON of { status, result?, error?, terminal? }
     pub steps: HashMap<String, String>,
-    /// `sleep_name` -> JSON of { elapsed }
     pub sleeps: HashMap<String, String>,
-    /// `promise_name` -> JSON of { status, value?, error? }
     pub promises: HashMap<String, String>,
     pub date_now: i64,
-    /// If `Some`, this is a shared handler invocation (not the main run).
     pub handler_name: Option<String>,
     pub handler_input: Option<String>,
 }
 
-/// Result of executing a workflow step.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum WorkflowExecutionResult {
     Completed(String),
@@ -42,8 +42,7 @@ pub enum WorkflowExecutionResult {
     HandlerResult(String),
 }
 
-/// Run a workflow in QuickJS. Called inside `spawn_blocking`.
-pub fn run_workflow_handler(
+pub async fn run_workflow_handler(
     source: &str,
     wf_ctx: &WorkflowExecutionContext,
     redis: &Arc<Mutex<redis::aio::MultiplexedConnection>>,
@@ -56,100 +55,91 @@ pub fn run_workflow_handler(
         project_id: wf_ctx.project_id.clone(),
         instance_id: wf_ctx.instance_id.clone(),
     });
-    sdk::set_host_ctx(host_ctx);
-    sdk::set_comm_ctx(comm);
 
-    let result = run_workflow_in_quickjs(source, wf_ctx);
+    let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
+    let (llrt_resolver, llrt_loader, attachment) =
+        llrt_modules::module_builder::ModuleBuilder::default().build();
 
-    sdk::clear_comm_ctx();
-    sdk::clear_host_ctx();
-    result
-}
-
-fn run_workflow_in_quickjs(
-    source: &str,
-    wf_ctx: &WorkflowExecutionContext,
-) -> Result<WorkflowExecutionResult, String> {
-    let rt = Runtime::new().map_err(|e| {
+    let rt = AsyncRuntime::new().map_err(|e| {
         let msg = e.to_string();
         log_js_failure("workflow runtime init", &msg);
         msg
     })?;
-    install_user_module_loader(&rt, source).map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("workflow module loader init", &msg);
-        msg
-    })?;
-    let ctx = Context::full(&rt).map_err(|e| {
+
+    rt.set_loader(
+        (baal.clone(), llrt_resolver),
+        (llrt_loader, baal),
+    )
+    .await;
+
+    let ctx = AsyncContext::full(&rt).await.map_err(|e| {
         let msg = e.to_string();
         log_js_failure("workflow context init", &msg);
         msg
     })?;
-    ctx.with(|ctx| run_workflow_in_ctx(&ctx, source, wf_ctx))
-}
 
-fn run_workflow_in_ctx(
-    ctx: &rquickjs::Ctx<'_>,
-    source: &str,
-    wf_ctx: &WorkflowExecutionContext,
-) -> Result<WorkflowExecutionResult, String> {
-    modules::register_all(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("workflow register_globals", &msg);
-        msg
-    })?;
+    let wf_ctx_js = build_workflow_ctx_json(wf_ctx);
 
-    modules::register_sdk_comm(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("workflow register_sdk_comm", &msg);
-        msg
-    })?;
+    let result = rquickjs::async_with!(ctx => |ctx| {
+        set_host_ctx(host_ctx);
+        let _hguard = HostCtxGuard;
+        set_comm_ctx(comm);
+        let _cguard = CommCtxGuard;
 
-    modules::register_workflow_sdk(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("workflow register_sdk", &msg);
-        msg
-    })?;
+        let outcome: Result<WorkflowExecutionResult, String> = async {
+            attachment.attach(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
-    // Build the __baal_workflow_ctx JS object
-    let wf_ctx_json = build_workflow_ctx_json(wf_ctx);
-    let wf_ctx_val = ctx
-        .eval::<rquickjs::Value, _>(format!("({})", wf_ctx_json))
-        .map_err(|e| {
-            let msg = format_js_error(ctx, e);
-            log_js_failure("workflow parse ctx", &msg);
-            msg
-        })?;
-    ctx.globals()
-        .set("__baal_workflow_ctx", wf_ctx_val)
-        .map_err(|e| e.to_string())?;
-    ctx.eval::<(), _>(WORKFLOW_RUNTIME_JS).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("workflow eval_setup", &msg);
-        msg
-    })?;
+            modules::register_sdk_comm(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
-    let promise: Promise = ctx
-        .eval::<Promise, _>("globalThis.__baal_wf_result")
-        .map_err(|e| {
-            let msg = format_js_error(ctx, e);
-            log_js_failure("workflow read_promise", &msg);
-            msg
-        })?;
+            modules::register_workflow_sdk(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
-    let result_val: rquickjs::Value = promise.finish().map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("workflow promise", &msg);
-        msg
-    })?;
+            let wf_ctx_val = ctx
+                .eval::<rquickjs::Value, _>(format!("({})", wf_ctx_js))
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            ctx.globals()
+                .set("__baal_workflow_ctx", wf_ctx_val)
+                .map_err(|e| e.to_string())?;
 
-    let result_str: String = result_val
-        .as_string()
-        .ok_or("workflow result is not a string")?
-        .to_string()
-        .map_err(|e| e.to_string())?;
+            ctx.eval::<(), _>(WORKFLOW_RUNTIME_JS)
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-    parse_workflow_result(&result_str)
+            let promise: rquickjs::Promise = ctx
+                .eval("globalThis.__baal_wf_result")
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            let result_val = promise
+                .into_future::<rquickjs::Value>()
+                .await
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+
+            let result_str: String = result_val
+                .as_string()
+                .ok_or("workflow result is not a string")?
+                .to_string()
+                .map_err(|e| e.to_string())?;
+
+            parse_workflow_result(&result_str)
+        }
+        .await;
+
+        if let Err(ref msg) = outcome {
+            log_js_failure("workflow run", msg);
+        }
+        Ok(outcome)
+    })
+    .await
+    .map_err(|e: rquickjs::Error| e.to_string())??;
+
+    drop(ctx);
+    rt.idle().await;
+    rt.run_gc().await;
+
+    Ok(result)
 }
 
 fn build_workflow_ctx_json(wf_ctx: &WorkflowExecutionContext) -> String {
@@ -162,9 +152,6 @@ fn build_workflow_ctx_json(wf_ctx: &WorkflowExecutionContext) -> String {
         Some(i) => serde_json::to_string(i).unwrap_or_else(|_| "null".to_string()),
         None => "null".to_string(),
     };
-
-    // The steps/sleeps/promises are stored as JSON strings in the HashMap values.
-    // We need to parse them into actual objects for JS consumption.
     let steps_obj = build_parsed_map_json(&wf_ctx.steps);
     let sleeps_obj = build_parsed_map_json(&wf_ctx.sleeps);
     let promises_obj = build_parsed_map_json(&wf_ctx.promises);
@@ -192,7 +179,6 @@ fn build_workflow_ctx_json(wf_ctx: &WorkflowExecutionContext) -> String {
     )
 }
 
-/// Build a JSON object string where each value is a parsed JSON object (not a string).
 fn build_parsed_map_json(map: &HashMap<String, String>) -> String {
     if map.is_empty() {
         return "{}".to_string();
@@ -200,7 +186,6 @@ fn build_parsed_map_json(map: &HashMap<String, String>) -> String {
     let mut parts = Vec::new();
     for (k, v) in map {
         let key = k.replace('\\', "\\\\").replace('"', "\\\"");
-        // v is already a JSON string, embed it directly
         parts.push(format!("\"{key}\": {v}"));
     }
     format!("{{{}}}", parts.join(", "))

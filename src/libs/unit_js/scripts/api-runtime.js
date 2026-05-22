@@ -13,14 +13,29 @@ function __buildReq(snap) {
     if (headers[lk] === undefined) headers[lk] = v;
     rawHeaders.push(k, v);
   }
-  return {
+  var bodyText = snap.bodyText || "";
+  var req = {
     method: snap.method,
     url: snap.url,
     headers: headers,
     rawHeaders: rawHeaders,
     httpVersion: "1.1",
-    __bodyText: snap.bodyText,
+    __bodyText: bodyText,
   };
+  req[Symbol.asyncIterator] = function() {
+    var yielded = false;
+    var encoded = bodyText ? new TextEncoder().encode(bodyText) : null;
+    return {
+      next: function() {
+        if (!yielded && encoded) {
+          yielded = true;
+          return Promise.resolve({ value: encoded, done: false });
+        }
+        return Promise.resolve({ value: undefined, done: true });
+      }
+    };
+  };
+  return req;
 }
 
 function __createRes() {

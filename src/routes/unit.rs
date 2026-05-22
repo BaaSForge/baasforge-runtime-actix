@@ -306,7 +306,6 @@ async fn invoke_api_unit(
     };
     let unit_id = unit.id.clone();
     let revision = unit.revision;
-    let parent_span = span.clone();
     let rid_owned = resolved_runtime_id.map(|u| u.to_string());
     let trigger_runtime = if stage_runtime_id.is_some() {
         Some("stage")
@@ -319,34 +318,20 @@ async fn invoke_api_unit(
         trigger_runtime,
         rid_owned.as_deref(),
     );
-    let run_result = match tokio::task::spawn_blocking(move || {
-        let _span_enter = parent_span.enter();
-        let _otel = parent_ctx.attach();
-        unit_js::run_unit_handler(&code, &snapshot, Some(comm))
-    })
-    .await
-    {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
+    let _otel = parent_ctx.attach();
+    let run_result = match unit_js::run_unit_handler(&code, &snapshot, Some(comm), Some(unit_path.as_str())).await {
+        Ok(r) => r,
+        Err(e) => {
             tracing::error!(
                 unit_id = %unit_id,
                 revision,
                 error = %e,
-                "trigger unit: QuickJS execution failed"
+                "trigger unit: JS execution failed"
             );
             return HttpResponse::BadRequest().json(api_error(
                 "javascript execution failed",
                 json!({ "detail": e }),
             ));
-        }
-        Err(join_err) => {
-            if let Ok(payload) = join_err.try_into_panic() {
-                tracing::error!(unit_id = %unit_id, revision, ?payload, "trigger unit: QuickJS task panicked");
-            } else {
-                tracing::error!(unit_id = %unit_id, revision, "trigger unit: QuickJS task cancelled");
-            }
-            return HttpResponse::InternalServerError()
-                .json(api_error("javascript runner panicked", json!({})));
         }
     };
 

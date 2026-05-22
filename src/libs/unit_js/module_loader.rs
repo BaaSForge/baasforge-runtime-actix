@@ -1,17 +1,21 @@
-//! QuickJS ES module resolver/loader for user units, `@units/*` common modules, `@sdk`, and `node:*`.
-
 use crate::database::{DbPool, SharedRedisConn};
 use crate::libs::unit_slug::parse_unit_path;
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::load_unit_for_path_scoped;
 use rquickjs::loader::{Loader, Resolver};
-use rquickjs::{Ctx, Error, Module, Object, Promise};
+use rquickjs::{Ctx, Error, Module};
 use rquickjs::Result as JsResult;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::LazyLock;
 use uuid::Uuid;
+
+static TOKIO_HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+
+pub fn init_tokio_handle(handle: tokio::runtime::Handle) {
+    let _ = TOKIO_HANDLE.set(handle);
+}
 
 use super::common_imports::{PrepareError, UNNAMED_IMPORT_MSG, WRONG_IMPORT_MSG};
 use super::module_shims::{self as shims, SDK};
@@ -44,6 +48,7 @@ static UNNAMED_BARE_IMPORT_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 struct BaalModulesState {
     entry_source: String,
+    unit_entry_dir: Option<String>,
     common_cache: HashMap<String, String>,
     loading: HashSet<String>,
 }
@@ -54,20 +59,15 @@ pub struct BaalModules {
 }
 
 impl BaalModules {
-    pub fn new(entry_source: impl Into<String>) -> Self {
+    pub fn new(entry_source: impl Into<String>, unit_entry_dir: Option<String>) -> Self {
         Self {
             state: Arc::new(Mutex::new(BaalModulesState {
                 entry_source: entry_source.into(),
+                unit_entry_dir,
                 common_cache: HashMap::new(),
                 loading: HashSet::new(),
             })),
         }
-    }
-
-    pub fn install(self, rt: &rquickjs::Runtime) {
-        let resolver = self.clone();
-        let loader = self;
-        rt.set_loader(resolver, loader);
     }
 
     fn with_state<R>(&self, f: impl FnOnce(&mut BaalModulesState) -> R) -> R {
@@ -131,7 +131,6 @@ fn is_common_path(unit_path: &str) -> bool {
         .is_some_and(|p| p.unit_type == "common")
 }
 
-/// Static import-policy checks that must run before module compilation.
 pub fn validate_import_policy(source: &str) -> std::result::Result<(), PrepareError> {
     if DEFAULT_UNITS_IMPORT_RE.is_match(source) {
         return Err(PrepareError::WrongImport);
@@ -167,16 +166,33 @@ pub fn validate_import_policy(source: &str) -> std::result::Result<(), PrepareEr
 
 impl Resolver for BaalModules {
     fn resolve<'js>(&mut self, _ctx: &Ctx<'js>, base: &str, name: &str) -> JsResult<String> {
+        if (name == "node:crypto" || name == "crypto") && base != shims::BAAL_EXT_CRYPTO_ALIAS {
+            return Ok(shims::BAAL_EXT_CRYPTO_ALIAS.to_string());
+        }
         if name.starts_with('.') {
-            let base_dir = base.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-            let joined = if base_dir.is_empty() {
+            let base_dir = if base == ENTRY_MODULE {
+                self.with_state(|s| s.unit_entry_dir.clone()).unwrap_or_default()
+            } else {
+                base.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default()
+            };
+            let raw = if base_dir.is_empty() {
                 name.to_string()
             } else {
                 format!("{base_dir}/{name}")
             };
-            return Ok(joined);
+            return Ok(normalize_module_path(&raw));
         }
-        Ok(name.to_string())
+        if name == ENTRY_MODULE
+            || name == "@sdk"
+            || name.starts_with("@units/")
+            || shims::baal_module_source(name).is_some()
+        {
+            return Ok(name.to_string());
+        }
+        if shims::BLOCKED_NODE_MODULES.contains(&name) {
+            return Ok(name.to_string());
+        }
+        Err(Error::new_resolving(base, name))
     }
 }
 
@@ -189,7 +205,7 @@ impl Loader for BaalModules {
         if name == "@sdk" {
             return self.declare_module(ctx, name, SDK);
         }
-        if let Some(src) = shims::node_module_source(name) {
+        if let Some(src) = shims::baal_module_source(name) {
             return self.declare_module(ctx, name, src);
         }
         if let Some(unit_path) = units_specifier(name) {
@@ -201,6 +217,12 @@ impl Loader for BaalModules {
                 PrepareError::Load(msg) => Error::new_loading_message(name, &msg),
             })?;
             return self.declare_module(ctx, name, &source);
+        }
+        if shims::BLOCKED_NODE_MODULES.contains(&name) {
+            return Err(Error::new_loading_message(
+                name,
+                &format!("unknown or disallowed module: {name}"),
+            ));
         }
         Err(Error::new_loading_message(
             name,
@@ -217,12 +239,19 @@ fn load_common_unit_blocking(
     unit_path: &str,
 ) -> std::result::Result<String, PrepareError> {
     let unit_path_owned = unit_path.to_string();
-    let unit_path_for_err = unit_path_owned.clone();
     let pool = pool.clone();
     let redis = redis.clone();
-    let row = tokio::runtime::Handle::current()
-        .block_on(async move {
-            load_unit_for_path_scoped(
+
+    let handle = TOKIO_HANDLE
+        .get()
+        .expect("tokio handle not initialized; call init_tokio_handle at startup")
+        .clone();
+
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<String, String>>(1);
+
+    handle.spawn(async move {
+        let result: std::result::Result<String, String> = async {
+            let row = load_unit_for_path_scoped(
                 &pool,
                 &redis,
                 project_id,
@@ -231,32 +260,39 @@ fn load_common_unit_blocking(
                 &unit_path_owned,
             )
             .await
-        })
-        .map_err(|e| PrepareError::Load(e.to_string()))?
-        .ok_or_else(|| {
-            PrepareError::Load(format!("common unit not found: {unit_path_for_err}"))
-        })?;
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("common unit not found: {unit_path_owned}"))?;
+            row.compiled_code
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| format!("common unit has no code: {unit_path_owned}"))
+        }
+        .await;
+        let _ = tx.send(result);
+    });
 
-    row.compiled_code
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| PrepareError::Load(format!("common unit has no code: {unit_path_for_err}")))
+    rx.recv()
+        .map_err(|_| PrepareError::Load("module loader task disconnected".to_string()))?
+        .map_err(PrepareError::Load)
 }
 
-/// Evaluates the user entry module; call after [`BaalModules::install`] and runtime globals are registered.
-pub fn import_entry_module<'js>(ctx: &Ctx<'js>) -> JsResult<Object<'js>> {
-    let promise: Promise = Module::import(ctx, ENTRY_MODULE)?;
-    promise.finish()
+fn normalize_module_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "." | "" => {}
+            ".." => { parts.pop(); }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
 }
 
-pub fn install_user_module_loader(
-    rt: &rquickjs::Runtime,
+pub fn validate_and_prepare_loader(
     source: &str,
-) -> std::result::Result<(), PrepareError> {
+    unit_entry_dir: Option<String>,
+) -> std::result::Result<BaalModules, PrepareError> {
     validate_import_policy(source)?;
-    BaalModules::new(source).install(rt);
-    Ok(())
+    Ok(BaalModules::new(source, unit_entry_dir))
 }
 
 pub fn prepare_error_message(err: PrepareError) -> &'static str {

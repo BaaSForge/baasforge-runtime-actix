@@ -64,7 +64,8 @@ urlencoding = "2.1.3"
 reqwest = { version = "0.13.1", features = ["json", "stream", "blocking"] }
 # Alternatively:
 # (simpler, but less feature-rich)
-ureq = "3.1.4"
+rquickjs = { version = "0.11", features = ["classes", "macro", "loader", "futures", "parallel", "disable-assertions"] }
+llrt_modules = { git = "https://github.com/awslabs/llrt", tag = "v0.8.1-beta", package = "llrt_modules", default-features = false, features = ["abort", "assert", "buffer", "console", "crypto", "events", "exceptions", "fetch", "timers", "stream-web", "url", "util", "path", "zlib", "string-decoder", "perf-hooks", "process", "intl", "navigator", "tls-ring", "crypto-rust"] }
 
 # ORM (PostgreSQL with migrations - TypeORM/Prisma equivalent)
 diesel = { version = "2.3.5", features = ["postgres", "r2d2", "chrono", "serde_json", "uuid"] }
@@ -123,20 +124,7 @@ base64 = "0.22.1"
 rustls = { version = "0.23.36", features = ["ring"] }
 tokio-stream = "0.1.18"
 async-nats = "0.46"
-rquickjs = { version = "0.11", features = ["classes", "macro", "loader"] }
-rquickjs-serde = "0.5"
-rquickjs-extra-url = "0.2"
-rquickjs-extra-console = "0.2"
-sha1 = "0.11.0"
-sha2 = "0.11.0"
-md-5 = "0.11.0"
-hmac = "0.13.0"
-digest = "0.11.2"
-hex = "0.4.3"
-rand = "0.10.0"
-aes = "0.8.4"
 aes-gcm = "0.10.3"
-scrypt = "0.11.0"
 bytes = "1.11.1"
 opentelemetry = "0.27"
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "trace"] }

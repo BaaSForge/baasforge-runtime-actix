@@ -1,125 +1,153 @@
-use rquickjs::{Context, Ctx, Promise, Runtime, Value};
+use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use std::sync::Arc;
 
-use super::error::{format_js_error, log_js_failure};
-use super::module_loader::install_user_module_loader;
+use super::error::log_js_failure;
+use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx, get_project_id};
+use super::modules::sdk::{CommCtxGuard, SdkCommCtx, set_comm_ctx};
 use super::types::{JsResponseRaw, TriggerHttpResponse, TriggerHttpSnapshot};
 
-fn register_globals(ctx: &Ctx<'_>) -> rquickjs::Result<()> {
-    modules::register_all(ctx)?;
-    rquickjs_extra_console::init(ctx)?;
-    Ok(())
-}
+const API_RUNTIME_JS: &str = concat!(
+    include_str!("scripts/runtime-shared.js"),
+    "\n",
+    include_str!("scripts/platform-patches.js"),
+    "\n",
+    include_str!("scripts/api-runtime.js")
+);
 
-const API_RUNTIME_JS: &str = concat!(include_str!("scripts/runtime-shared.js"), "\n", include_str!("scripts/api-runtime.js"));
-
-pub fn run_unit_handler(
+pub async fn run_unit_handler(
     source: &str,
     snapshot: &TriggerHttpSnapshot,
     comm: Option<Arc<SdkCommCtx>>,
+    unit_path: Option<&str>,
 ) -> Result<TriggerHttpResponse, String> {
-    if let Some(c) = comm {
-        set_comm_ctx(c);
-    }
-    let rt = Runtime::new().map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("runtime init", &msg);
-        msg
-    })?;
-    install_user_module_loader(&rt, source).map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("module loader init", &msg);
-        msg
-    })?;
-    let ctx = Context::full(&rt).map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("context init", &msg);
-        msg
-    })?;
-    let result = ctx.with(|ctx| run_in_ctx(&ctx, source, snapshot));
-    clear_comm_ctx();
-    result
-}
+    let unit_entry_dir = unit_path
+        .and_then(|p| p.rsplit_once('/').map(|(dir, _)| dir.to_string()));
+    let baal = validate_and_prepare_loader(source, unit_entry_dir).map_err(|e| e.to_string())?;
 
-fn run_in_ctx(
-    ctx: &Ctx<'_>,
-    source: &str,
-    snapshot: &TriggerHttpSnapshot,
-) -> Result<TriggerHttpResponse, String> {
-    // Expose trigger path + host before module registration so fetch.js
-    // can rewrite self-referencing URLs to the correct trigger endpoint.
+    let (llrt_resolver, llrt_loader, attachment) =
+        llrt_modules::module_builder::ModuleBuilder::default().build();
+
+    let rt = AsyncRuntime::new().map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("api runtime init", &msg);
+        msg
+    })?;
+
+    rt.set_loader(
+        (baal.clone(), llrt_resolver),
+        (llrt_loader, baal),
+    )
+    .await;
+
+    let ctx = AsyncContext::full(&rt).await.map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("api context init", &msg);
+        msg
+    })?;
+
     let self_host = snapshot
         .header_pairs
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("host"))
-        .map(|(_, v)| v.as_str())
-        .unwrap_or("localhost");
+        .map(|(_, v)| v.clone())
+        .unwrap_or_else(|| "localhost".to_string());
+    let project_id = comm.as_ref().map(|c| c.project_id.clone()).unwrap_or_default();
+    let trigger_path = snapshot.trigger_path.clone();
+    let snapshot_json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
 
-    ctx.globals()
-        .set("__triggerBasePath", snapshot.trigger_path.as_str())
-        .map_err(|e| e.to_string())?;
-    ctx.globals()
-        .set("__selfHost", self_host)
-        .map_err(|e| e.to_string())?;
+    let result = rquickjs::async_with!(ctx => |ctx| {
+        if let Some(c) = comm {
+            set_comm_ctx(c);
+        }
+        let _guard = CommCtxGuard;
 
-    let project_id = get_project_id().unwrap_or_default();
-    ctx.globals()
-        .set("__baal_project_id", project_id.as_str())
-        .map_err(|e| e.to_string())?;
+        let outcome: Result<TriggerHttpResponse, String> = async {
+            attachment.attach(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
-    register_globals(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("register_globals", &msg);
-        msg
-    })?;
+            modules::register_sdk_comm(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
-    modules::register_sdk_comm(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("api register_sdk_comm", &msg);
-        msg
-    })?;
+            ctx.globals()
+                .set("__triggerBasePath", trigger_path.as_str())
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            ctx.globals()
+                .set("__selfHost", self_host.as_str())
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            ctx.globals()
+                .set("__baal_project_id", project_id.as_str())
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            ctx.eval::<(), _>(format!("globalThis.__snap = {};", snapshot_json))
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-    let snap_val = rquickjs_serde::to_value(ctx.clone(), snapshot).map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("serialize_snapshot", &msg);
-        msg
-    })?;
-    ctx.globals()
-        .set("__snap", snap_val)
-        .map_err(|e| e.to_string())?;
-    ctx.eval::<(), _>(API_RUNTIME_JS).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("eval_setup", &msg);
-        msg
-    })?;
+            ctx.eval::<(), _>(API_RUNTIME_JS)
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-    let promise: Promise = ctx.eval::<Promise, _>("globalThis.__baal_p").map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("read_promise", &msg);
-        msg
-    })?;
+            let promise: rquickjs::Promise = ctx
+                .eval("globalThis.__baal_p")
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            promise
+                .into_future::<()>()
+                .await
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-    promise.finish::<()>().map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("promise", &msg);
-        msg
-    })?;
+            let json_str: String = ctx
+                .eval("JSON.stringify(globalThis.__baal_res.__snapshot())")
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-    let res_val: Value = ctx
-        .eval("globalThis.__baal_res.__snapshot()")
-        .map_err(|e| {
-            let msg = format_js_error(ctx, e);
-            log_js_failure("read_res", &msg);
-            msg
-        })?;
+            let raw: JsResponseRaw =
+                serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
+            Ok(raw.into())
+        }
+        .await;
 
-    let raw: JsResponseRaw = rquickjs_serde::from_value(res_val).map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("deserialize_res", &msg);
-        msg
-    })?;
+        if let Err(ref msg) = outcome {
+            log_js_failure("api run", msg);
+        }
+        Ok(outcome)
+    })
+    .await
+    .map_err(|e: rquickjs::Error| e.to_string())??;
 
-    Ok(raw.into())
+    drop(ctx);
+    rt.idle().await;
+    rt.run_gc().await;
+
+    Ok(result)
+}
+
+pub async fn import_entry_module_for_meta(
+    source: &str,
+    meta_js: &str,
+    result_global: &str,
+) -> Option<String> {
+    let baal = validate_and_prepare_loader(source, None).ok()?;
+    let (llrt_resolver, llrt_loader, attachment) =
+        llrt_modules::module_builder::ModuleBuilder::default().build();
+    let rt = AsyncRuntime::new().ok()?;
+    rt.set_loader(
+        (baal.clone(), llrt_resolver),
+        (llrt_loader, baal),
+    )
+    .await;
+    let ctx = AsyncContext::full(&rt).await.ok()?;
+    let result_global = result_global.to_string();
+    let meta_js = meta_js.to_string();
+
+    let result = rquickjs::async_with!(ctx => |ctx| {
+        attachment.attach(&ctx).ok()?;
+        ctx.eval::<(), _>(meta_js.as_str()).ok()?;
+        let promise = ctx
+            .eval::<rquickjs::Promise, _>(format!("globalThis.{result_global}"))
+            .ok()?;
+        promise.into_future::<String>().await.ok()
+    })
+    .await;
+    drop(ctx);
+    rt.idle().await;
+    rt.run_gc().await;
+    result
 }

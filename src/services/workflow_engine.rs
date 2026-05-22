@@ -713,22 +713,16 @@ pub(crate) async fn drive_workflow(
     } else {
         Some("production")
     };
-    let caller_span_blocking = tracing::Span::current();
     let parent_ctx = crate::telemetry::context_with_telemetry_baggage(
-        caller_span_blocking.context(),
+        tracing::Span::current().context(),
         Some(comm_for_spawn.project_id.as_str()),
         trigger_runtime,
         rid.as_deref(),
     );
-    let parent_ctx_blocking = parent_ctx.clone();
+    drop(parent_ctx.clone().attach());
 
-    let result = tokio::task::spawn_blocking(move || {
-        let _trace = caller_span_blocking.enter();
-        let _otel = parent_ctx_blocking.attach();
-        run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking join error: {e}"))??;
+    let result = run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn)
+        .await?;
 
     match &result {
         WorkflowExecutionResult::Completed(value) => {

@@ -1,8 +1,3 @@
-//! Run API unit JavaScript in QuickJS with a Node-like `req` / `res` bound to the incoming HTTP request.
-//!
-//! URL and URLSearchParams are provided as Rust-backed classes (see [`url`]).
-//! Request/response data is passed via `rquickjs-serde` — no JSON roundtrips.
-
 pub mod actor_runner;
 pub mod common_imports;
 mod module_shims;

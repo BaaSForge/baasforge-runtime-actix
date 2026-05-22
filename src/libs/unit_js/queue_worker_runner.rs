@@ -1,19 +1,23 @@
-use rquickjs::{Context, Promise, Runtime};
+use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use std::sync::Arc;
 
-use super::error::{format_js_error, log_js_failure};
-use super::module_loader::install_user_module_loader;
+use super::error::log_js_failure;
+use super::module_loader::validate_and_prepare_loader;
 use super::modules;
-use super::modules::sdk::{SdkCommCtx, set_comm_ctx, clear_comm_ctx};
+use super::modules::sdk::{CommCtxGuard, SdkCommCtx, set_comm_ctx};
 
 const QUEUE_WORKER_RUNTIME_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
+    "\n",
+    include_str!("scripts/platform-patches.js"),
     "\n",
     include_str!("scripts/queue-worker-runtime.js")
 );
 
 const QUEUE_WORKER_METADATA_JS: &str = concat!(
     include_str!("scripts/runtime-shared.js"),
+    "\n",
+    include_str!("scripts/platform-patches.js"),
     "\n",
     include_str!("scripts/queue-worker-metadata.js")
 );
@@ -39,26 +43,40 @@ pub struct BatchConfig {
     pub timeout_ms: u64,
 }
 
-pub fn extract_worker_metadata(source: &str) -> WorkerMetadata {
-    let default = WorkerMetadata::default();
-    let result_json: Option<String> = (|| {
-        let rt = Runtime::new().ok()?;
-        install_user_module_loader(&rt, source).ok()?;
-        let ctx = Context::full(&rt).ok()?;
-        ctx.with(|ctx| -> Option<String> {
-            modules::register_all(&ctx).ok()?;
+pub async fn extract_worker_metadata(source: &str) -> WorkerMetadata {
+    let result: Option<String> = (async {
+        let baal = validate_and_prepare_loader(source, None).ok()?;
+        let (llrt_resolver, llrt_loader, attachment) =
+            llrt_modules::module_builder::ModuleBuilder::default().build();
+        let rt = AsyncRuntime::new().ok()?;
+        rt.set_loader(
+            (baal.clone(), llrt_resolver),
+            (llrt_loader, baal),
+        )
+        .await;
+        let ctx = AsyncContext::full(&rt).await.ok()?;
+
+        let r = rquickjs::async_with!(ctx => |ctx| {
+            attachment.attach(&ctx).ok()?;
             ctx.eval::<(), _>(QUEUE_WORKER_METADATA_JS).ok()?;
             let promise = ctx
-                .eval::<Promise, _>("globalThis.__baal_qw_metadata_p")
+                .eval::<rquickjs::Promise, _>("globalThis.__baal_qw_metadata_p")
                 .ok()?;
-            promise.finish::<String>().ok()
+            promise.into_future::<String>().await.ok()
         })
-    })();
-    let Some(json_str) = result_json else {
-        return default;
+        .await;
+        drop(ctx);
+        rt.idle().await;
+        rt.run_gc().await;
+        r
+    })
+    .await;
+
+    let Some(json_str) = result else {
+        return WorkerMetadata::default();
     };
     let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) else {
-        return default;
+        return WorkerMetadata::default();
     };
     let timeout_ms = val.get("timeoutMs").and_then(|v| v.as_u64());
     let batch = val
@@ -105,95 +123,89 @@ pub struct QueueWorkerRunResult {
     pub retry_policy: QueueWorkerRetryPolicy,
 }
 
-pub fn run_worker_handler(
+pub async fn run_worker_handler(
     source: &str,
     run_ctx: &QueueWorkerRunContext,
     comm: Arc<SdkCommCtx>,
 ) -> Result<QueueWorkerRunResult, String> {
-    set_comm_ctx(comm);
-    let result = run_worker_handler_inner(source, run_ctx);
-    clear_comm_ctx();
-    result
-}
+    let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
+    let (llrt_resolver, llrt_loader, attachment) =
+        llrt_modules::module_builder::ModuleBuilder::default().build();
 
-fn run_worker_handler_inner(
-    source: &str,
-    run_ctx: &QueueWorkerRunContext,
-) -> Result<QueueWorkerRunResult, String> {
-    let rt = Runtime::new().map_err(|e| {
+    let rt = AsyncRuntime::new().map_err(|e| {
         let msg = e.to_string();
         log_js_failure("queue_worker runtime init", &msg);
         msg
     })?;
-    install_user_module_loader(&rt, source).map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("queue_worker module loader init", &msg);
-        msg
-    })?;
-    let ctx = Context::full(&rt).map_err(|e| {
+
+    rt.set_loader(
+        (baal.clone(), llrt_resolver),
+        (llrt_loader, baal),
+    )
+    .await;
+
+    let ctx = AsyncContext::full(&rt).await.map_err(|e| {
         let msg = e.to_string();
         log_js_failure("queue_worker context init", &msg);
         msg
     })?;
-    ctx.with(|ctx| run_queue_worker_in_ctx(&ctx, source, run_ctx))
-}
 
-fn run_queue_worker_in_ctx(
-    ctx: &rquickjs::Ctx<'_>,
-    source: &str,
-    run_ctx: &QueueWorkerRunContext,
-) -> Result<QueueWorkerRunResult, String> {
-    modules::register_all(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("queue_worker register_globals", &msg);
-        msg
-    })?;
+    let qw_ctx_js = build_qw_ctx_json(run_ctx);
 
-    modules::register_sdk_comm(ctx).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("queue_worker register_sdk_comm", &msg);
-        msg
-    })?;
+    let result = rquickjs::async_with!(ctx => |ctx| {
+        set_comm_ctx(comm);
+        let _guard = CommCtxGuard;
 
-    let qw_ctx_json = build_qw_ctx_json(run_ctx);
-    let qw_ctx_val = ctx
-        .eval::<rquickjs::Value, _>(format!("({})", qw_ctx_json))
-        .map_err(|e| {
-            let msg = format_js_error(ctx, e);
-            log_js_failure("queue_worker parse_ctx", &msg);
-            msg
-        })?;
+        let outcome: Result<QueueWorkerRunResult, String> = async {
+            attachment.attach(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
-    ctx.globals()
-        .set("__baal_qw_ctx", qw_ctx_val)
-        .map_err(|e| e.to_string())?;
-    ctx.eval::<(), _>(QUEUE_WORKER_RUNTIME_JS).map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("queue_worker eval_runtime", &msg);
-        msg
-    })?;
+            modules::register_sdk_comm(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
-    let promise: Promise = ctx
-        .eval::<Promise, _>("globalThis.__baal_qw_result")
-        .map_err(|e| {
-            let msg = format_js_error(ctx, e);
-            log_js_failure("queue_worker read_promise", &msg);
-            msg
-        })?;
+            let qw_ctx_val = ctx
+                .eval::<rquickjs::Value, _>(format!("({})", qw_ctx_js))
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            ctx.globals()
+                .set("__baal_qw_ctx", qw_ctx_val)
+                .map_err(|e| e.to_string())?;
 
-    let result_val: rquickjs::Value = promise.finish().map_err(|e| {
-        let msg = format_js_error(ctx, e);
-        log_js_failure("queue_worker promise_finish", &msg);
-        msg
-    })?;
+            ctx.eval::<(), _>(QUEUE_WORKER_RUNTIME_JS)
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-    let result_str: String = result_val
-        .as_string()
-        .ok_or("queue_worker result is not a string")?
-        .to_string()
-        .map_err(|e| e.to_string())?;
+            let promise: rquickjs::Promise = ctx
+                .eval("globalThis.__baal_qw_result")
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            let result_val = promise
+                .into_future::<rquickjs::Value>()
+                .await
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-    parse_queue_worker_result(&result_str)
+            let result_str: String = result_val
+                .as_string()
+                .ok_or("queue_worker result is not a string")?
+                .to_string()
+                .map_err(|e| e.to_string())?;
+
+            parse_queue_worker_result(&result_str)
+        }
+        .await;
+
+        if let Err(ref msg) = outcome {
+            log_js_failure("queue_worker run", msg);
+        }
+        Ok(outcome)
+    })
+    .await
+    .map_err(|e: rquickjs::Error| e.to_string())??;
+
+    drop(ctx);
+    rt.idle().await;
+    rt.run_gc().await;
+
+    Ok(result)
 }
 
 fn build_qw_ctx_json(run_ctx: &QueueWorkerRunContext) -> String {
