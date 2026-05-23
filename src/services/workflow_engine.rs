@@ -799,8 +799,10 @@ async fn drive_workflow_on_runtime(
     drop(parent_ctx.clone().attach());
 
     crate::rt_step!("wf.drive.run_workflow_handler", instance_id = %iid);
-    let result = run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn)
-        .await?;
+    let result = crate::libs::runtime_bridge::run_async_on_blocking_pool(async move {
+        run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn).await
+    })
+    .await?;
     crate::rt_step!(
         "wf.drive.run_workflow_handler.done",
         instance_id = %iid,
