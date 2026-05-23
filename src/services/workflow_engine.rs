@@ -122,11 +122,6 @@ pub async fn prepare_workflow_instance_for_start(
                     conn.get(&eid_meta_key).await.map_err(|e| e.to_string())?;
                 if let Some(raw) = eid_meta {
                     if let Ok(meta) = serde_json::from_str::<WorkflowMeta>(&raw) {
-                        if meta.status == "suspended" {
-                            drop(conn);
-                            let _ = resume_workflow(redis, nats, js, project_id, &eid, source, comm.clone()).await;
-                            return Ok(eid);
-                        }
                         if meta.status == "running" {
                             let lock_key = format!("wf:{project_id}:{eid}:exec_lock");
                             let lock_exists: bool = redis::cmd("EXISTS")

@@ -17,6 +17,15 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WakeProcessOutcome {
+    Processed,
+    ExecLockHeld,
+}
+
+const WAKE_CONSUMER_MAX_ACK_PENDING: i64 = 1024;
+const EXEC_LOCK_BUSY_NAK: std::time::Duration = std::time::Duration::from_millis(200);
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_tracing("workflow_worker");
 
@@ -262,6 +271,7 @@ pub async fn run_wake_consumer(
                 durable_name: Some(consumer_name.to_string()),
                 filter_subjects: vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()],
                 ack_wait: std::time::Duration::from_secs(300),
+                max_ack_pending: WAKE_CONSUMER_MAX_ACK_PENDING,
                 ..Default::default()
             },
         )
@@ -288,92 +298,28 @@ pub async fn run_wake_consumer(
                 }
                 let project_id = parts[1].to_string();
                 let instance_id = parts[2].to_string();
-                let msg_type = parts[3];
+                let msg_type = parts[3].to_string();
 
                 let payload: Option<serde_json::Value> =
                     serde_json::from_slice(&msg.payload).ok();
 
-                if msg_type == "start" {
-                    let wf_redis = wf_redis.clone();
-                    let nats_client = Some(nats.clone());
-                    let pool = pool.clone();
-                    let redis_conn = redis_conn.clone();
-                    let actor_redis = actor_redis.clone();
-                    let actor_nats = actor_nats.clone();
-                    let actor_js = actor_js.clone();
-                    let actor_pg = actor_pg.clone();
-                    let actor_locks = actor_locks.clone();
-                    let wq_redis = wq_redis.clone();
-                    let wq_nats = wq_nats.clone();
-                    let wq_js = wq_js.clone();
-
-                    let heartbeat_msg = msg.clone();
-                    let heartbeat = tokio::spawn(async move {
-                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-                        interval.tick().await;
-                        loop {
-                            interval.tick().await;
-                            if heartbeat_msg
-                                .ack_with(async_nats::jetstream::AckKind::Progress)
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    });
-
-                    if let Err(e) = handle_start(
-                        &wf_redis,
-                        &nats_client,
-                        &pool,
-                        &redis_conn,
-                        &project_id,
-                        &instance_id,
-                        payload.as_ref(),
-                        actor_redis,
-                        actor_nats,
-                        actor_js,
-                        actor_pg,
-                        actor_locks,
-                        wq_redis,
-                        wq_nats,
-                        wq_js,
-                    )
-                    .await
+                if msg_type == "wake" {
+                    if let Some(fire_at_ms) = payload
+                        .as_ref()
+                        .and_then(|p| p.get("fire_at"))
+                        .and_then(|v| v.as_i64())
                     {
-                        error!(
-                            project_id = %project_id,
-                            instance_id = %instance_id,
-                            error = %e,
-                            "[workflow_wake] callee start failed"
-                        );
-                    }
-                    heartbeat.abort();
-                    if let Err(e) = msg.ack().await {
-                        error!(error = %e, "[workflow_wake] ack failed");
-                    }
-                    continue;
-                }
-
-                // msg_type == "wake": check fire_at before processing
-                let fire_at = payload
-                    .as_ref()
-                    .and_then(|p| p.get("fire_at"))
-                    .and_then(|v| v.as_i64());
-
-                if let Some(fire_at_ms) = fire_at {
-                    let now_ms = chrono::Utc::now().timestamp_millis();
-                    let remaining = fire_at_ms - now_ms;
-                    if remaining > 0 {
-                        let delay = std::time::Duration::from_millis(remaining as u64);
-                        if let Err(e) = msg
-                            .ack_with(async_nats::jetstream::AckKind::Nak(Some(delay)))
-                            .await
-                        {
-                            error!(error = %e, "[workflow_wake] nak_with_delay failed");
+                        let remaining = fire_at_ms - chrono::Utc::now().timestamp_millis();
+                        if remaining > 0 {
+                            let delay = std::time::Duration::from_millis(remaining as u64);
+                            if let Err(e) = msg
+                                .ack_with(async_nats::jetstream::AckKind::Nak(Some(delay)))
+                                .await
+                            {
+                                error!(error = %e, "[workflow_wake] nak_with_delay failed");
+                            }
+                            continue;
                         }
-                        continue;
                     }
                 }
 
@@ -390,53 +336,84 @@ pub async fn run_wake_consumer(
                 let wq_nats = wq_nats.clone();
                 let wq_js = wq_js.clone();
 
-                let heartbeat_msg = msg.clone();
-                let heartbeat = tokio::spawn(async move {
-                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
-                    interval.tick().await;
-                    loop {
+                tokio::spawn(async move {
+                    let heartbeat_msg = msg.clone();
+                    let heartbeat = tokio::spawn(async move {
+                        let mut interval =
+                            tokio::time::interval(std::time::Duration::from_secs(15));
                         interval.tick().await;
-                        if heartbeat_msg
-                            .ack_with(async_nats::jetstream::AckKind::Progress)
-                            .await
-                            .is_err()
-                        {
-                            break;
+                        loop {
+                            interval.tick().await;
+                            if heartbeat_msg
+                                .ack_with(async_nats::jetstream::AckKind::Progress)
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
                         }
-                    }
+                    });
+
+                    let outcome = if msg_type == "start" {
+                        handle_start(
+                            &wf_redis,
+                            &nats_client,
+                            &pool,
+                            &redis_conn,
+                            &project_id,
+                            &instance_id,
+                            payload.as_ref(),
+                            actor_redis,
+                            actor_nats,
+                            actor_js,
+                            actor_pg,
+                            actor_locks,
+                            wq_redis,
+                            wq_nats,
+                            wq_js,
+                        )
+                        .await
+                        .map_err(|e| {
+                            error!(
+                                project_id = %project_id,
+                                instance_id = %instance_id,
+                                error = %e,
+                                "[workflow_wake] callee start failed"
+                            );
+                            e
+                        })
+                    } else {
+                        handle_wake(
+                            &wf_redis,
+                            &nats_client,
+                            &pool,
+                            &redis_conn,
+                            &project_id,
+                            &instance_id,
+                            payload.as_ref(),
+                            actor_redis,
+                            actor_nats,
+                            actor_js,
+                            actor_pg,
+                            actor_locks,
+                            wq_redis,
+                            wq_nats,
+                            wq_js,
+                        )
+                        .await
+                        .map_err(|e| {
+                            error!(
+                                project_id = %project_id,
+                                instance_id = %instance_id,
+                                error = %e,
+                                "[workflow_wake] resume failed"
+                            );
+                            e
+                        })
+                    };
+
+                    finalize_wake_message(msg, heartbeat, outcome).await;
                 });
-
-                if let Err(e) = handle_wake(
-                    &wf_redis,
-                    &nats_client,
-                    &pool,
-                    &redis_conn,
-                    &project_id,
-                    &instance_id,
-                    payload.as_ref(),
-                    actor_redis,
-                    actor_nats,
-                    actor_js,
-                    actor_pg,
-                    actor_locks,
-                    wq_redis,
-                    wq_nats,
-                    wq_js,
-                )
-                .await
-                {
-                    error!(
-                        project_id = %project_id,
-                        instance_id = %instance_id,
-                        error = %e,
-                        "[workflow_wake] resume failed"
-                    );
-                }
-
-                heartbeat.abort();
-                if let Err(e) = msg.ack().await {
-                    error!(error = %e, "[workflow_wake] ack failed");
-                }
             }
             Err(e) => {
                 error!(error = %e, "[workflow_wake] consumer stream error; stopping");
@@ -446,6 +423,29 @@ pub async fn run_wake_consumer(
     }
 
     Ok(())
+}
+
+async fn finalize_wake_message(
+    msg: async_nats::jetstream::Message,
+    heartbeat: tokio::task::JoinHandle<()>,
+    outcome: Result<WakeProcessOutcome, String>,
+) {
+    heartbeat.abort();
+    match outcome {
+        Ok(WakeProcessOutcome::ExecLockHeld) => {
+            if let Err(e) = msg
+                .ack_with(async_nats::jetstream::AckKind::Nak(Some(EXEC_LOCK_BUSY_NAK)))
+                .await
+            {
+                error!(error = %e, "[workflow_wake] nak exec_lock busy failed");
+            }
+        }
+        Ok(WakeProcessOutcome::Processed) | Err(_) => {
+            if let Err(e) = msg.ack().await {
+                error!(error = %e, "[workflow_wake] ack failed");
+            }
+        }
+    }
 }
 
 async fn handle_start(
@@ -464,7 +464,7 @@ async fn handle_start(
     wq_redis: Option<SharedRedis>,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
-) -> Result<(), String> {
+) -> Result<WakeProcessOutcome, String> {
     let trace_payload = _payload.cloned();
 
     let wf_redis = wf_redis.clone();
@@ -586,7 +586,7 @@ async fn handle_start(
             .map_err(|e| format!("exec_lock acquire: {e}"))?
     };
     if !acquired {
-        return Ok(());
+        return Ok(WakeProcessOutcome::ExecLockHeld);
     }
 
     let comm = Arc::new(SdkCommCtx {
@@ -634,7 +634,7 @@ async fn handle_start(
             .unwrap_or(());
     }
 
-    result
+    result.map(|_| WakeProcessOutcome::Processed)
     })
     .with_context(consumer_cx)
     .await
@@ -658,7 +658,7 @@ async fn handle_wake(
     wq_redis: Option<SharedRedis>,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
-) -> Result<(), String> {
+) -> Result<WakeProcessOutcome, String> {
     let wake_payload = payload.cloned();
 
     let wf_redis = wf_redis.clone();
@@ -738,7 +738,7 @@ async fn handle_wake(
     );
     (async move {
     if meta.status == "completed" || meta.status == "failed" || meta.status == "cancelled" {
-        return Ok(());
+        return Ok(WakeProcessOutcome::Processed);
     }
 
     // Mark sleep as elapsed before resuming
@@ -849,7 +849,7 @@ async fn handle_wake(
             .map_err(|e| format!("exec_lock acquire: {e}"))?
     };
     if !acquired {
-        return Ok(());
+        return Ok(WakeProcessOutcome::ExecLockHeld);
     }
 
     let comm = Arc::new(SdkCommCtx {
@@ -895,7 +895,7 @@ async fn handle_wake(
             .unwrap_or(());
     }
 
-    result
+    result.map(|_| WakeProcessOutcome::Processed)
     })
     .with_context(consumer_cx)
     .await

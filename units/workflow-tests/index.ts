@@ -260,7 +260,8 @@ async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
 
     let handlerIdx = 0;
 
-    for (let iter = 0; iter < (test.maxIterations ?? 5); iter++) {
+    const maxIter = test.maxIterations ?? 80;
+    for (let iter = 0; iter < maxIter; iter++) {
       await sleep(100);
 
       const statusResp = await httpGet(`${instanceBase}/status`);
@@ -282,7 +283,9 @@ async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
           (await getSuspendedType(baseUrl, instanceId));
 
         if (suspType === "sleep") {
-          await sleep(200);
+          const durationMs: number =
+            statusResp?.meta?.suspended?.config?.durationMs ?? 200;
+          await sleep(Math.min(durationMs + 200, 15_000));
         } else if (suspType === "step_retry") {
           // The JetStream consumer NAKs the wake message with the backoff delay.
           // Wait at least as long as the declared delayMs so we don't hammer the
@@ -316,7 +319,7 @@ async function runTest(baseUrl: string, test: TestDef): Promise<TestResult> {
       }
     }
 
-    return fail(test, "max iterations (5) exceeded");
+    return fail(test, `max iterations (${maxIter}) exceeded`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return fail(test, `exception: ${msg}`);
