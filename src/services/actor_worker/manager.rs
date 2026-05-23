@@ -359,20 +359,19 @@ async fn run_actor_inner(
                     )
                     .await;
                     if let Some(pool) = &comm.actor_pg {
-                        let pool = pool.clone();
-                        let pid = input.project_id.clone();
-                        let up = input.unit_path.clone();
-                        let aid = input.actor_id.clone();
-                        let st = new_state.clone();
-                        let stage = comm.stage_runtime_id;
-                        tokio::spawn(async move {
-                            if let Err(e) =
-                                actor_store::upsert_snapshot(&pool, &pid, &up, &aid, stage, &st, new_version)
-                                    .await
-                            {
-                                error!(error = %e, "[actor_manager] upsert_snapshot failed");
-                            }
-                        });
+                        if let Err(e) = actor_store::upsert_snapshot(
+                            pool,
+                            &input.project_id,
+                            &input.unit_path,
+                            &input.actor_id,
+                            comm.stage_runtime_id,
+                            &new_state,
+                            new_version,
+                        )
+                        .await
+                        {
+                            error!(error = %e, "[actor_manager] upsert_snapshot failed");
+                        }
                     }
                 } else if bump_actor_last_access_if_present(
                     &actor_redis,
@@ -671,19 +670,19 @@ async fn run_dead_letter(
                 {
                     error!(error = %e, "[actor_manager] dead_letter state commit failed");
                 } else if let Some(pool) = &comm.actor_pg {
-                    let pool = pool.clone();
-                    let pid = input.project_id.clone();
-                    let up = input.unit_path.clone();
-                    let aid = input.actor_id.clone();
-                    let st = new_state.clone();
-                    let stage = comm.stage_runtime_id;
-                    tokio::spawn(async move {
-                        if let Err(e) =
-                            actor_store::upsert_snapshot(&pool, &pid, &up, &aid, stage, &st, new_version).await
-                        {
-                            error!(error = %e, "[actor_manager] dead_letter upsert_snapshot failed");
-                        }
-                    });
+                    if let Err(e) = actor_store::upsert_snapshot(
+                        pool,
+                        &input.project_id,
+                        &input.unit_path,
+                        &input.actor_id,
+                        comm.stage_runtime_id,
+                        &new_state,
+                        new_version,
+                    )
+                    .await
+                    {
+                        error!(error = %e, "[actor_manager] dead_letter upsert_snapshot failed");
+                    }
                 }
             }
         }
@@ -789,7 +788,30 @@ pub async fn delete_actor(
     stage_runtime_id: Option<Uuid>,
     unit_path: &str,
     actor_id: &str,
+    locks: Option<&SdkActorLocks>,
 ) {
+    let actor_exec_arc = if let Some(locks) = locks {
+        let lock_key = (
+            project_id.to_string(),
+            unit_path.to_string(),
+            actor_id.to_string(),
+            stage_runtime_id,
+        );
+        let mut map = locks.lock().await;
+        Some(
+            map.entry(lock_key)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone(),
+        )
+    } else {
+        None
+    };
+    let _actor_exec_guard = if let Some(ref arc) = actor_exec_arc {
+        Some(arc.lock().await)
+    } else {
+        None
+    };
+
     clear_actor_idle_deadline(actor_redis, project_id, stage_runtime_id, unit_path, actor_id).await;
     if let Some(pool) = actor_pg {
         let _ = actor_store::delete_snapshot(pool, project_id, unit_path, actor_id, stage_runtime_id).await;

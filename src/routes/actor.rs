@@ -624,6 +624,7 @@ async fn actor_delete_inner(
                 stage_runtime_id,
                 &unit_path,
                 &parsed.actor_id,
+                Some(&ctx.actor_locks),
             )
             .await;
             HttpResponse::Ok().json(json!({ "deleted": true }))
