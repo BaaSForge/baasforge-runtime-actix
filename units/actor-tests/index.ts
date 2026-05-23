@@ -52,6 +52,10 @@ function getBaseUrl(req: IncomingMessage): string {
   return `http://${host}`;
 }
 
+function pathSeg(segment: string): string {
+  return encodeURIComponent(segment);
+}
+
 function actorUrl(
   baseUrl: string,
   unit: string,
@@ -59,27 +63,27 @@ function actorUrl(
   handler: string,
   projectId = PROJECT_ID,
 ): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}/${handler}`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/${pathSeg(handler)}`;
 }
 
 function actorStateUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}/state`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/state`;
 }
 
 function actorPassivateUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}/passivate`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/passivate`;
 }
 
 function actorDeleteUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}`;
 }
 
 function actorSnapshotPgUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}/snapshot-pg`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/snapshot-pg`;
 }
 
 function actorTestEvictRedisUrl(baseUrl: string, unit: string, actorId: string, projectId = PROJECT_ID): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${unit}/${actorId}/test-evict-redis`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/test-evict-redis`;
 }
 
 function actorStageSnapshotPgUrl(
@@ -89,7 +93,7 @@ function actorStageSnapshotPgUrl(
   runtimeId = STAGE_RUNTIME_ID,
   projectId = PROJECT_ID,
 ): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/snapshot-pg`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/snapshot-pg`;
 }
 
 function actorStageTestEvictRedisUrl(
@@ -99,7 +103,7 @@ function actorStageTestEvictRedisUrl(
   runtimeId = STAGE_RUNTIME_ID,
   projectId = PROJECT_ID,
 ): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/test-evict-redis`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/test-evict-redis`;
 }
 
 function actorStageUrl(
@@ -110,7 +114,7 @@ function actorStageUrl(
   runtimeId = STAGE_RUNTIME_ID,
   projectId = PROJECT_ID,
 ): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/${handler}`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/${pathSeg(handler)}`;
 }
 
 function actorStageStateUrl(
@@ -120,7 +124,7 @@ function actorStageStateUrl(
   runtimeId = STAGE_RUNTIME_ID,
   projectId = PROJECT_ID,
 ): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/state`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/state`;
 }
 
 function actorStagePassivateUrl(
@@ -130,7 +134,7 @@ function actorStagePassivateUrl(
   runtimeId = STAGE_RUNTIME_ID,
   projectId = PROJECT_ID,
 ): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}/passivate`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}/passivate`;
 }
 
 function actorStageDeleteUrl(
@@ -140,7 +144,7 @@ function actorStageDeleteUrl(
   runtimeId = STAGE_RUNTIME_ID,
   projectId = PROJECT_ID,
 ): string {
-  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${unit}/${actorId}`;
+  return `${baseUrl}/api/v1/trigger/actor/${projectId}/stage/${runtimeId}/test/actor-tests/${pathSeg(unit)}/${pathSeg(actorId)}`;
 }
 
 // ---------------------------------------------------------------------------
