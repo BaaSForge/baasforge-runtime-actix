@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Shared platform integration test for runtime-check library suites (formidable, qs, …).
+# Shared platform integration test for runtime-check library suites.
 #
-# Usage (from suite folder or directly):
-#   ./units/runtime-check/scripts/suite-test.sh formidable
-#   TEST_PORT=4444 ./units/runtime-check/scripts/suite-test.sh qs
+# Usage:
+#   ./units/runtime-check/scripts/suite-test.sh qs
 set -euo pipefail
 
-SUITE="${1:?suite name required (e.g. formidable, qs)}"
+SUITE="${1:?suite name required (e.g. qs)}"
 RUNTIME_CHECK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SUITE_DIR="$RUNTIME_CHECK_ROOT/packages/$SUITE"
 SUITE_DIST="packages/$SUITE"

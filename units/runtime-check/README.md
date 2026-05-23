@@ -10,7 +10,7 @@ Single entry: `scripts/build.mjs` type-checks, emits `dist/`, and records `node_
 
 Used by `test.sh` before integration tests run.
 
-### Library suites (`packages/formidable`, `packages/qs`, …)
+### Library suites (`packages/qs`, …)
 
 Each npm library gets a folder under `packages/` with:
 

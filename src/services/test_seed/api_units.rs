@@ -58,7 +58,6 @@ pub(super) fn spec_for_label(label: &str, seed_source: String, compiled_code: St
     } else {
         match label {
             "runtime-check" => api_unit_seed_metadata("runtime", "check"),
-            "runtime-check-formidable" => api_unit_seed_metadata("runtime", "formidable"),
             "runtime-check-qs" => api_unit_seed_metadata("runtime", "qs"),
             "workflow-tests" => api_unit_seed_metadata("wf", "test"),
             "queue-worker-tests" => api_unit_seed_metadata("queue-worker-tests", "index"),
@@ -82,17 +81,6 @@ pub(super) fn spec_for_label(label: &str, seed_source: String, compiled_code: St
             seed_source,
             runtime_target: RuntimeTarget::All,
             metadata,
-        },
-        "runtime-check-formidable" => UnitSpec {
-            context_slug: "test".into(),
-            module_slug: "runtime".into(),
-            unit_name_slug: "formidable".into(),
-            unit_type: "api".into(),
-            full_id: "test.runtime.api.formidable.1".into(),
-            compiled_code,
-            seed_source,
-            runtime_target: RuntimeTarget::All,
-            metadata: Some(json!({ "method": "GET", "timeout_seconds": 120 })),
         },
         "runtime-check-qs" => UnitSpec {
             context_slug: "test".into(),

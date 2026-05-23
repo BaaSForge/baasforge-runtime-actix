@@ -3,7 +3,7 @@
 # Usage: scripts/suite-test-node.sh <suite>
 set -euo pipefail
 
-SUITE="${1:?suite name required (e.g. formidable, qs)}"
+SUITE="${1:?suite name required (e.g. qs)}"
 RUNTIME_CHECK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SUITE_DIR="$RUNTIME_CHECK_ROOT/packages/$SUITE"
 

@@ -2,7 +2,6 @@
  * Run a runtime-check library suite via handleRequest + minimal req/res mocks.
  *
  * Usage: node scripts/suite-run-node.mjs <suite>
- *   node scripts/suite-run-node.mjs formidable
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

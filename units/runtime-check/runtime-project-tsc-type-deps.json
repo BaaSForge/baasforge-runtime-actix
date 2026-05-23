@@ -4,19 +4,8 @@
   "compilerOptionsLib": [
     "lib.es2023.d.ts"
   ],
-  "fileCount": 110,
+  "fileCount": 104,
   "packages": {
-    "@types/formidable": {
-      "fileCount": 6,
-      "files": [
-        "node_modules/@types/formidable/Formidable.d.ts",
-        "node_modules/@types/formidable/FormidableError.d.ts",
-        "node_modules/@types/formidable/PersistentFile.d.ts",
-        "node_modules/@types/formidable/VolatileFile.d.ts",
-        "node_modules/@types/formidable/index.d.ts",
-        "node_modules/@types/formidable/parsers/index.d.ts"
-      ]
-    },
     "@types/node": {
       "fileCount": 67,
       "files": [
@@ -133,12 +122,6 @@
     }
   },
   "files": [
-    "node_modules/@types/formidable/Formidable.d.ts",
-    "node_modules/@types/formidable/FormidableError.d.ts",
-    "node_modules/@types/formidable/PersistentFile.d.ts",
-    "node_modules/@types/formidable/VolatileFile.d.ts",
-    "node_modules/@types/formidable/index.d.ts",
-    "node_modules/@types/formidable/parsers/index.d.ts",
     "node_modules/@types/node/assert.d.ts",
     "node_modules/@types/node/assert/strict.d.ts",
     "node_modules/@types/node/async_hooks.d.ts",
