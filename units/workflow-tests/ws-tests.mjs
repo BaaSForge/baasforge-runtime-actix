@@ -8,7 +8,7 @@
  * asserts on the events streamed over the WebSocket connection.
  *
  * Exercises GET /api/v1/ws/{project_id}
- *   • Default subscription  → wf.events.{pid}.>
+ *   • Default subscription  → wf.events.{pid}.> + qw.events.{pid}.> + actor.events.{pid}.>
  *   • unitType filter        → wf.events.{pid}.workflow.>
  *   • instanceId filter      → wf.events.{pid}.workflow.{iid}
  *   • Re-subscribe           → replaces the NATS subject mid-session
@@ -260,7 +260,9 @@ const TESTS = [
     // Every event frame must carry event, projectId, instanceId, timestamp.
     name: "ws-event-payload-has-required-fields",
     run: async () => {
-      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_000, async () => {
+      const msgs = await wsCollect(toWsUrl(PROJECT_ID), 4_000, async (ws) => {
+        ws.send(JSON.stringify({ action: "subscribe", unitType: "workflow" }));
+        await sleep(100);
         await epStart("echo-input", { v: 3 });
       });
       const events = msgs.filter(
