@@ -9,7 +9,7 @@
  * src/tsgo on the backend project consumes that report to decide which node_modules
  * types to include when type-checking LLM-written code. A gap here breaks tsgo.
  */
-import { readdirSync, writeFileSync } from "node:fs";
+import { readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
@@ -165,16 +165,102 @@ const packageNames = readdirSync(packagesDir, { withFileTypes: true })
   .filter((e) => e.isDirectory())
   .map((e) => e.name);
 
-for (const name of packageNames) {
-  const outfile = join(compilerOptions.outDir, "packages", name, "index.js");
+const externalizeNodeBuiltinPlugin = {
+  name: "externalize-node-builtin",
+  setup(build) {
+    build.onResolve({ filter: /^node:/ }, (args) => ({
+      path: args.path,
+      external: true,
+    }));
+  },
+};
+
+function createExternalizeNpmPlugin(npmPackages) {
+  const pluginDataKey = "externalize-npm-resolve";
+  return {
+    name: "externalize-npm",
+    setup(build) {
+      externalizeNodeBuiltinPlugin.setup(build);
+
+      build.onResolve({ filter: /^[^./]/ }, async (args) => {
+        if (args.pluginData?.[pluginDataKey]) return;
+        let resolved;
+        try {
+          resolved = await build.resolve(args.path, {
+            resolveDir: args.resolveDir,
+            kind: args.kind,
+            pluginData: { [pluginDataKey]: true },
+          });
+        } catch {
+          return { path: args.path, external: true };
+        }
+        if (!resolved.path.includes("node_modules")) {
+          return { path: args.path, external: true };
+        }
+        const pkg = npmPackageFromPath(resolved.path);
+        if (pkg) npmPackages.add(pkg);
+        return { path: args.path, external: true };
+      });
+    },
+  };
+}
+
+const browserBundle = {
+  absWorkingDir: projectDir,
+  bundle: true,
+  platform: "browser",
+  format: "esm",
+  target: "es2023",
+  logLevel: "silent",
+};
+
+async function bundlePackageUnit(name) {
+  const entry = join(packagesDir, name, "index.ts");
+  const outDir = join(compilerOptions.outDir, "packages", name);
+  const indexOutfile = join(outDir, "index.js");
+  const nodeModulesOutfile = join(compilerOptions.outDir, name, "node_module.js");
+  const npmPackages = new Set();
+  const externalizeNpm = createExternalizeNpmPlugin(npmPackages);
+
   await esbuild.build({
-    entryPoints: [join(packagesDir, name, "index.ts")],
-    outfile,
-    bundle: true,
-    platform: "browser",
-    format: "esm",
-    target: "es2023",
-    logLevel: "silent",
+    ...browserBundle,
+    entryPoints: [entry],
+    outfile: indexOutfile,
+    plugins: [externalizeNpm],
+    write: false,
   });
-  console.log(`Bundled package unit → ${relative(projectDir, outfile)}`);
+
+  if (npmPackages.size > 0) {
+    const sorted = [...npmPackages].sort();
+    const vendorEntry = sorted
+      .map((pkg) => `export { default } from ${JSON.stringify(pkg)};\nexport * from ${JSON.stringify(pkg)};`)
+      .join("\n");
+    const vendorEntryPath = join(projectDir, `.esbuild-vendor-entry-${name}.mjs`);
+    writeFileSync(vendorEntryPath, vendorEntry);
+    try {
+      await esbuild.build({
+        ...browserBundle,
+        entryPoints: [vendorEntryPath],
+        outfile: nodeModulesOutfile,
+        plugins: [externalizeNodeBuiltinPlugin],
+      });
+    } finally {
+      unlinkSync(vendorEntryPath);
+    }
+    console.log(
+      `Bundled package deps → ${relative(projectDir, nodeModulesOutfile)} (${[...npmPackages].sort().join(", ")})`,
+    );
+  }
+
+  await esbuild.build({
+    ...browserBundle,
+    entryPoints: [entry],
+    outfile: indexOutfile,
+    plugins: [externalizeNpm],
+  });
+  console.log(`Bundled package unit → ${relative(projectDir, indexOutfile)}`);
+}
+
+for (const name of packageNames) {
+  await bundlePackageUnit(name);
 }
