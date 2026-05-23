@@ -1,9 +1,9 @@
 /**
- * node:querystring library test runner (`test.runtime.api.qs`).
+ * `qs` npm package test runner (`test.runtime.api.qs`).
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { parse } from "node:querystring";
+import qs from "qs";
 import {
   handleSuiteRequest,
   runSuiteTests,
@@ -15,7 +15,7 @@ const TESTS: SuiteTest[] = [
   {
     name: "parse: basic query string",
     run: async () => {
-      const parsed = parse("a=1&b=2") as Record<string, string>;
+      const parsed = qs.parse("a=1&b=2") as Record<string, string>;
       if (parsed["a"] !== "1") throw new Error(JSON.stringify(parsed));
       if (parsed["b"] !== "2") throw new Error(JSON.stringify(parsed));
     },

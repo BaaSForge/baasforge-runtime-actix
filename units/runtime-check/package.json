@@ -10,8 +10,12 @@
     "build": "node scripts/build.mjs",
     "start": "node dist/server.js"
   },
+  "dependencies": {
+    "qs": "^6.14.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/qs": "^6.15.1",
     "esbuild": "^0.25.0",
     "typescript": "^6.0.3"
   }
