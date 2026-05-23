@@ -22,7 +22,7 @@ fn should_skip_api_discovery(rel_path: &str) -> bool {
     if is_common_lib_path(rel_path) {
         return true;
     }
-    if rel_path.starts_with("formidable/") && !rel_path.starts_with("formidable/units/") {
+    if rel_path.starts_with("packages/") {
         return true;
     }
     SKIP_API_DISCOVERY_PREFIXES
@@ -36,7 +36,6 @@ fn api_unit_seed_metadata(unit_name_slug: &str, rel_path: &str) -> Option<serde_
     }
     if rel_path.starts_with("sdk-chain/")
         || rel_path.starts_with("cross-unit/")
-        || rel_path.starts_with("formidable/units/")
     {
         return Some(json!({ "method": "POST" }));
     }

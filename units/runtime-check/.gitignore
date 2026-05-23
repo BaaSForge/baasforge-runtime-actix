@@ -1,4 +1,8 @@
 node_modules
 dist
 .output.log
-.output-formidable.log
+.output-*.log
+**/.last-report.*.json
+**/.last-terminal.*.txt
+**/.last-report.json
+**/.last-terminal.txt

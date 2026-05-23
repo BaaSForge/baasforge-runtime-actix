@@ -9,9 +9,10 @@
  * src/tsgo on the backend project consumes that report to decide which node_modules
  * types to include when type-checking LLM-written code. A gap here breaks tsgo.
  */
-import { writeFileSync } from "node:fs";
+import { readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as esbuild from "esbuild";
 import ts from "typescript";
 
 const projectDir = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -158,3 +159,23 @@ if (
 
 writeTypeDepsReport(usedNodeModulesFiles, parsed);
 console.log(`Emitted JS to ${relative(projectDir, compilerOptions.outDir)}/`);
+
+const packagesDir = join(projectDir, "packages");
+const packageNames = readdirSync(packagesDir, { withFileTypes: true })
+  .filter((e) => e.isDirectory())
+  .map((e) => e.name);
+
+for (const name of packageNames) {
+  const outfile = join(compilerOptions.outDir, "packages", name, "index.js");
+  await esbuild.build({
+    entryPoints: [join(packagesDir, name, "index.ts")],
+    outfile,
+    bundle: true,
+    packages: "external",
+    platform: "node",
+    format: "esm",
+    target: "es2023",
+    logLevel: "silent",
+  });
+  console.log(`Bundled package unit → ${relative(projectDir, outfile)}`);
+}
