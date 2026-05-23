@@ -10,6 +10,9 @@ const PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
+/** Empty = run all. Otherwise only these name+category pairs. */
+const RUN_ONLY: { name: string; category: string }[] = [];
+
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3337";
   return `http://${host}`;
@@ -537,7 +540,11 @@ function buildReport(results: TestResult[]) {
 export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const baseUrl = getBaseUrl(req);
   const results: TestResult[] = [];
-  for (const test of allTests()) {
+  for (const test of allTests().filter(
+    (t) =>
+      RUN_ONLY.length === 0 ||
+      RUN_ONLY.some((f) => f.name === t.name && f.category === t.category),
+  )) {
     console.log(`  common: ${test.category}: ${test.name} …`);
     results.push(await runTest(baseUrl, test));
   }

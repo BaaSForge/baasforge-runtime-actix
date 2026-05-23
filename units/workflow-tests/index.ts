@@ -20,6 +20,9 @@ const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
+/** Empty = run all. Otherwise only these name+category pairs. */
+const RUN_ONLY: { name: string; category: string }[] = [];
+
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
   return `http://${host}`;
@@ -3152,12 +3155,15 @@ function allEndpointTests(): EndpointTestDef[] {
 export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const baseUrl = getBaseUrl(req);
 
+  const runOnly = (t: { name: string; category: string }) =>
+    RUN_ONLY.length === 0 || RUN_ONLY.some((f) => f.name === t.name && f.category === t.category);
+
   const results = await Promise.all([
-    ...allTests().map(async (test) => {
+    ...allTests().filter(runOnly).map(async (test) => {
       console.log(`  workflow: ${test.category}: ${test.name} …`);
       return runTest(baseUrl, test);
     }),
-    ...allEndpointTests().map(async (et) => {
+    ...allEndpointTests().filter(runOnly).map(async (et) => {
       console.log(`  workflow: ${et.category}: ${et.name} …`);
       return runEndpointTest(baseUrl, et);
     }),

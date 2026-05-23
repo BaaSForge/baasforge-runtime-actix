@@ -44,6 +44,9 @@ const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
 const PASSIVATION_IDLE_SLEEP_MS = 11_500;
 
+/** Empty = run all. Otherwise only these name+category pairs. */
+const RUN_ONLY: { name: string; category: string }[] = [];
+
 function getBaseUrl(req: IncomingMessage): string {
   const host = req.headers.host ?? "127.0.0.1:3333";
   return `http://${host}`;
@@ -3470,7 +3473,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     ...allActorTests().map((test) => ({ kind: "actor" as const, test })),
     ...[...allInlineTests(), stateLimitAtLimitTest()].map((test) => ({ kind: "inline" as const, test })),
     ...allEndpointTests().map((test) => ({ kind: "inline" as const, test })),
-  ];
+  ].filter(
+    (j) =>
+      RUN_ONLY.length === 0 ||
+      RUN_ONLY.some((f) => f.name === j.test.name && f.category === j.test.category),
+  );
 
   const runJob = async (job: Job) => {
     const label = `${job.test.category}: ${job.test.name}`;

@@ -19,6 +19,9 @@ const ALT_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000012";
 const STAGE_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000022";
 const STAGE_B_RUNTIME_ID = "00000000-aaaa-bbbb-cccc-000000000023";
 
+/** Empty = run all. Otherwise only these name+category pairs. */
+const RUN_ONLY: { name: string; category: string }[] = [];
+
 const DEFAULT_TEST_RUNNER_CONCURRENCY = 24;
 
 function testRunnerConcurrency(): number {
@@ -2369,7 +2372,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const tasks = [
     ...allWorkerTests().map((test) => ({ kind: "worker" as const, test })),
     ...allInlineTests().map((test) => ({ kind: "inline" as const, test })),
-  ];
+  ].filter(
+    (t) =>
+      RUN_ONLY.length === 0 ||
+      RUN_ONLY.some((f) => f.name === t.test.name && f.category === t.test.category),
+  );
   const results = await mapPool(tasks, conc, async (task) => {
     if (task.kind === "worker") {
       console.log(`  queue-worker: ${task.test.category}: ${task.test.name} …`);
