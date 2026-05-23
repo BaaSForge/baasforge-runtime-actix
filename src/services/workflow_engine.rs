@@ -684,7 +684,67 @@ pub async fn launch_callee_workflow(
     Ok(())
 }
 
+fn on_actix_arbiter_thread() -> bool {
+    std::thread::current()
+        .name()
+        .is_some_and(|n| n.contains("arbiter"))
+}
+
 pub(crate) async fn drive_workflow(
+    redis: &SharedRedis,
+    nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
+    project_id: &str,
+    instance_id: &str,
+    input_json: &str,
+    source: &str,
+    handler_name: Option<&str>,
+    handler_input_json: Option<&str>,
+    comm: Arc<SdkCommCtx>,
+) -> Result<String, String> {
+    if on_actix_arbiter_thread() {
+        let redis = redis.clone();
+        let nats = nats.clone();
+        let js = js.clone();
+        let project_id = project_id.to_string();
+        let instance_id = instance_id.to_string();
+        let input_json = input_json.to_string();
+        let source = source.to_string();
+        let handler_name = handler_name.map(|s| s.to_string());
+        let handler_input_json = handler_input_json.map(|s| s.to_string());
+        return crate::libs::runtime_bridge::run_async_on_blocking_pool(async move {
+            drive_workflow_on_runtime(
+                &redis,
+                &nats,
+                &js,
+                &project_id,
+                &instance_id,
+                &input_json,
+                &source,
+                handler_name.as_deref(),
+                handler_input_json.as_deref(),
+                comm,
+            )
+            .await
+        })
+        .await;
+    }
+    drive_workflow_on_runtime(
+        redis,
+        nats,
+        js,
+        project_id,
+        instance_id,
+        input_json,
+        source,
+        handler_name,
+        handler_input_json,
+        comm,
+    )
+    .await
+}
+
+async fn drive_workflow_on_runtime(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
     js: &Option<jetstream::Context>,
