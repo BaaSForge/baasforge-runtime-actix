@@ -1,7 +1,9 @@
 use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
@@ -85,7 +87,9 @@ pub async fn run_actor_handler(
         kind = %ctx_json.kind.as_str(),
         timeout_ms = timeout_ms.unwrap_or(0)
     );
-    let fut = run_actor_handler_inner(source, ctx_json, comm, state_limit_bytes);
+    let source = source.to_string();
+    let ctx_json = ctx_json.clone();
+    let fut = run_actor_handler_on_blocking_pool(&source, &ctx_json, comm, state_limit_bytes);
     let out = if let Some(ms) = timeout_ms {
         tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
             .await
@@ -98,6 +102,20 @@ pub async fn run_actor_handler(
         Err(e) => crate::rt_exit_err!("js.actor.run_actor_handler", actor_id = %ctx_json.actor_id, error = %e),
     }
     out
+}
+
+pub async fn run_actor_handler_on_blocking_pool(
+    source: &str,
+    ctx_json: &ActorCtxJson,
+    comm: Arc<SdkCommCtx>,
+    state_limit_bytes: Option<u64>,
+) -> Result<ActorOutcome, String> {
+    let source = source.to_string();
+    let ctx_json = ctx_json.clone();
+    crate::libs::runtime_bridge::run_async_on_blocking_pool(async move {
+        run_actor_handler_inner(&source, &ctx_json, comm, state_limit_bytes).await
+    })
+    .await
 }
 
 async fn run_actor_handler_inner(
@@ -194,7 +212,47 @@ async fn run_actor_handler_inner(
     Ok(result)
 }
 
-pub async fn extract_actor_metadata(source: &str) -> ActorMetadata {
+static ACTOR_METADATA_CACHE: LazyLock<Mutex<HashMap<u64, ActorMetadata>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+const ACTOR_METADATA_CACHE_MAX: usize = 512;
+
+fn actor_source_cache_key(source: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
+}
+
+pub async fn extract_actor_metadata_cached(source: &str) -> ActorMetadata {
+    let key = actor_source_cache_key(source);
+    if let Some(cached) = ACTOR_METADATA_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned()
+    {
+        return cached;
+    }
+
+    let source = source.to_string();
+    let metadata = crate::libs::runtime_bridge::run_async_on_blocking_pool(async move {
+        Ok(extract_actor_metadata(&source).await)
+    })
+    .await
+    .unwrap_or_default();
+
+    let mut cache = ACTOR_METADATA_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if cache.len() >= ACTOR_METADATA_CACHE_MAX {
+        cache.clear();
+    }
+    cache.insert(key, metadata.clone());
+    metadata
+}
+
+async fn extract_actor_metadata(source: &str) -> ActorMetadata {
     let result: Option<String> = (async {
         let baal = validate_and_prepare_loader(source, None).ok()?;
         let (llrt_resolver, llrt_loader, attachment) =

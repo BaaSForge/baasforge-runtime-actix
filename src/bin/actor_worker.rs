@@ -1,3 +1,4 @@
+use baal_runtime_actix::libs::unit_js::module_loader::init_tokio_handle;
 use baal_runtime_actix::configs::Settings;
 use baal_runtime_actix::database::establish_pool;
 use baal_runtime_actix::models::actor_store::build_actor_pg_pool;
@@ -14,6 +15,7 @@ use tracing::{error, info, warn};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_tracing("actor_worker");
+    init_tokio_handle(tokio::runtime::Handle::current());
 
     let settings = Settings::new().map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
         e.to_string().into()

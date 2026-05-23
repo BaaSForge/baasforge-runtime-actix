@@ -1,6 +1,6 @@
 use crate::libs::unit_js::actor_runner::{
     ActorCtxJson, ActorKind, ActorMetadata, ActorOutcome, actor_backoff_delay,
-    extract_actor_metadata, run_actor_handler,
+    extract_actor_metadata_cached, run_actor_handler,
 };
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx};
 use crate::models::actor_store;
@@ -199,7 +199,7 @@ async fn run_actor_inner(
         cur.record("baal.release.id", tracing::field::display(rel));
     }
 
-    let metadata: ActorMetadata = extract_actor_metadata(&source).await;
+    let metadata: ActorMetadata = extract_actor_metadata_cached(&source).await;
 
     if input.kind == ActorKind::Handler && !metadata.handlers.is_empty() {
         if !metadata.handlers.contains(&input.handler) {
