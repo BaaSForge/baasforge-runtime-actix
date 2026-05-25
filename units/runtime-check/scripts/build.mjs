@@ -9,7 +9,7 @@
  * src/tsgo on the backend project consumes that report to decide which node_modules
  * types to include when type-checking LLM-written code. A gap here breaks tsgo.
  */
-import { readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
@@ -62,6 +62,24 @@ function npmPackageFromPath(filePath) {
   return rest.split("/")[0];
 }
 
+function packageJsonRelativePath(pkgName) {
+  return ["node_modules", ...pkgName.split("/"), "package.json"].join("/");
+}
+
+function withNpmPackageJsonFiles(relativeFiles) {
+  const packages = new Set();
+  for (const file of relativeFiles) {
+    const pkg = npmPackageFromPath(file);
+    if (pkg) packages.add(pkg);
+  }
+  const out = new Set(relativeFiles);
+  for (const pkg of packages) {
+    const rel = packageJsonRelativePath(pkg);
+    if (existsSync(join(projectDir, rel))) out.add(rel);
+  }
+  return [...out].sort();
+}
+
 function createRecordingCompilerHost(options) {
   const usedNodeModulesFiles = new Set();
   const host = ts.createCompilerHost(options, true);
@@ -94,9 +112,9 @@ function createRecordingCompilerHost(options) {
 }
 
 function writeTypeDepsReport(usedNodeModulesFiles, parsed) {
-  const files = [...usedNodeModulesFiles]
-    .sort()
-    .map((f) => relative(projectDir, f));
+  const files = withNpmPackageJsonFiles(
+    [...usedNodeModulesFiles].sort().map((f) => relative(projectDir, f)),
+  );
   const byPackage = {};
   for (const file of files) {
     const pkg = npmPackageFromPath(file) ?? "(unknown)";
@@ -106,7 +124,7 @@ function writeTypeDepsReport(usedNodeModulesFiles, parsed) {
   const report = {
     generatedNotice: GENERATED_NOTICE,
     method:
-      "Recorded from the TypeScript compiler host while type-checking (readFile, getSourceFile) — only files the checker actually loaded. Excludes the typescript built-in lib and .json files (e.g. package.json). Packages in node_modules that are never imported (and not in tsconfig types) do not appear.",
+      "Recorded from the TypeScript compiler host while type-checking (readFile, getSourceFile) — only .d.ts files the checker actually loaded, plus each involved npm package's package.json (needed when types resolve via package.json \"types\" / \"exports\"). Excludes the typescript built-in lib. Packages in node_modules that are never imported (and not in tsconfig types) do not appear.",
     compilerOptionsLib: parsed.options.lib ?? [],
     fileCount: files.length,
     packages: Object.fromEntries(
