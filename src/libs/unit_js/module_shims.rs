@@ -5,6 +5,8 @@ pub const NODE_TIMERS_PROMISES: &str = include_str!("scripts/modules/node-timers
 pub const BAAL_EXT_CRYPTO: &str = include_str!("scripts/modules/node-crypto-ext.js");
 pub const NPM_QS: &str =
     include_str!("../../../units/runtime-check/dist/qs/node_module.js");
+pub const NPM_COOKIE: &str =
+    include_str!("../../../units/runtime-check/dist/cookie/node_module.js");
 
 pub const BAAL_EXT_CRYPTO_ALIAS: &str = "__baal_ext_crypto";
 
@@ -37,6 +39,7 @@ pub fn baal_module_source(name: &str) -> Option<&'static str> {
         "node:timers/promises" => Some(NODE_TIMERS_PROMISES),
         "__baal_ext_crypto" => Some(BAAL_EXT_CRYPTO),
         "qs" => Some(NPM_QS),
+        "cookie" => Some(NPM_COOKIE),
         _ => None,
     }
 }
