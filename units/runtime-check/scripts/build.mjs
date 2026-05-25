@@ -9,7 +9,6 @@
  * src/tsgo on the backend project consumes that report to decide which node_modules
  * types to include when type-checking LLM-written code. A gap here breaks tsgo.
  */
-import { createRequire } from "node:module";
 import { readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,20 +16,24 @@ import * as esbuild from "esbuild";
 import ts from "typescript";
 
 const projectDir = join(dirname(fileURLToPath(import.meta.url)), "..");
-const requireFromProject = createRequire(join(projectDir, "package.json"));
 
-function vendorEntryForPackage(pkg) {
-  const mod = requireFromProject(pkg);
-  const e = mod?.default ?? mod;
-  const exportKeys = Object.keys(e).filter(
-    (k) => k !== "default" && /^[a-zA-Z_$][\w$]*$/.test(k) && e[k] != null,
-  );
-  return [
-    `import mod from ${JSON.stringify(pkg)};`,
-    `const _e = mod?.default ?? mod;`,
-    `export default _e;`,
-    ...exportKeys.map((k) => `export const ${k} = _e.${k};`),
-  ].join("\n");
+const VALID_EXPORT_IDENT = /^[a-zA-Z_$][\w$]*$/;
+
+async function npmModuleNamespaceKeys(pkg) {
+  const ns = await import(pkg);
+  return Object.keys(ns).filter((k) => VALID_EXPORT_IDENT.test(k));
+}
+
+function vendorEntryForPackage(pkg, namespaceKeys) {
+  const lines = [`import * as __mod from ${JSON.stringify(pkg)};`];
+  for (const k of namespaceKeys) {
+    if (k === "default") {
+      lines.push("export default __mod.default;");
+    } else {
+      lines.push(`export const ${k} = __mod.${k};`);
+    }
+  }
+  return lines.join("\n");
 }
 const configPath = join(projectDir, "tsconfig.json");
 const outJson = join(projectDir, "runtime-project-tsc-type-deps.json");
@@ -248,7 +251,13 @@ async function bundlePackageUnit(name) {
 
   if (npmPackages.size > 0) {
     const sorted = [...npmPackages].sort();
-    const vendorEntry = sorted.map((pkg) => vendorEntryForPackage(pkg)).join("\n\n");
+    const vendorParts = [];
+    for (const pkg of sorted) {
+      const keys = await npmModuleNamespaceKeys(pkg);
+      vendorParts.push(vendorEntryForPackage(pkg, keys));
+      console.log(`  ${pkg} ESM exports: ${keys.join(", ") || "(none)"}`);
+    }
+    const vendorEntry = vendorParts.join("\n\n");
     const vendorEntryPath = join(projectDir, `.esbuild-vendor-entry-${name}.mjs`);
     writeFileSync(vendorEntryPath, vendorEntry);
     try {
