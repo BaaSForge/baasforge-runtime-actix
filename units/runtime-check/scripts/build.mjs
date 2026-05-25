@@ -9,6 +9,7 @@
  * src/tsgo on the backend project consumes that report to decide which node_modules
  * types to include when type-checking LLM-written code. A gap here breaks tsgo.
  */
+import { createRequire } from "node:module";
 import { readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,21 @@ import * as esbuild from "esbuild";
 import ts from "typescript";
 
 const projectDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const requireFromProject = createRequire(join(projectDir, "package.json"));
+
+function vendorEntryForPackage(pkg) {
+  const mod = requireFromProject(pkg);
+  const e = mod?.default ?? mod;
+  const exportKeys = Object.keys(e).filter(
+    (k) => k !== "default" && /^[a-zA-Z_$][\w$]*$/.test(k) && e[k] != null,
+  );
+  return [
+    `import mod from ${JSON.stringify(pkg)};`,
+    `const _e = mod?.default ?? mod;`,
+    `export default _e;`,
+    ...exportKeys.map((k) => `export const ${k} = _e.${k};`),
+  ].join("\n");
+}
 const configPath = join(projectDir, "tsconfig.json");
 const outJson = join(projectDir, "runtime-project-tsc-type-deps.json");
 
@@ -232,9 +248,7 @@ async function bundlePackageUnit(name) {
 
   if (npmPackages.size > 0) {
     const sorted = [...npmPackages].sort();
-    const vendorEntry = sorted
-      .map((pkg) => `export { default } from ${JSON.stringify(pkg)};\nexport * from ${JSON.stringify(pkg)};`)
-      .join("\n");
+    const vendorEntry = sorted.map((pkg) => vendorEntryForPackage(pkg)).join("\n\n");
     const vendorEntryPath = join(projectDir, `.esbuild-vendor-entry-${name}.mjs`);
     writeFileSync(vendorEntryPath, vendorEntry);
     try {
