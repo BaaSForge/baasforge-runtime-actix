@@ -7,6 +7,8 @@ pub const NPM_QS: &str =
     include_str!("../../../units/runtime-check/dist/qs/node_module.js");
 pub const NPM_COOKIE: &str =
     include_str!("../../../units/runtime-check/dist/cookie/node_module.js");
+pub const NPM_STATUSES: &str =
+    include_str!("../../../units/runtime-check/dist/statuses/node_module.js");
 
 pub const BAAL_EXT_CRYPTO_ALIAS: &str = "__baal_ext_crypto";
 
@@ -40,6 +42,7 @@ pub fn baal_module_source(name: &str) -> Option<&'static str> {
         "__baal_ext_crypto" => Some(BAAL_EXT_CRYPTO),
         "qs" => Some(NPM_QS),
         "cookie" => Some(NPM_COOKIE),
+        "statuses" => Some(NPM_STATUSES),
         _ => None,
     }
 }
