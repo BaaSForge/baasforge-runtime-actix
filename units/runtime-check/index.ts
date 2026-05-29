@@ -43,13 +43,49 @@ import { setTimeout as setTimeoutPromise } from "node:timers/promises";
 // Test harness
 // ---------------------------------------------------------------------------
 
+const TEST_FILTER: string[] = [];
+
 const TEST_PROJECT_ID = "00000000-aaaa-bbbb-cccc-000000000010";
+
+let _testSection = "";
+
+function matchesTestFilter(section: string, name: string): boolean {
+  if (TEST_FILTER.length === 0) return true;
+  const sectionLc = section.toLowerCase();
+  const nameLc = name.toLowerCase();
+  const fullLc = `${sectionLc}: ${nameLc}`;
+  return TEST_FILTER.some((f) => {
+    const needle = f.toLowerCase();
+    return sectionLc.includes(needle) || nameLc.includes(needle) || fullLc.includes(needle);
+  });
+}
+
+function withSection<T>(section: string, fn: () => T): T {
+  const prev = _testSection;
+  _testSection = section;
+  try {
+    return fn();
+  } finally {
+    _testSection = prev;
+  }
+}
+
+async function withSectionAsync<T>(section: string, fn: () => Promise<T>): Promise<T> {
+  const prev = _testSection;
+  _testSection = section;
+  try {
+    return await fn();
+  } finally {
+    _testSection = prev;
+  }
+}
 
 interface TestResult {
   name: string;
   pass: boolean;
   detail?: string;
   error?: string;
+  filtered?: true;
 }
 
 interface GroupedTests {
@@ -58,6 +94,7 @@ interface GroupedTests {
 }
 
 function runTest(name: string, fn: () => string | void): TestResult {
+  if (!matchesTestFilter(_testSection, name)) return { name, pass: true, filtered: true };
   try {
     const detail = fn();
     return { name, pass: true, ...(detail ? { detail } : {}) };
@@ -68,6 +105,7 @@ function runTest(name: string, fn: () => string | void): TestResult {
 }
 
 async function runTestAsync(name: string, fn: () => Promise<string | void>): Promise<TestResult> {
+  if (!matchesTestFilter(_testSection, name)) return { name, pass: true, filtered: true };
   try {
     const detail = await fn();
     return { name, pass: true, ...(detail ? { detail } : {}) };
@@ -78,7 +116,8 @@ async function runTestAsync(name: string, fn: () => Promise<string | void>): Pro
 }
 
 function group(tests: TestResult[]): GroupedTests {
-  return { pass: tests.every((t) => t.pass), tests };
+  const run = tests.filter((t) => !t.filtered);
+  return { pass: run.length === 0 || run.every((t) => t.pass), tests: run };
 }
 
 function moduleLoaderHarnessUrl(baseUrl: string, slug: string): string {
@@ -4017,50 +4056,50 @@ async function runHealthCheck(
   const baseUrl = `http://${host}${selfPath}`;
 
   const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep, moduleLoader] = await Promise.all([
-    checkTimers(),
-    checkTimerSemantics(),
-    checkAsyncPatterns(),
-    checkFetchAPI(baseUrl),
-    checkStreams(),
-    checkBlob(),
-    checkWebCryptoSubtle(),
-    checkFetchHTTPMethods(baseUrl),
-    checkReqResDeep(baseUrl),
-    checkModuleLoaderDynamicImports(baseUrl),
+    withSectionAsync("timers", () => checkTimers()),
+    withSectionAsync("timer_semantics", () => checkTimerSemantics()),
+    withSectionAsync("async_patterns", () => checkAsyncPatterns()),
+    withSectionAsync("fetch_api", () => checkFetchAPI(baseUrl)),
+    withSectionAsync("streams", () => checkStreams()),
+    withSectionAsync("blob", () => checkBlob()),
+    withSectionAsync("web_crypto_subtle", () => checkWebCryptoSubtle()),
+    withSectionAsync("fetch_http_methods", () => checkFetchHTTPMethods(baseUrl)),
+    withSectionAsync("req_res_deep", () => checkReqResDeep(baseUrl)),
+    withSectionAsync("module_loader_dynamic_imports", () => checkModuleLoaderDynamicImports(baseUrl)),
   ]);
 
   const sections: Record<string, GroupedTests> = {
-    es_language: checkESLanguage(),
-    json: checkJSON(),
-    url: checkURL(),
-    encoding: checkEncoding(),
-    base64: checkBase64(),
-    buffer: checkBuffer(),
-    crypto: checkCrypto(),
-    typed_arrays: checkTypedArrays(),
-    date_intl: checkDateIntl(),
+    es_language: withSection("es_language", () => checkESLanguage()),
+    json: withSection("json", () => checkJSON()),
+    url: withSection("url", () => checkURL()),
+    encoding: withSection("encoding", () => checkEncoding()),
+    base64: withSection("base64", () => checkBase64()),
+    buffer: withSection("buffer", () => checkBuffer()),
+    crypto: withSection("crypto", () => checkCrypto()),
+    typed_arrays: withSection("typed_arrays", () => checkTypedArrays()),
+    date_intl: withSection("date_intl", () => checkDateIntl()),
     timers,
     timer_semantics: timerSemantics,
-    error_handling: checkErrorHandling(),
-    string_ops: checkStringOps(),
-    math: checkMath(),
-    collections: checkCollections(),
+    error_handling: withSection("error_handling", () => checkErrorHandling()),
+    string_ops: withSection("string_ops", () => checkStringOps()),
+    math: withSection("math", () => checkMath()),
+    collections: withSection("collections", () => checkCollections()),
     async_patterns: asyncPatterns,
-    req_res_shim: checkReqResShim(req, res),
-    console: checkConsole(),
-    weakref_finalization: checkWeakRefFinalization(),
-    abort_controller: checkAbortController(),
+    req_res_shim: withSection("req_res_shim", () => checkReqResShim(req, res)),
+    console: withSection("console", () => checkConsole()),
+    weakref_finalization: withSection("weakref_finalization", () => checkWeakRefFinalization()),
+    abort_controller: withSection("abort_controller", () => checkAbortController()),
     fetch_api: fetchApi,
     streams,
-    process: checkProcess(),
-    event_target: checkEventTarget(),
+    process: withSection("process", () => checkProcess()),
+    event_target: withSection("event_target", () => checkEventTarget()),
     blob,
-    form_data: checkFormData(),
+    form_data: withSection("form_data", () => checkFormData()),
     web_crypto_subtle: webCryptoSubtle,
-    advanced_object_reflect_proxy: checkAdvancedObjectReflectProxy(),
-    function_patterns: checkFunctionPatterns(),
-    well_known_symbols: checkWellKnownSymbols(),
-    data_manipulation: checkDataManipulation(),
+    advanced_object_reflect_proxy: withSection("advanced_object_reflect_proxy", () => checkAdvancedObjectReflectProxy()),
+    function_patterns: withSection("function_patterns", () => checkFunctionPatterns()),
+    well_known_symbols: withSection("well_known_symbols", () => checkWellKnownSymbols()),
+    data_manipulation: withSection("data_manipulation", () => checkDataManipulation()),
     fetch_http_methods: fetchMethods,
     req_res_deep: reqResDeep,
     module_loader_dynamic_imports: moduleLoader,

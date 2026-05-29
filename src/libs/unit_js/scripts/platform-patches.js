@@ -302,3 +302,118 @@ if (typeof TextDecoderStream === "undefined") {
     Object.defineProperty(this, "ignoreBOM", { value: decoder.ignoreBOM });
   };
 }
+
+// ── Request/Response.body ─────────────────────────────────────────────────────
+// LLRT exposes buffer init bodies as Uint8Array on .body; Node/undici use ReadableStream.
+(function patchFetchBodies() {
+  if (typeof ReadableStream === "undefined") return;
+
+  function isReadableStreamBody(body) {
+    return body != null && typeof body.getReader === "function";
+  }
+
+  function bodyToUint8Array(body) {
+    if (body == null) return null;
+    if (typeof body === "string") return new TextEncoder().encode(body);
+    if (body instanceof Uint8Array) return body;
+    if (ArrayBuffer.isView(body)) {
+      return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
+    }
+    if (body instanceof ArrayBuffer) return new Uint8Array(body);
+    return null;
+  }
+
+  function bytesToReadableStream(bytes) {
+    return new ReadableStream({
+      start: function(controller) {
+        if (bytes && bytes.length > 0) controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+  }
+
+  function isBinaryBodyInit(body) {
+    if (body == null || typeof body === "string" || isReadableStreamBody(body)) return false;
+    return bodyToUint8Array(body) != null;
+  }
+
+  function normalizeBodyInit(body) {
+    if (body == null || isReadableStreamBody(body)) return body;
+    if (typeof body === "string") return body;
+    var bytes = bodyToUint8Array(body);
+    if (bytes == null) return body;
+    return bytesToReadableStream(bytes);
+  }
+
+  var fetchBodyStreams = typeof WeakMap !== "undefined" ? new WeakMap() : null;
+
+  function proxifyFetchInstance(instance) {
+    return new Proxy(instance, {
+      getPrototypeOf: function(target) {
+        return Reflect.getPrototypeOf(target);
+      },
+      get: function(target, prop) {
+        if (prop === "body") return fetchBodyStreams.get(target);
+        var value = target[prop];
+        if (typeof value === "function") return value.bind(target);
+        return value;
+      },
+    });
+  }
+
+  function wrapFetchInstance(instance) {
+    if (!fetchBodyStreams) return instance;
+    var rawBody = instance.body;
+    if (rawBody == null || isReadableStreamBody(rawBody) || typeof rawBody === "string") {
+      return instance;
+    }
+    if (!isBinaryBodyInit(rawBody)) return instance;
+    fetchBodyStreams.set(instance, normalizeBodyInit(rawBody));
+    return proxifyFetchInstance(instance);
+  }
+
+  if (typeof Request !== "undefined") {
+    var needsRequestPatch = false;
+    try {
+      var probe = new Request("http://localhost/", {
+        method: "POST",
+        body: new Uint8Array([1]),
+      });
+      needsRequestPatch = probe.body != null && typeof probe.body.getReader !== "function";
+    } catch (_) {
+      needsRequestPatch = false;
+    }
+
+    if (needsRequestPatch) {
+      var NativeRequest = Request;
+      globalThis.Request = function Request(input, init) {
+        if (init && isBinaryBodyInit(init.body)) {
+          init = Object.assign({}, init, { body: normalizeBodyInit(init.body) });
+        }
+        return wrapFetchInstance(new NativeRequest(input, init));
+      };
+      Request.prototype = NativeRequest.prototype;
+      Object.setPrototypeOf(Request, NativeRequest);
+    }
+  }
+
+  if (typeof Response !== "undefined") {
+    var needsResponsePatch = false;
+    try {
+      var probeRes = new Response(new Uint8Array([1]));
+      needsResponsePatch = probeRes.body != null && typeof probeRes.body.getReader !== "function";
+    } catch (_) {
+      needsResponsePatch = false;
+    }
+
+    if (needsResponsePatch) {
+      var NativeResponse = Response;
+      globalThis.Response = function Response(body, init) {
+        if (isBinaryBodyInit(body)) body = normalizeBodyInit(body);
+        return wrapFetchInstance(new NativeResponse(body, init));
+      };
+      Response.prototype = NativeResponse.prototype;
+      Object.setPrototypeOf(Response, NativeResponse);
+    }
+  }
+}());

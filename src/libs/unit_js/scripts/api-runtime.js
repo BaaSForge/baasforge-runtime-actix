@@ -14,6 +14,7 @@ function __buildReq(snap) {
     rawHeaders.push(k, v);
   }
   var bodyText = snap.bodyText || "";
+  var bodyBytes = bodyText ? new TextEncoder().encode(bodyText) : null;
   var req = {
     method: snap.method,
     url: snap.url,
@@ -21,10 +22,21 @@ function __buildReq(snap) {
     rawHeaders: rawHeaders,
     httpVersion: "1.1",
     __bodyText: bodyText,
+    body: null,
   };
+  if (typeof ReadableStream !== "undefined") {
+    req.body = bodyBytes
+      ? new ReadableStream({
+          start: function(controller) {
+            controller.enqueue(bodyBytes);
+            controller.close();
+          },
+        })
+      : null;
+  }
   req[Symbol.asyncIterator] = function() {
     var yielded = false;
-    var encoded = bodyText ? new TextEncoder().encode(bodyText) : null;
+    var encoded = bodyBytes;
     return {
       next: function() {
         if (!yielded && encoded) {
