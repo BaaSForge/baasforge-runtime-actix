@@ -15,7 +15,8 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { parse as parseQuerystring } from "node:querystring";
-import { text } from "node:stream/consumers";
+import { text, buffer, json, arrayBuffer, blob } from "node:stream/consumers";
+import { getMultipartBoundary, parseMultipart } from "@mjackson/multipart-parser";
 import { URL } from "node:url";
 import {
   randomUUID,
@@ -2028,10 +2029,27 @@ function checkReqResShim(
     assert(result["key"] === "val");
   }));
 
-  // --- text() body reader ---
+  tests.push(runTest("IncomingMessage is Node stream.Readable (on, pipe)", () => {
+    const r = req as IncomingMessage & { on?: unknown; pipe?: unknown };
+    assert(typeof r.on === "function", "expected req.on from stream.Readable");
+    assert(typeof r.pipe === "function", "expected req.pipe from stream.Readable");
+  }));
 
-  tests.push(runTest("text body reader function exists", () => {
-    assert(typeof text === "function");
+  tests.push(runTest("IncomingMessage has no platform __bodyText shortcut", () => {
+    assert(!("__bodyText" in (req as object)), "Node IncomingMessage has no __bodyText");
+  }));
+
+  tests.push(runTest("IncomingMessage has no .body property (unlike fetch Request)", () => {
+    assert(!("body" in (req as object)), "Node http.IncomingMessage has no body property");
+  }));
+
+  tests.push(runTest("IncomingMessage has no Fetch-style ReadableStream body", () => {
+    const r = req as IncomingMessage & { body?: unknown };
+    const hasFetchBody =
+      typeof ReadableStream !== "undefined" &&
+      r.body != null &&
+      r.body instanceof ReadableStream;
+    assert(!hasFetchBody, "classic Node http.IncomingMessage has no .body ReadableStream");
   }));
 
   // cleanup test headers
@@ -2475,24 +2493,27 @@ async function checkFetchAPI(baseUrl: string): Promise<GroupedTests> {
       body,
     });
     assert(resp.ok);
-    const data = await resp.json() as { body: string; byteLength: number };
-    assert(data.body === body);
+    const data = await resp.json() as { byteLength: number; base64: string };
+    const roundtrip = Buffer.from(data.base64, "base64");
     assert(data.byteLength === Buffer.byteLength(body, "utf-8"));
+    assert(roundtrip.toString("utf-8") === body);
   }));
 
   // --- Upload: large POST body ---
 
   tests.push(await runTestAsync("fetch POST upload large body (50KB)", async () => {
-    const largeBody = "X".repeat(50000);
+    const largeBody = new Uint8Array(50000);
+    largeBody.fill(0x58);
+    largeBody[12345] = 0xff;
     const resp = await fetch(`${baseUrl}?_t=echo-raw`, {
       method: "POST",
-      headers: { "Content-Type": "text/plain" },
+      headers: { "Content-Type": "application/octet-stream" },
       body: largeBody,
     });
     assert(resp.ok);
-    const data = await resp.json() as { byteLength: number; body: string };
+    const data = await resp.json() as { byteLength: number; base64: string };
     assert(data.byteLength === 50000, `expected 50000 bytes, got ${data.byteLength}`);
-    assert(data.body.length === 50000);
+    assert(Buffer.from(data.base64, "base64").equals(Buffer.from(largeBody)));
   }));
 
   tests.push(await runTestAsync("fetch POST upload JSON body (10KB)", async () => {
@@ -3978,6 +3999,17 @@ async function checkReqResDeep(baseUrl: string): Promise<GroupedTests> {
     assert(data.echo.emoji === payload.emoji);
     assert(data.echo.chinese === payload.chinese);
     assert(data.echo.mixed === payload.mixed);
+
+    const opaque = new Uint8Array([0x48, 0xff, 0x69]);
+    const rawResp = await fetch(`${baseUrl}?_t=echo-raw`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body: opaque,
+    });
+    assert(rawResp.ok);
+    const raw = await rawResp.json() as { byteLength: number; base64: string };
+    assert(raw.byteLength === opaque.length);
+    assert(Buffer.from(raw.base64, "base64").equals(Buffer.from(opaque)));
   }));
 
   tests.push(await runTestAsync("POST special JSON values roundtrip", async () => {
@@ -4040,6 +4072,500 @@ async function checkReqResDeep(baseUrl: string): Promise<GroupedTests> {
 }
 
 // ---------------------------------------------------------------------------
+// 33. Node.js IncomingMessage + stream/consumers parity (e2e via self-fetch)
+// ---------------------------------------------------------------------------
+
+const NODE_HTTP_BOUNDARY = "----NodeIncomingHttpBoundary";
+const NODE_HTTP_CRLF = "\r\n";
+
+type NodeMultipartPart = {
+  name: string;
+  body: string | Uint8Array;
+  filename?: string;
+  contentType?: string;
+};
+
+function encodeNodeMultipart(parts: NodeMultipartPart[], boundary = NODE_HTTP_BOUNDARY): Uint8Array {
+  const segments: Uint8Array[] = [];
+  const enc = new TextEncoder();
+  const pushText = (s: string) => {
+    segments.push(enc.encode(s));
+  };
+
+  for (const part of parts) {
+    pushText(`--${boundary}${NODE_HTTP_CRLF}`);
+    if (part.filename) {
+      pushText(
+        `Content-Disposition: form-data; name="${part.name}"; filename="${part.filename}"${NODE_HTTP_CRLF}`,
+      );
+      pushText(
+        `Content-Type: ${part.contentType ?? "application/octet-stream"}${NODE_HTTP_CRLF}${NODE_HTTP_CRLF}`,
+      );
+    } else {
+      pushText(`Content-Disposition: form-data; name="${part.name}"${NODE_HTTP_CRLF}${NODE_HTTP_CRLF}`);
+    }
+    if (part.body instanceof Uint8Array) {
+      segments.push(part.body);
+    } else {
+      pushText(part.body);
+    }
+    pushText(NODE_HTTP_CRLF);
+  }
+  pushText(`--${boundary}--${NODE_HTTP_CRLF}`);
+
+  const total = segments.reduce((sum, seg) => sum + seg.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const seg of segments) {
+    out.set(seg, offset);
+    offset += seg.length;
+  }
+  return out;
+}
+
+type RawEcho = { byteLength: number; base64: string };
+
+async function nodeHttpPost(
+  baseUrl: string,
+  action: string,
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string | Uint8Array | ArrayBuffer;
+  } = {},
+): Promise<{ status: number; body: unknown }> {
+  const fetchInit: RequestInit = { method: init.method ?? "POST" };
+  if (init.headers) fetchInit.headers = init.headers;
+  if (init.body !== undefined) fetchInit.body = init.body;
+  const resp = await fetch(`${baseUrl}?_t=${action}`, fetchInit);
+  const responseText = await resp.text();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(responseText);
+  } catch {
+    parsed = responseText;
+  }
+  return { status: resp.status, body: parsed };
+}
+
+function assertRawBytes(data: RawEcho, expected: Uint8Array): void {
+  assert(data.byteLength === expected.length, `byteLength ${data.byteLength} !== ${expected.length}`);
+  assert(
+    Buffer.from(data.base64, "base64").equals(Buffer.from(expected)),
+    "base64 roundtrip mismatch",
+  );
+}
+
+async function checkNodeIncomingHttp(baseUrl: string): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
+
+  tests.push(
+    await runTestAsync("buffer(req): empty body has byteLength 0", async () => {
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-buffer", {
+        headers: { "Content-Type": "application/octet-stream" },
+        body: new Uint8Array(0),
+      });
+      assert(status === 200);
+      const data = body as RawEcho;
+      assert(data.byteLength === 0);
+      assert(data.base64 === "");
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("text(req): empty body is empty string", async () => {
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-text", {
+        headers: { "Content-Type": "text/plain" },
+        body: "",
+      });
+      assert(status === 200);
+      const data = body as { text: string; byteLength: number };
+      assert(data.text === "");
+      assert(data.byteLength === 0);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("json(req): empty body rejects with 400", async () => {
+      const { status } = await nodeHttpPost(baseUrl, "probe-json", {
+        headers: { "Content-Type": "application/json" },
+        body: "",
+      });
+      assert(status === 400);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("buffer(req): opaque bytes including 0x00 and 0xff", async () => {
+      const bytes = new Uint8Array([0x00, 0x01, 0xff, 0xfe, 0x80]);
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-buffer", {
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bytes,
+      });
+      assert(status === 200);
+      assertRawBytes(body as RawEcho, bytes);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("text(req): UTF-8 text/plain roundtrip", async () => {
+      const payload = "Hello 世界 🌍\r\nline2";
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-text", {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        body: payload,
+      });
+      assert(status === 200);
+      const data = body as { text: string; byteLength: number };
+      assert(data.text === payload);
+      assert(data.byteLength === Buffer.byteLength(payload, "utf-8"));
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("json(req): JSON object roundtrip", async () => {
+      const payload = { id: 1, tags: ["a", "b"], nested: { ok: true }, n: null };
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-json", {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      assert(status === 200);
+      const data = body as { json: typeof payload };
+      assert(JSON.stringify(data.json) === JSON.stringify(payload));
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("json(req): invalid JSON returns 400", async () => {
+      const { status } = await nodeHttpPost(baseUrl, "probe-json", {
+        headers: { "Content-Type": "application/json" },
+        body: "{not-json",
+      });
+      assert(status === 400);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("arrayBuffer(req): matches buffer(req) bytes", async () => {
+      const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+      const bufResp = await nodeHttpPost(baseUrl, "probe-buffer", {
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bytes,
+      });
+      const abResp = await nodeHttpPost(baseUrl, "probe-array-buffer", {
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bytes,
+      });
+      assert(bufResp.status === 200 && abResp.status === 200);
+      assertRawBytes(bufResp.body as RawEcho, bytes);
+      assertRawBytes(abResp.body as RawEcho, bytes);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("blob(req): matches buffer(req) bytes", async () => {
+      const bytes = new Uint8Array([0xca, 0xfe, 0xba, 0xbe]);
+      const bufResp = await nodeHttpPost(baseUrl, "probe-buffer", { body: bytes });
+      const blobResp = await nodeHttpPost(baseUrl, "probe-blob", { body: bytes });
+      assert(bufResp.status === 200 && blobResp.status === 200);
+      assertRawBytes(bufResp.body as RawEcho, bytes);
+      assertRawBytes(blobResp.body as RawEcho, bytes);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("text(req): second read on same IncomingMessage is empty (single-consume)", async () => {
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-twice-text", {
+        headers: { "Content-Type": "text/plain" },
+        body: "consume-once",
+      });
+      assert(status === 200);
+      const data = body as { first: string; second: string; firstByteLength: number; secondByteLength: number };
+      assert(data.first === "consume-once");
+      assert(data.firstByteLength === Buffer.byteLength("consume-once", "utf-8"));
+      assert(data.second === "");
+      assert(data.secondByteLength === 0);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("buffer(req) then text(req): second consumer sees no bytes", async () => {
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-buffer-then-text", {
+        headers: { "Content-Type": "application/octet-stream" },
+        body: new Uint8Array([0xab, 0xcd]),
+      });
+      assert(status === 200);
+      const data = body as {
+        bufferByteLength: number;
+        bufferBase64: string;
+        textAfter: string;
+        textAfterByteLength: number;
+      };
+      assert(data.bufferByteLength === 2);
+      assert(data.bufferBase64 === Buffer.from([0xab, 0xcd]).toString("base64"));
+      assert(data.textAfter === "");
+      assert(data.textAfterByteLength === 0);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("IncomingMessage stream events (data/end) preserve bytes", async () => {
+      const bytes = new Uint8Array([0x10, 0x20, 0xff, 0x30]);
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-stream-events", {
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bytes,
+      });
+      assert(status === 200);
+      assertRawBytes(body as RawEcho, bytes);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("buffer(req): 100KB upload with sparse non-UTF-8 octets", async () => {
+      const bytes = new Uint8Array(100_000);
+      bytes.fill(0x41);
+      for (let i = 0; i < 200; i++) bytes[i * 500] = 0xff;
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-buffer", { body: bytes });
+      assert(status === 200);
+      assertRawBytes(body as RawEcho, bytes);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("parseMultipart(buffer(req)): text fields", async () => {
+      const form = encodeNodeMultipart([
+        { name: "user", body: "alice" },
+        { name: "role", body: "admin" },
+      ]);
+      const { status, body } = await nodeHttpPost(baseUrl, "multipart-echo", {
+        headers: { "content-type": `multipart/form-data; boundary=${NODE_HTTP_BOUNDARY}` },
+        body: form,
+      });
+      assert(status === 200);
+      const data = body as { fields: Record<string, string>; files: Record<string, unknown> };
+      assert(data.fields["user"] === "alice");
+      assert(data.fields["role"] === "admin");
+      assert(Object.keys(data.files).length === 0);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("parseMultipart(buffer(req)): binary file part", async () => {
+      const fileBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+      const form = encodeNodeMultipart([
+        { name: "meta", body: "ok" },
+        {
+          name: "upload",
+          filename: "data.bin",
+          body: fileBytes,
+          contentType: "application/octet-stream",
+        },
+      ]);
+      const { status, body } = await nodeHttpPost(baseUrl, "multipart-echo", {
+        headers: { "content-type": `multipart/form-data; boundary=${NODE_HTTP_BOUNDARY}` },
+        body: form,
+      });
+      assert(status === 200);
+      const data = body as {
+        fields: Record<string, string>;
+        files: Record<string, { filename: string; byteLength: number; base64: string }[]>;
+      };
+      assert(data.fields["meta"] === "ok");
+      const uploaded = data.files["upload"];
+      if (!uploaded || uploaded.length !== 1) throw new Error("expected one upload part");
+      const file0 = uploaded[0]!;
+      assert(file0.filename === "data.bin");
+      assert(file0.byteLength === fileBytes.length);
+      assert(Buffer.from(file0.base64, "base64").equals(Buffer.from(fileBytes)));
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("parseMultipart(buffer(req)): multiple files same field name", async () => {
+      const form = encodeNodeMultipart([
+        { name: "doc", filename: "a.txt", body: "AAA" },
+        { name: "doc", filename: "b.txt", body: "BBB" },
+      ]);
+      const { status, body } = await nodeHttpPost(baseUrl, "multipart-echo", {
+        headers: { "content-type": `multipart/form-data; boundary=${NODE_HTTP_BOUNDARY}` },
+        body: form,
+      });
+      assert(status === 200);
+      const data = body as {
+        files: Record<string, { filename: string; byteLength: number }[]>;
+      };
+      const docs = data.files["doc"];
+      if (!docs || docs.length !== 2) throw new Error("expected two doc parts");
+      assert(docs[0]!.filename === "a.txt" && docs[0]!.byteLength === 3);
+      assert(docs[1]!.filename === "b.txt" && docs[1]!.byteLength === 3);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("getMultipartBoundary: quoted boundary in Content-Type", async () => {
+      const quoted = "----QuotedBoundaryXYZ";
+      const form = encodeNodeMultipart([{ name: "q", body: "1" }], quoted);
+      const { status, body } = await nodeHttpPost(baseUrl, "multipart-echo", {
+        headers: { "content-type": `multipart/form-data; boundary="${quoted}"` },
+        body: form,
+      });
+      assert(status === 200);
+      const data = body as { fields: Record<string, string> };
+      assert(data.fields["q"] === "1");
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("multipart missing boundary returns 400", async () => {
+      const { status } = await nodeHttpPost(baseUrl, "multipart-echo", {
+        headers: { "content-type": "multipart/form-data" },
+        body: encodeNodeMultipart([{ name: "x", body: "y" }]),
+      });
+      assert(status === 400);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("buffer(req) and text(req) agree on UTF-8 JSON payload bytes", async () => {
+      const jsonText = JSON.stringify({ n: 42, s: "café" });
+      const bufResp = await nodeHttpPost(baseUrl, "probe-buffer", {
+        headers: { "Content-Type": "application/json" },
+        body: jsonText,
+      });
+      const textResp = await nodeHttpPost(baseUrl, "probe-text", {
+        headers: { "Content-Type": "application/json" },
+        body: jsonText,
+      });
+      assert(bufResp.status === 200 && textResp.status === 200);
+      const raw = bufResp.body as RawEcho;
+      const txt = textResp.body as { text: string; byteLength: number };
+      assert(txt.text === jsonText);
+      assert(txt.byteLength === Buffer.byteLength(jsonText, "utf-8"));
+      assert(raw.byteLength === txt.byteLength);
+      assert(Buffer.from(raw.base64, "base64").toString("utf-8") === jsonText);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("IncomingMessage headers: content-type and content-length visible", async () => {
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-req-meta", {
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Probe": "node-incoming",
+        },
+        body: bytes,
+      });
+      assert(status === 200);
+      const data = body as {
+        method: string;
+        contentType: string | null;
+        contentLength: string | null;
+        xProbe: string | null;
+        bodyByteLength: number;
+        hasBodyProperty: boolean;
+      };
+      assert(data.method === "POST");
+      assert(data.contentType === "application/octet-stream");
+      assert(data.xProbe === "node-incoming");
+      assert(data.bodyByteLength === 4);
+      assert(data.hasBodyProperty === false, "POST IncomingMessage must not expose fetch-style .body");
+      if (data.contentLength !== null) {
+        assert(parseInt(data.contentLength, 10) === 4, `content-length ${data.contentLength}`);
+      }
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("json(req): deeply nested and array payload", async () => {
+      const payload = {
+        arr: [1, [2, { x: 3 }]],
+        deep: { a: { b: { c: "end" } } },
+      };
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-json", {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      assert(status === 200);
+      assert(JSON.stringify((body as { json: unknown }).json) === JSON.stringify(payload));
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("text(req): lone surrogate pair encoding as UTF-8 bytes", async () => {
+      const payload = "\uD800\uDC00";
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-text", {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+        body: payload,
+      });
+      assert(status === 200);
+      const data = body as { text: string; byteLength: number };
+      assert(data.text === payload);
+      assert(data.byteLength === 4);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("parseMultipart: mixed UTF-8 field + binary file in one form", async () => {
+      const form = encodeNodeMultipart([
+        { name: "note", body: "日本語 🔥" },
+        { name: "bin", filename: "raw.bin", body: new Uint8Array([0x00, 0xff, 0x01]) },
+      ]);
+      const { status, body } = await nodeHttpPost(baseUrl, "multipart-echo", {
+        headers: { "content-type": `multipart/form-data; boundary=${NODE_HTTP_BOUNDARY}` },
+        body: form,
+      });
+      assert(status === 200);
+      const data = body as {
+        fields: Record<string, string>;
+        files: Record<string, { byteLength: number; base64: string }[]>;
+      };
+      assert(data.fields["note"] === "日本語 🔥");
+      const binFiles = data.files["bin"];
+      if (!binFiles || binFiles.length !== 1) throw new Error("expected one bin file part");
+      assert(binFiles[0]!.byteLength === 3);
+      assert(Buffer.from(binFiles[0]!.base64, "base64").equals(Buffer.from([0x00, 0xff, 0x01])));
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("PUT with buffer(req) preserves request body bytes", async () => {
+      const bytes = new Uint8Array([0x50, 0x55, 0x54]);
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-buffer", {
+        method: "PUT",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: bytes,
+      });
+      assert(status === 200);
+      assertRawBytes(body as RawEcho, bytes);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("PATCH with json(req) roundtrip", async () => {
+      const payload = { patch: true, n: 7 };
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-json", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      assert(status === 200);
+      assert(JSON.stringify((body as { json: unknown }).json) === JSON.stringify(payload));
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("buffer(req): all-zero byte payload", async () => {
+      const bytes = new Uint8Array(64);
+      const { status, body } = await nodeHttpPost(baseUrl, "probe-buffer", { body: bytes });
+      assert(status === 200);
+      assertRawBytes(body as RawEcho, bytes);
+    }),
+  );
+
+  return group(tests);
+}
+
+// ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
 
@@ -4077,7 +4603,7 @@ async function runHealthCheck(
   const selfPath: string = ((globalThis as Record<string, unknown>)["__triggerBasePath"] as string) ?? "";
   const baseUrl = `http://${host}${selfPath}`;
 
-  const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep, moduleLoader] = await Promise.all([
+  const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep, nodeIncomingHttp, moduleLoader] = await Promise.all([
     withSectionAsync("timers", () => checkTimers()),
     withSectionAsync("timer_semantics", () => checkTimerSemantics()),
     withSectionAsync("async_patterns", () => checkAsyncPatterns()),
@@ -4087,6 +4613,7 @@ async function runHealthCheck(
     withSectionAsync("web_crypto_subtle", () => checkWebCryptoSubtle()),
     withSectionAsync("fetch_http_methods", () => checkFetchHTTPMethods(baseUrl)),
     withSectionAsync("req_res_deep", () => checkReqResDeep(baseUrl)),
+    withSectionAsync("node_incoming_http", () => checkNodeIncomingHttp(baseUrl)),
     withSectionAsync("module_loader_dynamic_imports", () => checkModuleLoaderDynamicImports(baseUrl)),
   ]);
 
@@ -4124,6 +4651,7 @@ async function runHealthCheck(
     data_manipulation: withSection("data_manipulation", () => checkDataManipulation()),
     fetch_http_methods: fetchMethods,
     req_res_deep: reqResDeep,
+    node_incoming_http: nodeIncomingHttp,
     module_loader_dynamic_imports: moduleLoader,
   };
 
@@ -4204,9 +4732,14 @@ export async function handleRequest(
       return;
     }
     case "echo-raw": {
-      const raw = await text(req);
+      const bytes = await buffer(req);
       res.statusCode = 200;
-      res.end(JSON.stringify({ body: raw, byteLength: Buffer.byteLength(raw, "utf-8") }));
+      res.end(
+        JSON.stringify({
+          byteLength: bytes.length,
+          base64: bytes.toString("base64"),
+        }),
+      );
       return;
     }
     case "large": {
@@ -4270,6 +4803,150 @@ export async function handleRequest(
       res.writeHead(200, { "Content-Type": "text/plain" });
       for (let i = 0; i < 5; i++) res.write("A".repeat(10000));
       res.end();
+      return;
+    }
+    case "probe-buffer": {
+      const bytes = await buffer(req);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ byteLength: bytes.length, base64: bytes.toString("base64") }));
+      return;
+    }
+    case "probe-text": {
+      const bodyText = await text(req);
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          text: bodyText,
+          byteLength: Buffer.byteLength(bodyText, "utf-8"),
+        }),
+      );
+      return;
+    }
+    case "probe-json": {
+      try {
+        const data = await json(req);
+        res.statusCode = 200;
+        res.end(JSON.stringify({ json: data }));
+      } catch {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "invalid json body" }));
+      }
+      return;
+    }
+    case "probe-array-buffer": {
+      const ab = await arrayBuffer(req);
+      const bytes = Buffer.from(ab);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ byteLength: bytes.length, base64: bytes.toString("base64") }));
+      return;
+    }
+    case "probe-blob": {
+      const b = await blob(req);
+      const ab = await b.arrayBuffer();
+      const bytes = Buffer.from(ab);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ byteLength: bytes.length, base64: bytes.toString("base64") }));
+      return;
+    }
+    case "probe-twice-text": {
+      const first = await text(req);
+      const second = await text(req);
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          first,
+          second,
+          firstByteLength: Buffer.byteLength(first, "utf-8"),
+          secondByteLength: Buffer.byteLength(second, "utf-8"),
+        }),
+      );
+      return;
+    }
+    case "probe-buffer-then-text": {
+      const bytes = await buffer(req);
+      const after = await text(req);
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          bufferByteLength: bytes.length,
+          bufferBase64: bytes.toString("base64"),
+          textAfter: after,
+          textAfterByteLength: Buffer.byteLength(after, "utf-8"),
+        }),
+      );
+      return;
+    }
+    case "probe-stream-events": {
+      const r = req as IncomingMessage & {
+        on?: (event: string, listener: (...args: unknown[]) => void) => IncomingMessage;
+      };
+      if (typeof r.on !== "function") {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "IncomingMessage is not a Node stream.Readable (missing .on)" }));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      await new Promise<void>((resolve, reject) => {
+        r.on!("data", (chunk: unknown) => {
+          if (Buffer.isBuffer(chunk)) chunks.push(chunk);
+          else if (typeof chunk === "string") chunks.push(Buffer.from(chunk));
+          else if (chunk instanceof Uint8Array) chunks.push(Buffer.from(chunk));
+        });
+        r.on!("end", () => resolve());
+        r.on!("error", (err: unknown) => reject(err));
+      });
+      const bytes = Buffer.concat(chunks);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ byteLength: bytes.length, base64: bytes.toString("base64") }));
+      return;
+    }
+    case "probe-req-meta": {
+      const bytes = await buffer(req);
+      const pick = (name: string): string | null => {
+        const v = req.headers[name];
+        if (v === undefined) return null;
+        return Array.isArray(v) ? (v[0] ?? null) : v;
+      };
+      res.statusCode = 200;
+      res.end(
+        JSON.stringify({
+          method: req.method ?? null,
+          contentType: pick("content-type"),
+          contentLength: pick("content-length"),
+          xProbe: pick("x-probe"),
+          bodyByteLength: bytes.length,
+          hasBodyProperty: "body" in (req as object),
+        }),
+      );
+      return;
+    }
+    case "multipart-echo": {
+      const ct = req.headers["content-type"];
+      const ctStr = Array.isArray(ct) ? ct[0] : ct;
+      const boundary = getMultipartBoundary(ctStr ?? "");
+      if (!boundary) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ error: "multipart boundary not found" }));
+        return;
+      }
+      const bodyBytes = await buffer(req);
+      const fields: Record<string, string> = {};
+      const files: Record<string, { filename: string; byteLength: number; base64: string }[]> = {};
+      for (const part of parseMultipart(bodyBytes, { boundary })) {
+        if (part.isText) {
+          fields[part.name!] = part.text;
+        } else if (part.isFile) {
+          const name = part.name!;
+          const entry = {
+            filename: part.filename ?? "unknown",
+            byteLength: part.bytes.length,
+            base64: Buffer.from(part.bytes).toString("base64"),
+          };
+          (files[name] ??= []).push(entry);
+        }
+      }
+      res.statusCode = 200;
+      res.end(JSON.stringify({ fields, files }));
       return;
     }
   }

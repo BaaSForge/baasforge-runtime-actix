@@ -22,27 +22,45 @@ const BOUNDARY = "----WebKitFormBoundaryTEST";
 
 type MultipartFixturePart = {
   name: string;
-  body: string;
+  body: string | Uint8Array;
   filename?: string;
   contentType?: string;
 };
 
 function encodeMultipart(parts: MultipartFixturePart[], boundary = BOUNDARY): Uint8Array {
-  const chunks: string[] = [];
+  const segments: Uint8Array[] = [];
+  const enc = new TextEncoder();
+  const pushText = (s: string) => {
+    segments.push(enc.encode(s));
+  };
+
   for (const part of parts) {
-    chunks.push(`--${boundary}${CRLF}`);
+    pushText(`--${boundary}${CRLF}`);
     if (part.filename) {
-      chunks.push(
+      pushText(
         `Content-Disposition: form-data; name="${part.name}"; filename="${part.filename}"${CRLF}`,
       );
-      chunks.push(`Content-Type: ${part.contentType ?? "application/octet-stream"}${CRLF}${CRLF}`);
+      pushText(`Content-Type: ${part.contentType ?? "application/octet-stream"}${CRLF}${CRLF}`);
     } else {
-      chunks.push(`Content-Disposition: form-data; name="${part.name}"${CRLF}${CRLF}`);
+      pushText(`Content-Disposition: form-data; name="${part.name}"${CRLF}${CRLF}`);
     }
-    chunks.push(part.body, CRLF);
+    if (part.body instanceof Uint8Array) {
+      segments.push(part.body);
+    } else {
+      pushText(part.body);
+    }
+    pushText(CRLF);
   }
-  chunks.push(`--${boundary}--${CRLF}`);
-  return new TextEncoder().encode(chunks.join(""));
+  pushText(`--${boundary}--${CRLF}`);
+
+  const total = segments.reduce((sum, seg) => sum + seg.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const seg of segments) {
+    out.set(seg, offset);
+    offset += seg.length;
+  }
+  return out;
 }
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -189,8 +207,9 @@ const TESTS: SuiteTest[] = [
   {
     name: "parseMultipart: file field (isFile, filename, mediaType, bytes, arrayBuffer)",
     run: async () => {
+      const fileBytes = new Uint8Array([0x66, 0x69, 0x6c, 0x65, 0xff, 0x64, 0x61, 0x74, 0x61]);
       const body = encodeMultipart([
-        { name: "upload", filename: "note.txt", body: "file-data", contentType: "text/plain" },
+        { name: "upload", filename: "note.bin", body: fileBytes, contentType: "application/octet-stream" },
       ]);
       const parts = [...parseMultipart(body, { boundary: BOUNDARY })];
       const part = parts[0];
@@ -198,11 +217,12 @@ const TESTS: SuiteTest[] = [
       assert(part.isFile === true, "isFile");
       assert(part.isText === false, "isText");
       assert(part.name === "upload", part.name ?? "");
-      assert(part.filename === "note.txt", part.filename ?? "");
-      assert(part.mediaType === "text/plain", part.mediaType ?? "");
-      assert(part.bytes.length === 9, `bytes len ${part.bytes.length}`);
-      assert(part.arrayBuffer.byteLength === 9, `ab len ${part.arrayBuffer.byteLength}`);
-      assert(part.size === 9, `size ${part.size}`);
+      assert(part.filename === "note.bin", part.filename ?? "");
+      assert(part.mediaType === "application/octet-stream", part.mediaType ?? "");
+      assert(part.bytes.length === fileBytes.length, `bytes len ${part.bytes.length}`);
+      assert(part.arrayBuffer.byteLength === fileBytes.length, `ab len ${part.arrayBuffer.byteLength}`);
+      assert(part.size === fileBytes.length, `size ${part.size}`);
+      assert(part.bytes[4] === 0xff, "opaque octet preserved");
       assert(part.content.length >= 1, "content chunks");
     },
   },
@@ -415,6 +435,27 @@ const TESTS: SuiteTest[] = [
       const parser = new MultipartParser(BOUNDARY, { maxHeaderSize: 512, maxFileSize: 1024 });
       assert(parser.maxHeaderSize === 512, `maxHeaderSize ${parser.maxHeaderSize}`);
       assert(parser.maxFileSize === 1024, `maxFileSize ${parser.maxFileSize}`);
+    },
+  },
+  {
+    name: "Node pattern: parseMultipart on raw bytes (not UTF-8 string body)",
+    run: async () => {
+      const fileBytes = new Uint8Array([0xff, 0x00, 0x7f]);
+      const body = encodeMultipart([
+        { name: "f", filename: "opaque.bin", body: fileBytes, contentType: "application/octet-stream" },
+      ]);
+      const parts = [...parseMultipart(body, { boundary: BOUNDARY })];
+      const part = parts[0];
+      assert(part && part.isFile, "expected file part");
+      assert(part.bytes[0] === 0xff && part.bytes[1] === 0x00 && part.bytes[2] === 0x7f, "bytes preserved");
+      const lossy = new TextDecoder("utf-8", { fatal: false }).decode(body);
+      const reencoded = new TextEncoder().encode(lossy);
+      const lossyParts = [...parseMultipart(reencoded, { boundary: BOUNDARY })];
+      const lossyPart = lossyParts[0];
+      assert(
+        !(lossyPart && lossyPart.isFile && Buffer.from(lossyPart.bytes).equals(Buffer.from(fileBytes))),
+        "UTF-8 lossy roundtrip must not be used before parseMultipart",
+      );
     },
   },
 ];

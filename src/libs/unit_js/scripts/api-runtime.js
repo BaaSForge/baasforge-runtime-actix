@@ -2,6 +2,108 @@
 // to reach platform primitives; use __baal_* host functions instead.
 // See src/libs/unit_js/README.md.
 
+function __bodyBytesFromSnap(snap) {
+  if (snap.bodyBase64) {
+    if (typeof Buffer !== "undefined") {
+      return new Uint8Array(Buffer.from(snap.bodyBase64, "base64"));
+    }
+    var binary = atob(snap.bodyBase64);
+    var out = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  }
+  var bodyText = snap.bodyText || "";
+  return bodyText ? new TextEncoder().encode(bodyText) : null;
+}
+
+function __createIncomingReadable(bodyBytes) {
+  var listeners = Object.create(null);
+  var consumed = false;
+  var ended = false;
+  var flowScheduled = false;
+
+  function __emit(event) {
+    var list = listeners[event];
+    if (!list || list.length === 0) return false;
+    var args = [];
+    for (var a = 1; a < arguments.length; a++) args.push(arguments[a]);
+    var pending = list.slice();
+    var keep = [];
+    for (var i = 0; i < pending.length; i++) {
+      var entry = pending[i];
+      entry.fn.apply(req, args);
+      if (!entry.once) keep.push(entry);
+    }
+    listeners[event] = keep;
+    return true;
+  }
+
+  function __flow() {
+    if (ended) return;
+    ended = true;
+    if (!consumed && bodyBytes && bodyBytes.length > 0) {
+      consumed = true;
+      var chunk =
+        typeof Buffer !== "undefined" ? Buffer.from(bodyBytes) : bodyBytes;
+      __emit("data", chunk);
+    } else {
+      consumed = true;
+    }
+    __emit("end");
+  }
+
+  function __scheduleFlow() {
+    if (flowScheduled || ended) return;
+    flowScheduled = true;
+    queueMicrotask(function () {
+      flowScheduled = false;
+      __flow();
+    });
+  }
+
+  function on(event, fn) {
+    if (typeof fn !== "function") return req;
+    if (ended) {
+      if (event === "end") queueMicrotask(function () { fn.call(req); });
+      return req;
+    }
+    if (!listeners[event]) listeners[event] = [];
+    listeners[event].push({ fn: fn, once: false });
+    if (event === "data" || event === "readable") __scheduleFlow();
+    return req;
+  }
+
+  function once(event, fn) {
+    if (typeof fn !== "function") return req;
+    if (ended) {
+      if (event === "end") queueMicrotask(function () { fn.call(req); });
+      return req;
+    }
+    if (!listeners[event]) listeners[event] = [];
+    listeners[event].push({ fn: fn, once: true });
+    if (event === "data" || event === "readable") __scheduleFlow();
+    return req;
+  }
+
+  function pipe(destination) {
+    on("data", function (chunk) {
+      destination.write(chunk);
+    });
+    on("end", function () {
+      if (typeof destination.end === "function") destination.end();
+    });
+    return destination;
+  }
+
+  var req = {
+    readable: true,
+    on: on,
+    once: once,
+    pipe: pipe,
+  };
+  return req;
+}
+
 function __buildReq(snap) {
   var headers = Object.create(null);
   var rawHeaders = [];
@@ -13,40 +115,14 @@ function __buildReq(snap) {
     if (headers[lk] === undefined) headers[lk] = v;
     rawHeaders.push(k, v);
   }
-  var bodyText = snap.bodyText || "";
-  var bodyBytes = bodyText ? new TextEncoder().encode(bodyText) : null;
-  var req = {
-    method: snap.method,
-    url: snap.url,
-    headers: headers,
-    rawHeaders: rawHeaders,
-    httpVersion: "1.1",
-    __bodyText: bodyText,
-    body: null,
-  };
-  if (typeof ReadableStream !== "undefined") {
-    req.body = bodyBytes
-      ? new ReadableStream({
-          start: function(controller) {
-            controller.enqueue(bodyBytes);
-            controller.close();
-          },
-        })
-      : null;
-  }
-  req[Symbol.asyncIterator] = function() {
-    var yielded = false;
-    var encoded = bodyBytes;
-    return {
-      next: function() {
-        if (!yielded && encoded) {
-          yielded = true;
-          return Promise.resolve({ value: encoded, done: false });
-        }
-        return Promise.resolve({ value: undefined, done: true });
-      }
-    };
-  };
+  var bodyBytes = __bodyBytesFromSnap(snap);
+  if (bodyBytes && bodyBytes.length === 0) bodyBytes = null;
+  var req = __createIncomingReadable(bodyBytes);
+  req.method = snap.method;
+  req.url = snap.url;
+  req.headers = headers;
+  req.rawHeaders = rawHeaders;
+  req.httpVersion = "1.1";
   return req;
 }
 

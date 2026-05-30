@@ -15,6 +15,7 @@ use crate::services::project_release::{
 };
 use actix_web::http::StatusCode;
 use actix_web::{web, HttpRequest, HttpResponse};
+use base64::Engine;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -205,11 +206,13 @@ fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes, server_port: u16)
         header_pairs.push((name.as_str().to_string(), v));
     }
     let body_text = String::from_utf8_lossy(body).into_owned();
+    let body_base64 = base64::engine::general_purpose::STANDARD.encode(body);
     Ok(TriggerHttpSnapshot {
         method,
         url,
         header_pairs,
         body_text,
+        body_base64,
         trigger_path,
     })
 }

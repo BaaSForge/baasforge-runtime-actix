@@ -1,12 +1,37 @@
+function chunkToUint8Array(chunk) {
+    if (typeof chunk === 'string') return new TextEncoder().encode(chunk);
+    if (chunk instanceof Uint8Array) return chunk;
+    if (typeof Buffer !== 'undefined' && Buffer.isBuffer(chunk)) {
+        return new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    }
+    return new Uint8Array(chunk);
+}
+
+function isNodeReadable(stream) {
+    return stream != null
+        && typeof stream.on === 'function'
+        && typeof stream.getReader !== 'function';
+}
+
+function collectNodeReadable(stream) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        stream.on('error', (err) => reject(err));
+        stream.on('end', () => resolve(chunks));
+        stream.on('data', (chunk) => {
+            chunks.push(chunkToUint8Array(chunk));
+        });
+    });
+}
+
 async function collectChunks(stream) {
-    if (stream && typeof stream.__bodyText === 'string') {
-        if (!stream.__bodyText) return [];
-        return [new TextEncoder().encode(stream.__bodyText)];
+    if (isNodeReadable(stream)) {
+        return collectNodeReadable(stream);
     }
     if (stream && typeof stream[Symbol.asyncIterator] === 'function') {
         const chunks = [];
         for await (const chunk of stream) {
-            chunks.push(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : chunk);
+            chunks.push(chunkToUint8Array(chunk));
         }
         return chunks;
     }

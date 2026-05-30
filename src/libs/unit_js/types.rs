@@ -8,7 +8,10 @@ pub struct TriggerHttpSnapshot {
     /// Path and query only, e.g. `/foo?a=1`.
     pub url: String,
     pub header_pairs: Vec<(String, String)>,
+    /// Lossy UTF-8 view of the body (legacy; prefer `body_base64` in JS).
     pub body_text: String,
+    /// Standard base64 of the raw request body bytes.
+    pub body_base64: String,
     /// Full original request path (before query), used for self-referencing fetch.
     pub trigger_path: String,
 }
