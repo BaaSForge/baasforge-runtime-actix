@@ -66,6 +66,12 @@
     return body;
   }
 
+  function normalizeRequestInput(input) {
+    if (typeof input === "string") return new URL(input).href;
+    if (typeof URL !== "undefined" && input instanceof URL) return input.href;
+    return input;
+  }
+
   function constructNative(NativeCtor, input, init) {
     if (init === undefined) {
       return Reflect.construct(NativeCtor, [input], NativeCtor);
@@ -198,7 +204,7 @@
   function proxyRequestConstructor() {
     return new Proxy(NativeRequest, {
       construct: function(target, args) {
-        var input = args[0];
+        var input = normalizeRequestInput(args[0]);
         var init = args[1];
         var bodyStream;
         if (init && init.body != null) {

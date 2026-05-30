@@ -2286,13 +2286,14 @@ async function checkFetchAPI(baseUrl: string): Promise<GroupedTests> {
   // --- Request deep tests ---
 
   tests.push(runTest("Request construction with all options", () => {
-    const r = new Request(`${baseUrl}?_t=json`, {
+    const input = `${baseUrl}?_t=json`;
+    const r = new Request(input, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Custom": "test" },
       body: JSON.stringify({ key: "value" }),
     });
     assert(r.method === "POST");
-    assert(r.url === `${baseUrl}?_t=json`);
+    assert(r.url === new URL(input).href);
     assert(r.headers.get("content-type") === "application/json");
     assert(r.headers.get("x-custom") === "test");
   }));
