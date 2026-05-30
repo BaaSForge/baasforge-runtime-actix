@@ -10,13 +10,7 @@ use super::module_loader::validate_and_prepare_loader;
 use super::modules;
 use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
 
-const ACTOR_RUNTIME_JS: &str = concat!(
-    include_str!("scripts/runtime-shared.js"),
-    "\n",
-    include_str!("scripts/platform-patches.js"),
-    "\n",
-    include_str!("scripts/actor-runtime.js")
-);
+const ACTOR_RUNTIME_JS: &str = unit_js_runtime!("scripts/actor-runtime.js");
 
 #[derive(Debug, Clone)]
 pub struct ActorCtxJson {
@@ -265,55 +259,7 @@ async fn extract_actor_metadata(source: &str) -> ActorMetadata {
         .await;
         let ctx = AsyncContext::full(&rt).await.ok()?;
 
-        const METADATA_JS: &str = concat!(
-            include_str!("scripts/runtime-shared.js"),
-            "\n",
-            include_str!("scripts/platform-patches.js"),
-            "\n",
-            r#"
-function actor(config) {
-  return {
-    __actor_def: true,
-    __initial_state: config.state !== undefined ? config.state : {},
-    __handlers: config.handlers || {},
-    __on_alarm: config.onAlarm || null,
-    __on_dead_letter: config.onDeadLetter || null,
-    __metadata: config.metadata || {},
-  };
-}
-globalThis.actor = actor;
-globalThis.__baal_actor_metadata_p = (async function () {
-  var __entry = await import("baal-unit-entry");
-  var __actorDef = __entry.default;
-  if (!__actorDef || !__actorDef.__actor_def) {
-    return JSON.stringify({});
-  }
-  var meta = __actorDef.__metadata || {};
-  var handlers = Object.keys(__actorDef.__handlers || {});
-  function __maxIdleToMs(v) {
-    if (v == null || v === "") return null;
-    if (typeof v === "number" && !isNaN(v)) return v;
-    if (typeof v !== "string") return null;
-    var m = String(v).trim().toLowerCase().match(/^(\d+)\s*(ms|s|m|h)$/);
-    if (!m) return null;
-    var n = parseInt(m[1], 10);
-    var u = m[2];
-    if (u === "ms") return n;
-    if (u === "s") return n * 1000;
-    if (u === "m") return n * 60 * 1000;
-    if (u === "h") return n * 60 * 60 * 1000;
-    return null;
-  }
-  return JSON.stringify({
-    handlers: (meta.handlers && Array.isArray(meta.handlers)) ? meta.handlers : handlers,
-    retry: meta.retry || null,
-    timeout: meta.timeout || null,
-    maxIdleTimeMs: __maxIdleToMs(meta.maxIdleTime),
-    stateLimitBytes: meta.stateLimitBytes || null,
-  });
-})();
-"#
-        );
+        const METADATA_JS: &str = unit_js_runtime!("scripts/actor-metadata.js");
 
         let r = rquickjs::async_with!(ctx => |ctx| {
             attachment.attach(&ctx).ok()?;

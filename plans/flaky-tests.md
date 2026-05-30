@@ -1,22 +1,23 @@
-queue worker:
 {
-          "name": "isolation: sdk-same-unit-path-qw-start-handler-homonymous-wf-triple",
+          "name": "endpoint_cancel: cancel-queued-run",
           "pass": false,
-          "error": "qw stage-b start+handler: {\"status\":\"completed\",\"result\":{\"scopeFromHandler\":null,\"unitPathFromHandler\":\"test.wf.workflow.http-same-path-wf-handler-isolation\"}}"
+          "error": "status never confirmed as cancelled"
         },
 
 ---
 
-## actor alarms (intermittent — loss vs delay)
+# actor alarms (intermittent — loss vs delay)
 
 **Status:** ~0–1 failures per full run after mitigations; remaining flakes below.
 
 ### Flaky tests (observed)
 
-| Test | Typical error |
-|------|----------------|
-| `alarms: alarm-past-time` | `past-due alarm never fired within 120000ms: {"alarmFired":false}` |
+
+| Test                                     | Typical error                                                                                             |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `alarms: alarm-past-time`                | `past-due alarm never fired within 120000ms: {"alarmFired":false}`                                        |
 | `alarms: multiple-alarms-distinct-names` | `expected 3 distinct alarms to fire within 120000ms: {"firedCount":0}` (also seen `firedCount:1` earlier) |
+
 
 Other alarm tests (`set-alarm-fires`, `duplicate-alarm-name-replaces`, passivation, etc.) were flaky before mitigations; now mostly stable.
 
@@ -54,21 +55,23 @@ Units: `units/actor-tests/alarms/alarm-past-time.ts`, `multiple-alarms-distinct-
 
 ### Mitigations already applied
 
-| Area | Change |
-|------|--------|
+
+| Area   | Change                                                                                                                         |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------ |
 | Server | At-least-once: ack on success, `restore_alarm_to_global` on failure; semaphore inside spawned tasks; no batch-await in sweeper |
-| Server | `set_alarm` clamp; `pop_due_alarms` LIMIT 32; `manager` pending alarm dedupe by name |
-| Units | `fireAfterMs` in alarm handlers (Rust computes fire time at registration) |
-| Tests | Poll-until (`waitForActorState`), 120s timeout, no `firedAt` vs `Date.now()` checks |
-| Tests | Alarm inline jobs sequential first; WS after actor in `test.sh` |
-| Tests | `duplicate-alarm-name-replaces`: `first:120_000`, `second:1_500` so spurious first schedule does not fire during hold |
+| Server | `set_alarm` clamp; `pop_due_alarms` LIMIT 32; `manager` pending alarm dedupe by name                                           |
+| Units  | `fireAfterMs` in alarm handlers (Rust computes fire time at registration)                                                      |
+| Tests  | Poll-until (`waitForActorState`), 120s timeout, no `firedAt` vs `Date.now()` checks                                            |
+| Tests  | Alarm inline jobs sequential first; WS after actor in `test.sh`                                                                |
+| Tests  | `duplicate-alarm-name-replaces`: `first:120_000`, `second:1_500` so spurious first schedule does not fire during hold          |
+
 
 ### Likely remaining issues (for fix)
 
 1. **Global ZSET as single FIFO by score** — unrelated due alarms compete; 32/sweep × 5/s = ~160/s max dispatch starts; handler may take seconds each → effective throughput lower. Stale/orphan global members (old runs, deleted actors) consume pop slots if not cleaned (`delete_actor` scrubs by prefix in `actor_engine.rs` but only on delete).
 2. **Pop-before-ack + restore gap** — crash or `ZSCORE` miss on per-actor key after pop → loss. Harden: claim/lease in global ZSET, or pop only when handler slot free, or don’t ZREM until ack.
-3. **`alarm-past-time` last in alarm sequence** — runs after ~6 other alarm tests; any accumulated global backlog hits “immediate” alarm last. `firedCount:0` after 120s suggests never dispatched, not slow handler.
-4. **`multiple-alarms` with `firedCount:0`** — all three never ran (total starvation) vs `1` (partial) — distinguish in logs via per-name `alarm run ok` for `a`/`b`/`c`.
+3. `**alarm-past-time` last in alarm sequence** — runs after ~6 other alarm tests; any accumulated global backlog hits “immediate” alarm last. `firedCount:0` after 120s suggests never dispatched, not slow handler.
+4. `**multiple-alarms` with `firedCount:0`** — all three never ran (total starvation) vs `1` (partial) — distinguish in logs via per-name `alarm run ok` for `a`/`b`/`c`.
 
 ### Files to touch when fixing
 
@@ -92,5 +95,4 @@ ACTOR_ALARM_EVENTUAL_TIMEOUT_MS=180000 ./units/actor-tests/test.sh
 - TEST_MODE: `FLUSHDB` or trim `actor:alarms:global` at suite start.
 - Metric: re-queue rate, global ZSET length, time-from-due-to-dispatch.
 - Optional test: assert per-alarm state (e.g. `firedNames: string[]`) not just count — catches wrong alarm firing, not queue starvation.
-
 

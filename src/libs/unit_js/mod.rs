@@ -1,3 +1,6 @@
+#[macro_use]
+mod runtime_bootstrap;
+
 pub mod actor_runner;
 pub mod common_imports;
 mod module_shims;

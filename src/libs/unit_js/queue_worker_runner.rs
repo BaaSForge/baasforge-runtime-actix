@@ -6,21 +6,9 @@ use super::module_loader::validate_and_prepare_loader;
 use super::modules;
 use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
 
-const QUEUE_WORKER_RUNTIME_JS: &str = concat!(
-    include_str!("scripts/runtime-shared.js"),
-    "\n",
-    include_str!("scripts/platform-patches.js"),
-    "\n",
-    include_str!("scripts/queue-worker-runtime.js")
-);
+const QUEUE_WORKER_RUNTIME_JS: &str = unit_js_runtime!("scripts/queue-worker-runtime.js");
 
-const QUEUE_WORKER_METADATA_JS: &str = concat!(
-    include_str!("scripts/runtime-shared.js"),
-    "\n",
-    include_str!("scripts/platform-patches.js"),
-    "\n",
-    include_str!("scripts/queue-worker-metadata.js")
-);
+const QUEUE_WORKER_METADATA_JS: &str = unit_js_runtime!("scripts/queue-worker-metadata.js");
 
 #[derive(Debug, Clone)]
 pub struct QueueWorkerRunContext {

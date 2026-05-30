@@ -2279,12 +2279,32 @@ async function checkFetchAPI(baseUrl: string): Promise<GroupedTests> {
     assert(r.headers.get("x-custom") === "test");
   }));
 
-  // tests.push(runTest("Request clone preserves properties", () => {
-  //   const r = new Request(`${baseUrl}?_t=json`, { method: "GET" });
-  //   const cloned = r.clone();
-  //   assert(cloned.url === r.url);
-  //   assert(cloned.method === r.method);
-  // }));
+  tests.push(runTest("Request.body is ReadableStream (string init)", () => {
+    const r = new Request(`${baseUrl}?_t=json`, {
+      method: "POST",
+      body: JSON.stringify({ key: "value" }),
+    });
+    assert(r.body instanceof ReadableStream);
+    assert(typeof r.body!.getReader === "function");
+  }));
+
+  tests.push(runTest("Request.body is ReadableStream (Uint8Array init)", () => {
+    const r = new Request(`${baseUrl}?_t=json`, {
+      method: "POST",
+      body: new Uint8Array([1, 2, 3]),
+    });
+    assert(r.body instanceof ReadableStream);
+    assert(typeof r.body!.getReader === "function");
+  }));
+
+  tests.push(runTest("Request clone preserves properties", () => {
+    const r = new Request(`${baseUrl}?_t=json`, { method: "GET" });
+    const cloned = r.clone();
+    assert(cloned.url === r.url);
+    assert(cloned.method === r.method);
+    assert(r.body === null);
+    assert(cloned.body === null);
+  }));
 
   tests.push(runTest("Request default method is GET", () => {
     const r = new Request(`${baseUrl}?_t=json`);
@@ -2303,6 +2323,7 @@ async function checkFetchAPI(baseUrl: string): Promise<GroupedTests> {
     assert(r.statusText === "Created");
     assert(r.ok === true);
     assert(r.headers.get("content-type") === "application/json");
+    assert(r.body instanceof ReadableStream);
   }));
 
   tests.push(runTest("Response.ok reflects status range", () => {
@@ -2785,25 +2806,26 @@ async function checkStreams(): Promise<GroupedTests> {
     assert(cancelReason === "done reading");
   }));
 
-  // tests.push(await runTestAsync("Response body is a ReadableStream", async () => {
-  //   const resp = new Response("stream body content");
-  //   assert(resp.body instanceof ReadableStream);
-  //   const t = await resp.text();
-  //   assert(t === "stream body content");
-  // }));
+  tests.push(await runTestAsync("Response body is a ReadableStream", async () => {
+    const resp = new Response("stream body content");
+    assert(resp.body instanceof ReadableStream);
+    const t = await resp.text();
+    assert(t === "stream body content");
+  }));
 
-  // tests.push(await runTestAsync("Create Response from ReadableStream", async () => {
-  //   const rs = new ReadableStream({
-  //     start(controller) {
-  //       controller.enqueue(new TextEncoder().encode("streamed "));
-  //       controller.enqueue(new TextEncoder().encode("response"));
-  //       controller.close();
-  //     },
-  //   });
-  //   const resp = new Response(rs);
-  //   const t = await resp.text();
-  //   assert(t === "streamed response");
-  // }));
+  tests.push(await runTestAsync("Create Response from ReadableStream", async () => {
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("streamed "));
+        controller.enqueue(new TextEncoder().encode("response"));
+        controller.close();
+      },
+    });
+    const resp = new Response(rs);
+    assert(resp.body instanceof ReadableStream);
+    const t = await resp.text();
+    assert(t === "streamed response");
+  }));
 
   tests.push(runTest("TextEncoderStream exists", () => {
     assert(typeof TextEncoderStream === "function");

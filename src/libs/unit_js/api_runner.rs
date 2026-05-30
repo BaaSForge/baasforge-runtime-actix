@@ -7,13 +7,7 @@ use super::modules;
 use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
 use super::types::{JsResponseRaw, TriggerHttpResponse, TriggerHttpSnapshot};
 
-const API_RUNTIME_JS: &str = concat!(
-    include_str!("scripts/runtime-shared.js"),
-    "\n",
-    include_str!("scripts/platform-patches.js"),
-    "\n",
-    include_str!("scripts/api-runtime.js")
-);
+const API_RUNTIME_JS: &str = unit_js_runtime!("scripts/api-runtime.js");
 
 pub async fn run_unit_handler(
     source: &str,

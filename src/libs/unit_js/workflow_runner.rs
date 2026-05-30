@@ -9,13 +9,7 @@ use super::module_loader::validate_and_prepare_loader;
 use super::modules;
 use super::modules::sdk::{CommCtxGuard, HostCtxGuard, SdkCommCtx, WorkflowHostCtx};
 
-const WORKFLOW_RUNTIME_JS: &str = concat!(
-    include_str!("scripts/runtime-shared.js"),
-    "\n",
-    include_str!("scripts/platform-patches.js"),
-    "\n",
-    include_str!("scripts/workflow-runtime.js")
-);
+const WORKFLOW_RUNTIME_JS: &str = unit_js_runtime!("scripts/workflow-runtime.js");
 
 #[derive(Debug, Clone)]
 pub struct WorkflowExecutionContext {
