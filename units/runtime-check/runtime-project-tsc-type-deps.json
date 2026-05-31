@@ -4,7 +4,7 @@
   "compilerOptionsLib": [
     "lib.es2023.d.ts"
   ],
-  "fileCount": 806,
+  "fileCount": 823,
   "packages": {
     "@mjackson/headers": {
       "fileCount": 13,
@@ -52,6 +52,14 @@
       "files": [
         "node_modules/@types/http-errors/index.d.ts",
         "node_modules/@types/http-errors/package.json"
+      ]
+    },
+    "@types/js-yaml": {
+      "fileCount": 3,
+      "files": [
+        "node_modules/@types/js-yaml/index.d.mts",
+        "node_modules/@types/js-yaml/index.d.ts",
+        "node_modules/@types/js-yaml/package.json"
       ]
     },
     "@types/lodash": {
@@ -488,6 +496,13 @@
         "node_modules/@types/node/zlib.d.ts"
       ]
     },
+    "@types/papaparse": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/@types/papaparse/index.d.ts",
+        "node_modules/@types/papaparse/package.json"
+      ]
+    },
     "@types/pluralize": {
       "fileCount": 2,
       "files": [
@@ -762,6 +777,20 @@
         "node_modules/dinero.js/package.json"
       ]
     },
+    "fast-xml-parser": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/fast-xml-parser/package.json",
+        "node_modules/fast-xml-parser/src/fxp.d.ts"
+      ]
+    },
+    "fflate": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/fflate/esm/browser.d.ts",
+        "node_modules/fflate/package.json"
+      ]
+    },
     "nanoid": {
       "fileCount": 3,
       "files": [
@@ -796,6 +825,19 @@
       "files": [
         "node_modules/slugify/package.json",
         "node_modules/slugify/slugify.d.ts"
+      ]
+    },
+    "superjson": {
+      "fileCount": 8,
+      "files": [
+        "node_modules/superjson/dist/class-registry.d.ts",
+        "node_modules/superjson/dist/custom-transformer-registry.d.ts",
+        "node_modules/superjson/dist/index.d.ts",
+        "node_modules/superjson/dist/plainer.d.ts",
+        "node_modules/superjson/dist/registry.d.ts",
+        "node_modules/superjson/dist/transformer.d.ts",
+        "node_modules/superjson/dist/types.d.ts",
+        "node_modules/superjson/package.json"
       ]
     },
     "undici-types": {
@@ -992,6 +1034,9 @@
     "node_modules/@types/escape-html/package.json",
     "node_modules/@types/http-errors/index.d.ts",
     "node_modules/@types/http-errors/package.json",
+    "node_modules/@types/js-yaml/index.d.mts",
+    "node_modules/@types/js-yaml/index.d.ts",
+    "node_modules/@types/js-yaml/package.json",
     "node_modules/@types/lodash-es/add.d.ts",
     "node_modules/@types/lodash-es/after.d.ts",
     "node_modules/@types/lodash-es/ary.d.ts",
@@ -1396,6 +1441,8 @@
     "node_modules/@types/node/web-globals/storage.d.ts",
     "node_modules/@types/node/worker_threads.d.ts",
     "node_modules/@types/node/zlib.d.ts",
+    "node_modules/@types/papaparse/index.d.ts",
+    "node_modules/@types/papaparse/package.json",
     "node_modules/@types/pluralize/index.d.ts",
     "node_modules/@types/pluralize/package.json",
     "node_modules/@types/qs/index.d.ts",
@@ -1615,6 +1662,10 @@
     "node_modules/dinero.js/dist/esm/index-D9iIqGL-.d.ts",
     "node_modules/dinero.js/dist/esm/index.d.ts",
     "node_modules/dinero.js/package.json",
+    "node_modules/fast-xml-parser/package.json",
+    "node_modules/fast-xml-parser/src/fxp.d.ts",
+    "node_modules/fflate/esm/browser.d.ts",
+    "node_modules/fflate/package.json",
     "node_modules/nanoid/index.d.ts",
     "node_modules/nanoid/non-secure/index.d.ts",
     "node_modules/nanoid/package.json",
@@ -1626,6 +1677,14 @@
     "node_modules/p-timeout/package.json",
     "node_modules/slugify/package.json",
     "node_modules/slugify/slugify.d.ts",
+    "node_modules/superjson/dist/class-registry.d.ts",
+    "node_modules/superjson/dist/custom-transformer-registry.d.ts",
+    "node_modules/superjson/dist/index.d.ts",
+    "node_modules/superjson/dist/plainer.d.ts",
+    "node_modules/superjson/dist/registry.d.ts",
+    "node_modules/superjson/dist/transformer.d.ts",
+    "node_modules/superjson/dist/types.d.ts",
+    "node_modules/superjson/package.json",
     "node_modules/undici-types/agent.d.ts",
     "node_modules/undici-types/api.d.ts",
     "node_modules/undici-types/balanced-pool.d.ts",

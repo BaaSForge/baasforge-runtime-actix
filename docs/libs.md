@@ -763,29 +763,22 @@ restored.score === BigInt(9007199254740993) // → true
 ```ts
 // before — no compression possible without node:zlib
 // after
-import { gzip, gunzip, strToU8, strFromU8 } from 'fflate';
+import { gzipSync, gunzipSync, strToU8, strFromU8 } from 'fflate';
 
-// compress response body
-const compressed = await new Promise<Uint8Array>((res, rej) =>
-  gzip(strToU8(largeJson), (err, data) => err ? rej(err) : res(data))
-);
+// compress response body (use *Sync APIs — async gzip/zip use Web Workers, unavailable in units)
+const compressed = gzipSync(strToU8(largeJson));
 res.setHeader('Content-Encoding', 'gzip');
 res.setHeader('Content-Type', 'application/json');
 res.end(Buffer.from(compressed));
 
 // decompress incoming gzipped body
-const decompressed = await new Promise<Uint8Array>((res, rej) =>
-  gunzip(Buffer.from(req.__bodyBytes), (err, data) => err ? rej(err) : res(data))
-);
-const text = strFromU8(decompressed);
+const text = strFromU8(gunzipSync(Buffer.from(req.__bodyBytes)));
 ```
 
 ```ts
 // zip multiple files (e.g. export endpoint)
-import { zip } from 'fflate';
-const archive = await new Promise<Uint8Array>((res, rej) =>
-  zip({ 'report.csv': csvBytes, 'data.json': jsonBytes }, (err, data) => err ? rej(err) : res(data))
-);
+import { zipSync } from 'fflate';
+const archive = zipSync({ 'report.csv': csvBytes, 'data.json': jsonBytes });
 res.setHeader('Content-Type', 'application/zip');
 res.end(Buffer.from(archive));
 ```
