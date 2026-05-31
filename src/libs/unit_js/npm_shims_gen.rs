@@ -3,10 +3,15 @@
 pub fn npm_package_shim(name: &str) -> Option<&'static str> {
     match name {
         "@mjackson/multipart-parser" => Some(include_str!("../../../units/runtime-check/dist/@mjackson/multipart-parser/node_module.js")),
+        "change-case" => Some(include_str!("../../../units/runtime-check/dist/change-case/node_module.js")),
+        "change-case/keys" => Some(include_str!("../../../units/runtime-check/dist/change-case/keys.js")),
         "cookie" => Some(include_str!("../../../units/runtime-check/dist/cookie/node_module.js")),
+        "escape-html" => Some(include_str!("../../../units/runtime-check/dist/escape-html/node_module.js")),
         "http-errors" => Some(include_str!("../../../units/runtime-check/dist/http-errors/node_module.js")),
         "mime-types" => Some(include_str!("../../../units/runtime-check/dist/mime-types/node_module.js")),
+        "pluralize" => Some(include_str!("../../../units/runtime-check/dist/pluralize/node_module.js")),
         "qs" => Some(include_str!("../../../units/runtime-check/dist/qs/node_module.js")),
+        "slugify" => Some(include_str!("../../../units/runtime-check/dist/slugify/node_module.js")),
         "statuses" => Some(include_str!("../../../units/runtime-check/dist/statuses/node_module.js")),
         "validator" => Some(include_str!("../../../units/runtime-check/dist/validator/node_module.js")),
         "validator/lib/alpha" => Some(include_str!("../../../units/runtime-check/dist/validator/lib/alpha.js")),
@@ -112,6 +117,7 @@ pub fn npm_package_shim(name: &str) -> Option<&'static str> {
         "validator/lib/trim" => Some(include_str!("../../../units/runtime-check/dist/validator/lib/trim.js")),
         "validator/lib/unescape" => Some(include_str!("../../../units/runtime-check/dist/validator/lib/unescape.js")),
         "validator/lib/whitelist" => Some(include_str!("../../../units/runtime-check/dist/validator/lib/whitelist.js")),
+        "xss" => Some(include_str!("../../../units/runtime-check/dist/xss/node_module.js")),
         "zod" => Some(include_str!("../../../units/runtime-check/dist/zod/node_module.js")),
         "zod/mini" => Some(include_str!("../../../units/runtime-check/dist/zod/mini.js")),
         "zod/v4" => Some(include_str!("../../../units/runtime-check/dist/zod/v4.js")),
