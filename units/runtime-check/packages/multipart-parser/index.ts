@@ -1,5 +1,6 @@
 /**
  * `@mjackson/multipart-parser` npm package test runner (`test.runtime.api.multipart-parser`).
+ * No public subpaths except root (`./node` is Node-only — skipped).
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";

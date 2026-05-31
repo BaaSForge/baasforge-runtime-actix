@@ -14,7 +14,7 @@ Used by `test.sh` before integration tests run.
 
 Each npm library gets a folder under `packages/` with:
 
-- `index.ts` — library tests + shared `lib/suite-harness.ts`; build bundles each package to a single `dist/packages/<name>/index.js` for the platform
+- `index.ts` — library tests + shared `lib/suite-harness.ts`; import npm root and any subpaths you want QuickJS shims for (see `npm-shim-imports.ts` when there are many). Build bundles each package to a single `dist/packages/<name>/index.js` for the platform
 - `test.sh` — platform e2e for this package (`scripts/suite-test.sh`)
 - `test-node.sh` — node CLI for this package (`scripts/suite-test-node.sh`)
 

@@ -9,32 +9,105 @@
  * src/tsgo on the backend project consumes that report to decide which node_modules
  * types to include when type-checking LLM-written code. A gap here breaks tsgo.
  */
-import { existsSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
 import ts from "typescript";
 
 const projectDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = join(projectDir, "../..");
+const npmShimsGenRs = join(repoRoot, "src/libs/unit_js/npm_shims_gen.rs");
+const projectRequire = createRequire(join(projectDir, "package.json"));
 
-const VALID_EXPORT_IDENT = /^[a-zA-Z_$][\w$]*$/;
-
-async function npmModuleNamespaceKeys(pkg) {
-  const ns = await import(pkg);
-  return Object.keys(ns).filter((k) => VALID_EXPORT_IDENT.test(k));
+function rootPackageFromSpecifier(specifier) {
+  if (specifier.startsWith("@")) {
+    const parts = specifier.split("/");
+    return parts.length <= 2 ? specifier : `${parts[0]}/${parts[1]}`;
+  }
+  return specifier.split("/")[0];
 }
 
-function vendorEntryForPackage(pkg, namespaceKeys) {
+function isRootSpecifier(specifier) {
+  return specifier === rootPackageFromSpecifier(specifier);
+}
+
+function distRelForSpecifier(specifier) {
+  if (isRootSpecifier(specifier)) {
+    return `${specifier}/node_module.js`;
+  }
+  if (specifier.endsWith(".js")) {
+    return specifier;
+  }
+  return `${specifier}.js`;
+}
+
+function specifierForVendorBundle(specifier) {
+  try {
+    projectRequire.resolve(specifier);
+    return specifier;
+  } catch {
+    const withJs = `${specifier}.js`;
+    projectRequire.resolve(withJs);
+    return withJs;
+  }
+}
+
+async function loadNpmModuleNamespace(specifier) {
+  const resolved = specifierForVendorBundle(specifier);
+  try {
+    return await import(resolved);
+  } catch {
+    const resolvedPath = projectRequire.resolve(resolved);
+    return import(pathToFileURL(resolvedPath).href);
+  }
+}
+
+const VALID_EXPORT_IDENT = /^[a-zA-Z_$][\w$]*$/;
+const RESERVED_EXPORT_NAMES = new Set([
+  "break", "case", "catch", "class", "const", "continue", "debugger", "delete",
+  "do", "else", "enum", "export", "extends", "false", "finally", "for",
+  "function", "if", "import", "in", "instanceof", "new", "null", "return",
+  "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void",
+  "while", "with", "yield", "let", "static", "await",
+]);
+
+async function npmModuleExportInfo(specifier) {
+  const mod = await loadNpmModuleNamespace(specifier);
+  const keys = Object.keys(mod).filter((k) => VALID_EXPORT_IDENT.test(k));
+  const hasDefault = keys.includes("default");
+  return { keys, hasDefault };
+}
+
+function vendorEntryForPackage(pkg, { keys, hasDefault }) {
   const lines = [`import * as __mod from ${JSON.stringify(pkg)};`];
-  for (const k of namespaceKeys) {
+  for (const k of keys) {
     if (k === "default") {
-      lines.push("export default __mod.default;");
+      if (hasDefault) lines.push("export default __mod.default;");
+    } else if (RESERVED_EXPORT_NAMES.has(k)) {
+      const alias = `__export_${k}`;
+      lines.push(`const ${alias} = __mod[${JSON.stringify(k)}];`);
+      lines.push(`export { ${alias} as ${k} };`);
     } else {
       lines.push(`export const ${k} = __mod.${k};`);
     }
   }
   return lines.join("\n");
 }
+const packagesDir = join(projectDir, "packages");
+
+function readNpmShimImportSpecifiers(packageName) {
+  const shimPath = join(packagesDir, packageName, "npm-shim-imports.ts");
+  if (!existsSync(shimPath)) return [];
+  const text = readFileSync(shimPath, "utf8");
+  const specs = [];
+  for (const m of text.matchAll(/^\s*import\s+["']([^"']+)["']\s*;/gm)) {
+    specs.push(m[1]);
+  }
+  return specs;
+}
+
 const configPath = join(projectDir, "tsconfig.json");
 const outJson = join(projectDir, "runtime-project-tsc-type-deps.json");
 
@@ -197,7 +270,6 @@ if (
 writeTypeDepsReport(usedNodeModulesFiles, parsed);
 console.log(`Emitted JS to ${relative(projectDir, compilerOptions.outDir)}/`);
 
-const packagesDir = join(projectDir, "packages");
 const packageNames = readdirSync(packagesDir, { withFileTypes: true })
   .filter((e) => e.isDirectory())
   .map((e) => e.name);
@@ -224,7 +296,7 @@ function createMimeTypesNodePathPlugin() {
   };
 }
 
-function createExternalizeNpmPlugin(npmPackages) {
+function createExternalizeNpmPlugin(npmSpecifiers) {
   const pluginDataKey = "externalize-npm-resolve";
   return {
     name: "externalize-npm",
@@ -246,8 +318,7 @@ function createExternalizeNpmPlugin(npmPackages) {
         if (!resolved.path.includes("node_modules")) {
           return { path: args.path, external: true };
         }
-        const pkg = npmPackageFromPath(resolved.path);
-        if (pkg) npmPackages.add(pkg);
+        npmSpecifiers.add(args.path);
         return { path: args.path, external: true };
       });
     },
@@ -263,13 +334,67 @@ const browserBundle = {
   logLevel: "silent",
 };
 
-async function bundlePackageUnit(name) {
+async function bundleVendorSpecifier(specifier, suiteName) {
+  const distRel = distRelForSpecifier(specifier);
+  const outfile = join(compilerOptions.outDir, distRel);
+  mkdirSync(dirname(outfile), { recursive: true });
+  const bundleSpec = specifierForVendorBundle(specifier);
+  const info = await npmModuleExportInfo(bundleSpec);
+  const vendorEntry = vendorEntryForPackage(bundleSpec, info);
+  const vendorEntryPath = join(
+    projectDir,
+    `.esbuild-vendor-entry-${suiteName}-${distRel.replaceAll("/", "_")}.mjs`,
+  );
+  writeFileSync(vendorEntryPath, vendorEntry);
+  try {
+    const vendorPlugins = [externalizeNodeBuiltinPlugin];
+    if (rootPackageFromSpecifier(specifier) === "mime-types") {
+      vendorPlugins.push(createMimeTypesNodePathPlugin());
+    }
+    await esbuild.build({
+      ...browserBundle,
+      entryPoints: [vendorEntryPath],
+      outfile,
+      plugins: vendorPlugins,
+    });
+  } finally {
+    unlinkSync(vendorEntryPath);
+  }
+  console.log(
+    `Bundled npm shim → ${relative(projectDir, outfile)} (${specifier}, exports: ${info.keys.join(", ") || "(none)"})`,
+  );
+}
+
+function writeNpmShimsGen(specifiers) {
+  const distRoot = "../../../units/runtime-check/dist";
+  const lines = [
+    "// AUTO-GENERATED by units/runtime-check/scripts/build.mjs — do not edit.",
+    "",
+    "pub fn npm_package_shim(name: &str) -> Option<&'static str> {",
+    "    match name {",
+  ];
+  for (const spec of [...specifiers].sort()) {
+    const distRel = distRelForSpecifier(spec);
+    lines.push(
+      `        ${JSON.stringify(spec)} => Some(include_str!("${distRoot}/${distRel}")),`,
+    );
+  }
+  lines.push("        _ => None,");
+  lines.push("    }");
+  lines.push("}");
+  lines.push("");
+  writeFileSync(npmShimsGenRs, `${lines.join("\n")}`);
+  console.log(
+    `Wrote npm QuickJS shims (${specifiers.size} modules): ${relative(repoRoot, npmShimsGenRs)}`,
+  );
+}
+
+async function bundlePackageUnit(name, allNpmSpecifiers) {
   const entry = join(packagesDir, name, "index.ts");
   const outDir = join(compilerOptions.outDir, "packages", name);
   const indexOutfile = join(outDir, "index.js");
-  const nodeModulesOutfile = join(compilerOptions.outDir, name, "node_module.js");
-  const npmPackages = new Set();
-  const externalizeNpm = createExternalizeNpmPlugin(npmPackages);
+  const npmSpecifiers = new Set(readNpmShimImportSpecifiers(name));
+  const externalizeNpm = createExternalizeNpmPlugin(npmSpecifiers);
 
   await esbuild.build({
     ...browserBundle,
@@ -279,32 +404,15 @@ async function bundlePackageUnit(name) {
     write: false,
   });
 
-  if (npmPackages.size > 0) {
-    const sorted = [...npmPackages].sort();
-    const vendorParts = [];
-    for (const pkg of sorted) {
-      const keys = await npmModuleNamespaceKeys(pkg);
-      vendorParts.push(vendorEntryForPackage(pkg, keys));
-      console.log(`  ${pkg} ESM exports: ${keys.join(", ") || "(none)"}`);
+  if (npmSpecifiers.size > 0) {
+    const sorted = [...npmSpecifiers].sort();
+    for (const spec of sorted) {
+      if (!allNpmSpecifiers.has(spec)) {
+        await bundleVendorSpecifier(spec, name);
+        allNpmSpecifiers.add(spec);
+      }
     }
-    const vendorEntry = vendorParts.join("\n\n");
-    const vendorEntryPath = join(projectDir, `.esbuild-vendor-entry-${name}.mjs`);
-    writeFileSync(vendorEntryPath, vendorEntry);
-    try {
-      const vendorPlugins = [externalizeNodeBuiltinPlugin];
-      if (name === "mime-types") vendorPlugins.push(createMimeTypesNodePathPlugin());
-      await esbuild.build({
-        ...browserBundle,
-        entryPoints: [vendorEntryPath],
-        outfile: nodeModulesOutfile,
-        plugins: vendorPlugins,
-      });
-    } finally {
-      unlinkSync(vendorEntryPath);
-    }
-    console.log(
-      `Bundled package deps → ${relative(projectDir, nodeModulesOutfile)} (${[...npmPackages].sort().join(", ")})`,
-    );
+    console.log(`  [${name}] npm specifiers: ${sorted.join(", ")}`);
   }
 
   await esbuild.build({
@@ -316,6 +424,8 @@ async function bundlePackageUnit(name) {
   console.log(`Bundled package unit → ${relative(projectDir, indexOutfile)}`);
 }
 
+const allNpmSpecifiers = new Set();
 for (const name of packageNames) {
-  await bundlePackageUnit(name);
+  await bundlePackageUnit(name, allNpmSpecifiers);
 }
+writeNpmShimsGen(allNpmSpecifiers);

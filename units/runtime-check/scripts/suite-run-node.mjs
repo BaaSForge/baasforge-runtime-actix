@@ -3,9 +3,12 @@
  *
  * Usage: node scripts/suite-run-node.mjs <suite>
  */
+import { register } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { presentReport } from "./suite-report.mjs";
+
+register("./npm-resolve-hook.mjs", import.meta.url);
 
 const suite = process.argv[2];
 if (!suite) {

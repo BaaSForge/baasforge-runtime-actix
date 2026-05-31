@@ -1,5 +1,6 @@
 /**
  * `statuses` npm package test runner (`test.runtime.api.statuses`).
+ * No public npm subpaths — root import only.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";

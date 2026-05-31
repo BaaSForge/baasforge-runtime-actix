@@ -1,5 +1,6 @@
 /**
  * `mime-types` npm package test runner (`test.runtime.api.mime-types`).
+ * No public npm subpaths — root import only.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";

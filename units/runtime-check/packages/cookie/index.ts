@@ -1,5 +1,6 @@
 /**
  * `cookie` npm package test runner (`test.runtime.api.cookie`).
+ * No public npm subpaths — root import only.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";

@@ -1,20 +1,11 @@
+#[path = "npm_shims_gen.rs"]
+mod npm_shims_gen;
+
 pub const SDK: &str = include_str!("scripts/modules/sdk.js");
 pub const NODE_QUERYSTRING: &str = include_str!("scripts/modules/node-querystring.js");
 pub const NODE_STREAM_CONSUMERS: &str = include_str!("scripts/modules/node-stream-consumers.js");
 pub const NODE_TIMERS_PROMISES: &str = include_str!("scripts/modules/node-timers-promises.js");
 pub const BAAL_EXT_CRYPTO: &str = include_str!("scripts/modules/node-crypto-ext.js");
-pub const NPM_QS: &str =
-    include_str!("../../../units/runtime-check/dist/qs/node_module.js");
-pub const NPM_COOKIE: &str =
-    include_str!("../../../units/runtime-check/dist/cookie/node_module.js");
-pub const NPM_STATUSES: &str =
-    include_str!("../../../units/runtime-check/dist/statuses/node_module.js");
-pub const NPM_MULTIPART_PARSER: &str =
-    include_str!("../../../units/runtime-check/dist/multipart-parser/node_module.js");
-pub const NPM_MIME_TYPES: &str =
-    include_str!("../../../units/runtime-check/dist/mime-types/node_module.js");
-pub const NPM_HTTP_ERRORS: &str =
-    include_str!("../../../units/runtime-check/dist/http-errors/node_module.js");
 
 pub const BAAL_EXT_CRYPTO_ALIAS: &str = "__baal_ext_crypto";
 
@@ -41,17 +32,24 @@ pub const BLOCKED_NODE_MODULES: &[&str] = &[
 ];
 
 pub fn baal_module_source(name: &str) -> Option<&'static str> {
+    if let Some(src) = npm_package_shim_lookup(name) {
+        return Some(src);
+    }
     match name {
         "node:querystring" => Some(NODE_QUERYSTRING),
         "node:stream/consumers" => Some(NODE_STREAM_CONSUMERS),
         "node:timers/promises" => Some(NODE_TIMERS_PROMISES),
         "__baal_ext_crypto" => Some(BAAL_EXT_CRYPTO),
-        "qs" => Some(NPM_QS),
-        "cookie" => Some(NPM_COOKIE),
-        "statuses" => Some(NPM_STATUSES),
-        "@mjackson/multipart-parser" => Some(NPM_MULTIPART_PARSER),
-        "mime-types" => Some(NPM_MIME_TYPES),
-        "http-errors" => Some(NPM_HTTP_ERRORS),
         _ => None,
     }
+}
+
+fn npm_package_shim_lookup(name: &str) -> Option<&'static str> {
+    if let Some(src) = npm_shims_gen::npm_package_shim(name) {
+        return Some(src);
+    }
+    if let Some(stripped) = name.strip_suffix(".js") {
+        return npm_shims_gen::npm_package_shim(stripped);
+    }
+    None
 }
