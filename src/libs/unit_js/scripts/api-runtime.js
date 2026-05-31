@@ -238,5 +238,15 @@ globalThis.__baal_p = (async function () {
   var __req = __buildReq(__snap);
   var __res = __createRes();
   globalThis.__baal_res = __res;
-  await mod.handleRequest(__req, __res);
+  try {
+    await mod.handleRequest(__req, __res);
+  } catch (err) {
+    var status = err && (err.status || err.statusCode);
+    if (typeof status === "number" && status >= 400 && status < 600) {
+      __res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      __res.end(JSON.stringify({ error: err.message || String(status) }));
+      return;
+    }
+    throw err;
+  }
 })();

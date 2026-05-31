@@ -79,5 +79,18 @@ echo ""
 echo "==> [$SUITE] Running trigger (timeout ${HEALTH_CHECK_TIMEOUT}s)…"
 RAW_REPORT="$(mktemp "${TMPDIR:-/tmp}/runtime-check-${SUITE}.XXXXXX.json")"
 curl -s --max-time "$HEALTH_CHECK_TIMEOUT" "$TRIGGER_URL" > "$RAW_REPORT"
+if [[ -n "${SUITE_THROW_QUERY:-}" ]]; then
+  echo "==> [$SUITE] Throw mapping test (${SUITE_THROW_QUERY})…"
+  THROW_BODY="$(curl -s --max-time "$HEALTH_CHECK_TIMEOUT" "${TRIGGER_URL}${SUITE_THROW_QUERY}")"
+  node -e "
+const body = JSON.parse(process.argv[1]);
+const expected = process.argv[2];
+if (body.error !== expected) {
+  console.error('expected { error: ' + JSON.stringify(expected) + ' }, got', body);
+  process.exit(1);
+}
+console.log('    throw mapping OK:', JSON.stringify(body));
+" "$THROW_BODY" "${SUITE_THROW_EXPECT:?SUITE_THROW_EXPECT required when SUITE_THROW_QUERY is set}"
+fi
 echo ""
 node "$RUNTIME_CHECK_ROOT/scripts/suite-report.mjs" "$SUITE" "$RAW_REPORT" platform
