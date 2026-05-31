@@ -303,3 +303,97 @@ if (typeof TextDecoderStream === "undefined") {
   };
 }
 
+// ── FormData (Node / undici parity) ───────────────────────────────────────────
+// LLRT FormData: get() returns undefined (not null); append rejects Buffer and
+// coercions; no 3-arg filename; Blob entries stay Blob on get; forEach omits
+// thisArg; fetch() does not serialize FormData bodies (only Blob).
+(function patchFormData() {
+  if (typeof FormData === "undefined") return;
+
+  var proto = FormData.prototype;
+  var origAppend = proto.append;
+  var origSet = proto.set;
+  var origGet = proto.get;
+  var origGetAll = proto.getAll;
+  var origForEach = proto.forEach;
+  if (!origAppend || !origGet) return;
+
+  function bytesToLatin1String(bytes) {
+    var s = "";
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return s;
+  }
+
+  function coerceFormValue(value) {
+    if (value === null || value === undefined) return String(value);
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) {
+      return value.toString("latin1");
+    }
+    if (ArrayBuffer.isView(value)) {
+      return bytesToLatin1String(
+        new Uint8Array(value.buffer, value.byteOffset, value.byteLength),
+      );
+    }
+    if (value instanceof Blob) return value;
+    if (typeof File === "function" && value instanceof File) return value;
+    return String(value);
+  }
+
+  function blobAsFile(blob, filename) {
+    if (typeof File !== "function") return blob;
+    var name = filename === undefined || filename === null ? "blob" : String(filename);
+    return new File([blob], name, { type: blob.type || "" });
+  }
+
+  function normalizeOutgoingValue(value, filename) {
+    var coerced = coerceFormValue(value);
+    if (typeof coerced === "string") return coerced;
+    if (coerced instanceof File) return coerced;
+    if (coerced instanceof Blob) return blobAsFile(coerced, filename);
+    return String(coerced);
+  }
+
+  function normalizeIncomingValue(value) {
+    if (value === undefined) return null;
+    if (value instanceof Blob && !(value instanceof File) && typeof File === "function") {
+      return blobAsFile(value, "blob");
+    }
+    return value;
+  }
+
+  proto.append = function append(name, value, filename) {
+    return origAppend.call(this, name, normalizeOutgoingValue(value, filename));
+  };
+
+  if (origSet) {
+    proto.set = function set(name, value, filename) {
+      return origSet.call(this, name, normalizeOutgoingValue(value, filename));
+    };
+  }
+
+  proto.get = function get(name) {
+    return normalizeIncomingValue(origGet.call(this, name));
+  };
+
+  if (origGetAll) {
+    proto.getAll = function getAll(name) {
+      var list = origGetAll.call(this, name);
+      var out = [];
+      for (var i = 0; i < list.length; i++) out.push(normalizeIncomingValue(list[i]));
+      return out;
+    };
+  }
+
+  if (origForEach) {
+    proto.forEach = function forEach(callback, thisArg) {
+      var self = this;
+      var cb = typeof thisArg === "undefined" ? callback : callback.bind(thisArg);
+      origForEach.call(this, function(value, key) {
+        cb(normalizeIncomingValue(value), key, self);
+      });
+    };
+  }
+}());
+

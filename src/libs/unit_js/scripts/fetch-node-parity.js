@@ -66,6 +66,79 @@
     return body;
   }
 
+  function isFormData(value) {
+    return value != null && typeof FormData !== "undefined" && value instanceof FormData;
+  }
+
+  async function encodeFormDataMultipart(fd) {
+    var boundary =
+      "----WebKitFormBoundary" +
+      Math.random().toString(36).slice(2) +
+      Date.now().toString(36);
+    var encoder = new TextEncoder();
+    var chunks = [];
+    var pushText = function(s) {
+      chunks.push(encoder.encode(s));
+    };
+
+    var entries = fd.entries();
+    var step = entries.next();
+    while (!step.done) {
+      var pair = step.value;
+      var name = pair[0];
+      var value = pair[1];
+      pushText("--" + boundary + "\r\n");
+      if (typeof value === "string") {
+        pushText('Content-Disposition: form-data; name="' + name + '"\r\n\r\n');
+        pushText(value + "\r\n");
+      } else {
+        var filename = (value && value.name) || "blob";
+        var type = (value && value.type) || "application/octet-stream";
+        var bytes = new Uint8Array(await value.arrayBuffer());
+        pushText(
+          'Content-Disposition: form-data; name="' +
+            name +
+            '"; filename="' +
+            filename +
+            '"\r\n',
+        );
+        pushText("Content-Type: " + type + "\r\n\r\n");
+        chunks.push(bytes);
+        pushText("\r\n");
+      }
+      step = entries.next();
+    }
+    pushText("--" + boundary + "--\r\n");
+
+    var total = 0;
+    for (var i = 0; i < chunks.length; i++) total += chunks[i].length;
+    var out = new Uint8Array(total);
+    var offset = 0;
+    for (var j = 0; j < chunks.length; j++) {
+      out.set(chunks[j], offset);
+      offset += chunks[j].length;
+    }
+    return {
+      bytes: out,
+      contentType: "multipart/form-data; boundary=" + boundary,
+    };
+  }
+
+  async function packFormDataForNativeFetch(fd) {
+    return encodeFormDataMultipart(fd);
+  }
+
+  function mergeContentTypeHeader(headers, contentType) {
+    if (!contentType) return headers;
+    if (headers instanceof Headers) {
+      if (!headers.has("content-type")) headers.set("content-type", contentType);
+      return headers;
+    }
+    var h = new Headers(headers || undefined);
+    if (!h.has("content-type")) h.set("content-type", contentType);
+    return h;
+  }
+
   function normalizeRequestInput(input) {
     if (typeof input === "string") return new URL(input).href;
     if (typeof URL !== "undefined" && input instanceof URL) return input.href;
@@ -306,7 +379,10 @@
     if (req.duplex) init.duplex = req.duplex;
     if (req.body) {
       var bytes = await readStreamToBytes(req.body);
-      if (bytes.length > 0) init.body = bytes;
+      if (bytes.length > 0) {
+        init.body = bytes;
+        init.headers = mergeContentTypeHeader(init.headers, req.headers.get("content-type"));
+      }
     }
     return constructNative(NativeRequest, req.url, init);
   }
@@ -317,12 +393,18 @@
       req = await serializeRequestForNativeFetch(input);
     } else if (init && init.body != null) {
       init = Object.assign({}, init);
-      var stream = bodyInitToReadableStream(init.body);
-      if (stream) {
-        var bytes = await readStreamToBytes(stream);
-        init.body = bytes.length > 0 ? bytes : undefined;
+      if (isFormData(init.body)) {
+        var packed = await packFormDataForNativeFetch(init.body);
+        init.body = packed.bytes.length > 0 ? packed.bytes : undefined;
+        init.headers = mergeContentTypeHeader(init.headers, packed.contentType);
       } else {
-        init.body = nativeWireBody(init.body);
+        var stream = bodyInitToReadableStream(init.body);
+        if (stream) {
+          var bytes = await readStreamToBytes(stream);
+          init.body = bytes.length > 0 ? bytes : undefined;
+        } else {
+          init.body = nativeWireBody(init.body);
+        }
       }
     }
     var nativeResponse = await nativeFetch(req, init);

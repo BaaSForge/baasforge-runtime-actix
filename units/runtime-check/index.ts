@@ -3034,74 +3034,325 @@ async function checkBlob(): Promise<GroupedTests> {
 }
 
 // ---------------------------------------------------------------------------
-// 25. FormData
+// 25. FormData (Node undici / Web API parity)
 // ---------------------------------------------------------------------------
 
-function checkFormData(): GroupedTests {
-  return group([
-    runTest("FormData constructor exists", () => {
-      assert(typeof FormData === "function");
-    }),
+async function checkFormData(baseUrl: string): Promise<GroupedTests> {
+  const tests: TestResult[] = [];
 
-    runTest("FormData append + get", () => {
-      const fd = new FormData();
-      fd.append("key", "value");
-      assert(fd.get("key") === "value");
-    }),
+  tests.push(runTest("FormData constructor exists", () => {
+    assert(typeof FormData === "function");
+  }));
 
-    runTest("FormData set overwrites", () => {
-      const fd = new FormData();
-      fd.append("key", "value1");
-      fd.set("key", "value2");
-      assert(fd.get("key") === "value2");
-      assert(fd.getAll("key").length === 1);
-    }),
+  tests.push(runTest("FormData instanceof", () => {
+    const fd = new FormData();
+    assert(fd instanceof FormData);
+  }));
 
-    runTest("FormData append multiple values + getAll", () => {
-      const fd = new FormData();
-      fd.append("m", "a");
-      fd.append("m", "b");
-      fd.append("m", "c");
-      const all = fd.getAll("m");
-      assert(all.length === 3);
-      assert(all[0] === "a" && all[2] === "c");
-    }),
+  tests.push(runTest("FormData append + get returns string", () => {
+    const fd = new FormData();
+    fd.append("key", "value");
+    const v = fd.get("key");
+    assert(v === "value");
+    assert(typeof v === "string");
+  }));
 
-    // runTest("FormData has + delete", () => {
-    //   const fd = new FormData();
-    //   fd.set("key", "val");
-    //   assert(fd.has("key") === true);
-    //   fd.delete("key");
-    //   assert(fd.has("key") === false);
-    //   assert(fd.get("key") === null);
-    // }),
+  tests.push(runTest("FormData get missing field returns null", () => {
+    const fd = new FormData();
+    assert(fd.get("missing") === null);
+  }));
 
-    runTest("FormData iteration (entries, keys, values)", () => {
-      const fd = new FormData();
-      fd.set("a", "1");
-      fd.set("b", "2");
-      assert([...fd.entries()].length === 2);
-      assert([...fd.keys()].length === 2);
-      assert([...fd.values()].length === 2);
-    }),
+  tests.push(runTest("FormData set overwrites single value", () => {
+    const fd = new FormData();
+    fd.append("key", "value1");
+    fd.set("key", "value2");
+    assert(fd.get("key") === "value2");
+    assert(fd.getAll("key").length === 1);
+  }));
 
-    runTest("FormData forEach", () => {
-      const fd = new FormData();
-      fd.set("x", "1");
-      fd.set("y", "2");
-      let count = 0;
-      fd.forEach(() => { count++; });
-      assert(count === 2);
-    }),
+  tests.push(runTest("FormData set clears duplicate appends for same name", () => {
+    const fd = new FormData();
+    fd.append("key", "a");
+    fd.append("key", "b");
+    fd.set("key", "only");
+    assert(fd.getAll("key").length === 1);
+    assert(fd.get("key") === "only");
+  }));
 
-    runTest("FormData with Blob value", () => {
+  tests.push(runTest("FormData append multiple values + getAll", () => {
+    const fd = new FormData();
+    fd.append("m", "a");
+    fd.append("m", "b");
+    fd.append("m", "c");
+    const all = fd.getAll("m");
+    assert(all.length === 3);
+    assert(all[0] === "a" && all[1] === "b" && all[2] === "c");
+  }));
+
+  tests.push(runTest("FormData has + delete", () => {
+    const fd = new FormData();
+    fd.set("key", "val");
+    assert(fd.has("key") === true);
+    fd.delete("key");
+    assert(fd.has("key") === false);
+    assert(fd.get("key") === null);
+  }));
+
+  tests.push(runTest("FormData delete removes all values for a name", () => {
+    const fd = new FormData();
+    fd.append("dup", "1");
+    fd.append("dup", "2");
+    fd.delete("dup");
+    assert(fd.has("dup") === false);
+    assert(fd.getAll("dup").length === 0);
+  }));
+
+  tests.push(runTest("FormData empty", () => {
+    const fd = new FormData();
+    assert([...fd.entries()].length === 0);
+    assert(fd.get("x") === null);
+    assert(fd.has("x") === false);
+  }));
+
+  tests.push(runTest("FormData append coerces number and boolean to string", () => {
+    const fd = new FormData();
+    const append = FormData.prototype.append as (this: FormData, name: string, value: unknown) => void;
+    append.call(fd, "n", 42);
+    append.call(fd, "b", true);
+    assert(fd.get("n") === "42");
+    assert(typeof fd.get("n") === "string");
+    assert(fd.get("b") === "true");
+  }));
+
+  tests.push(runTest("FormData unicode field names and values", () => {
+    const fd = new FormData();
+    fd.append("日本語", "🔥 café");
+    assert(fd.get("日本語") === "🔥 café");
+  }));
+
+  tests.push(runTest("FormData iteration entries keys values order", () => {
+    const fd = new FormData();
+    fd.set("a", "1");
+    fd.set("b", "2");
+    assert([...fd.entries()].length === 2);
+    assert([...fd.entries()][0]![0] === "a" && [...fd.entries()][0]![1] === "1");
+    assert([...fd.keys()].join(",") === "a,b");
+    assert([...fd.values()].join(",") === "1,2");
+  }));
+
+  tests.push(runTest("FormData Symbol.iterator", () => {
+    const fd = new FormData();
+    fd.set("x", "1");
+    fd.set("y", "2");
+    const fromIterator = [...fd];
+    assert(fromIterator.length === 2);
+    assert(fromIterator[0]![0] === "x");
+  }));
+
+  tests.push(runTest("FormData forEach value key and thisArg", () => {
+    const fd = new FormData();
+    fd.set("x", "1");
+    fd.set("y", "2");
+    const seen: { value: string; key: string; same: boolean }[] = [];
+    fd.forEach((value, key, self) => {
+      seen.push({ value: value as string, key, same: self === fd });
+    });
+    assert(seen.length === 2);
+    assert(seen.every((s) => s.same));
+    assert(seen.some((s) => s.key === "x" && s.value === "1"));
+  }));
+
+  tests.push(runTest("FormData Buffer value is stored as string", () => {
+    const fd = new FormData();
+    fd.append("buf", Buffer.from("binary\x00\xff"));
+    const v = fd.get("buf");
+    assert(typeof v === "string");
+    assert(v === "binary\x00\xff");
+  }));
+
+  tests.push(runTest("FormData Uint8Array value is stored as string", () => {
+    const fd = new FormData();
+    fd.append("u8", new Uint8Array([72, 105]));
+    const v = fd.get("u8");
+    assert(typeof v === "string");
+    assert(v === "Hi");
+  }));
+
+  tests.push(
+    await runTestAsync("FormData Blob with filename returns File with metadata", async () => {
       const fd = new FormData();
       const blob = new Blob(["file content"], { type: "text/plain" });
       fd.set("file", blob, "test.txt");
       const retrieved = fd.get("file");
       assert(retrieved !== null);
+      assert(retrieved instanceof Blob);
+      assert(typeof File === "function" && retrieved instanceof File);
+      const file = retrieved as File;
+      assert(file.name === "test.txt");
+      assert(file.type === "text/plain");
+      assert(file.size === 12);
+      assert((await file.text()) === "file content");
     }),
-  ]);
+  );
+
+  tests.push(runTest("FormData append Blob without filename still yields File on get", () => {
+    const fd = new FormData();
+    fd.append("blob", new Blob(["x"], { type: "text/plain" }));
+    const retrieved = fd.get("blob");
+    assert(retrieved !== null);
+    assert(retrieved instanceof Blob);
+    if (typeof File === "function") {
+      assert(retrieved instanceof File);
+    }
+  }));
+
+  tests.push(
+    await runTestAsync("FormData append File preserves name type and bytes", async () => {
+      assert(typeof File === "function", "File global required for Node parity");
+      const file = new File(["hello"], "hello.txt", { type: "text/plain" });
+      const fd = new FormData();
+      fd.append("upload", file);
+      const retrieved = fd.get("upload");
+      assert(retrieved instanceof File);
+      const got = retrieved as File;
+      assert(got.name === "hello.txt");
+      assert(got.type === "text/plain");
+      assert(got.size === 5);
+      assert((await got.text()) === "hello");
+    }),
+  );
+
+  tests.push(runTest("FormData set replaces Blob entry with string", () => {
+    const fd = new FormData();
+    fd.append("x", new Blob(["a"]), "a.txt");
+    fd.set("x", "plain");
+    assert(typeof fd.get("x") === "string");
+    assert(fd.get("x") === "plain");
+  }));
+
+  tests.push(runTest("FormData getAll returns multiple File entries", () => {
+    const fd = new FormData();
+    fd.append("f", new Blob(["1"]), "1.txt");
+    fd.append("f", new Blob(["22"]), "2.txt");
+    const all = fd.getAll("f");
+    assert(all.length === 2);
+    if (typeof File === "function") {
+      assert(all.every((v) => v instanceof File));
+      assert((all[0] as File).name === "1.txt");
+      assert((all[1] as File).name === "2.txt");
+    }
+  }));
+
+  tests.push(runTest("Request with FormData body sets multipart content-type", () => {
+    const fd = new FormData();
+    fd.append("a", "1");
+    fd.append("file", new Blob(["b"]), "f.bin");
+    const req = new Request(`${baseUrl}?_t=json`, { method: "POST", body: fd });
+    const ct = req.headers.get("content-type");
+    assert(ct !== null && ct.includes("multipart/form-data") && ct.includes("boundary="));
+    assert(req.bodyUsed === false);
+  }));
+
+  tests.push(
+    await runTestAsync("fetch POST FormData text fields → multipart-echo", async () => {
+      const fd = new FormData();
+      fd.append("user", "alice");
+      fd.append("role", "admin");
+      const resp = await fetch(`${baseUrl}?_t=multipart-echo`, { method: "POST", body: fd });
+      assert(resp.ok, `status ${resp.status}`);
+      const data = await resp.json() as {
+        fields: Record<string, string>;
+        files: Record<string, unknown>;
+      };
+      assert(data.fields["user"] === "alice");
+      assert(data.fields["role"] === "admin");
+      assert(Object.keys(data.files).length === 0);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("fetch POST FormData JSON Blob file (doc pattern)", async () => {
+      const payload = { id: 1, ok: true };
+      const fd = new FormData();
+      fd.append(
+        "file",
+        new Blob([JSON.stringify(payload)], { type: "application/json" }),
+        "data.json",
+      );
+      fd.append("userId", "user-42");
+      const resp = await fetch(`${baseUrl}?_t=multipart-echo`, { method: "POST", body: fd });
+      assert(resp.ok);
+      const data = await resp.json() as {
+        fields: Record<string, string>;
+        files: Record<string, { filename: string; byteLength: number; base64: string }[]>;
+      };
+      assert(data.fields["userId"] === "user-42");
+      const files = data.files["file"];
+      if (!files || files.length !== 1) throw new Error("expected one file part");
+      assert(files[0]!.filename === "data.json");
+      const parsed = JSON.parse(Buffer.from(files[0]!.base64, "base64").toString("utf-8")) as typeof payload;
+      assert(parsed.id === 1 && parsed.ok === true);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("fetch POST FormData binary Blob file", async () => {
+      const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00]);
+      const fd = new FormData();
+      fd.append("meta", "ok");
+      fd.append("upload", new Blob([bytes], { type: "application/octet-stream" }), "data.bin");
+      const resp = await fetch(`${baseUrl}?_t=multipart-echo`, { method: "POST", body: fd });
+      assert(resp.ok);
+      const data = await resp.json() as {
+        fields: Record<string, string>;
+        files: Record<string, { filename: string; byteLength: number; base64: string }[]>;
+      };
+      assert(data.fields["meta"] === "ok");
+      const uploaded = data.files["upload"];
+      if (!uploaded || uploaded.length !== 1) throw new Error("expected one upload part");
+      assert(uploaded[0]!.filename === "data.bin");
+      assert(uploaded[0]!.byteLength === bytes.length);
+      assert(Buffer.from(uploaded[0]!.base64, "base64").equals(Buffer.from(bytes)));
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("fetch POST FormData multiple files same field name", async () => {
+      const fd = new FormData();
+      fd.append("doc", new Blob(["AAA"]), "a.txt");
+      fd.append("doc", new Blob(["BBB"]), "b.txt");
+      const resp = await fetch(`${baseUrl}?_t=multipart-echo`, { method: "POST", body: fd });
+      assert(resp.ok);
+      const data = await resp.json() as {
+        files: Record<string, { filename: string; byteLength: number }[]>;
+      };
+      const docs = data.files["doc"];
+      if (!docs || docs.length !== 2) throw new Error("expected two doc parts");
+      assert(docs[0]!.filename === "a.txt" && docs[0]!.byteLength === 3);
+      assert(docs[1]!.filename === "b.txt" && docs[1]!.byteLength === 3);
+    }),
+  );
+
+  tests.push(
+    await runTestAsync("fetch POST FormData mixed UTF-8 field and binary file", async () => {
+      const fd = new FormData();
+      fd.append("note", "日本語 🔥");
+      fd.append("bin", new Blob([new Uint8Array([0x00, 0xff, 0x01])]), "raw.bin");
+      const resp = await fetch(`${baseUrl}?_t=multipart-echo`, { method: "POST", body: fd });
+      assert(resp.ok);
+      const data = await resp.json() as {
+        fields: Record<string, string>;
+        files: Record<string, { byteLength: number; base64: string }[]>;
+      };
+      assert(data.fields["note"] === "日本語 🔥");
+      const binFiles = data.files["bin"];
+      if (!binFiles || binFiles.length !== 1) throw new Error("expected one bin file part");
+      assert(binFiles[0]!.byteLength === 3);
+      assert(Buffer.from(binFiles[0]!.base64, "base64").equals(Buffer.from([0x00, 0xff, 0x01])));
+    }),
+  );
+
+  return group(tests);
 }
 
 // ---------------------------------------------------------------------------
@@ -4604,13 +4855,14 @@ async function runHealthCheck(
   const selfPath: string = ((globalThis as Record<string, unknown>)["__triggerBasePath"] as string) ?? "";
   const baseUrl = `http://${host}${selfPath}`;
 
-  const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, webCryptoSubtle, fetchMethods, reqResDeep, nodeIncomingHttp, moduleLoader] = await Promise.all([
+  const [timers, timerSemantics, asyncPatterns, fetchApi, streams, blob, formData, webCryptoSubtle, fetchMethods, reqResDeep, nodeIncomingHttp, moduleLoader] = await Promise.all([
     withSectionAsync("timers", () => checkTimers()),
     withSectionAsync("timer_semantics", () => checkTimerSemantics()),
     withSectionAsync("async_patterns", () => checkAsyncPatterns()),
     withSectionAsync("fetch_api", () => checkFetchAPI(baseUrl)),
     withSectionAsync("streams", () => checkStreams()),
     withSectionAsync("blob", () => checkBlob()),
+    withSectionAsync("form_data", () => checkFormData(baseUrl)),
     withSectionAsync("web_crypto_subtle", () => checkWebCryptoSubtle()),
     withSectionAsync("fetch_http_methods", () => checkFetchHTTPMethods(baseUrl)),
     withSectionAsync("req_res_deep", () => checkReqResDeep(baseUrl)),
@@ -4644,7 +4896,7 @@ async function runHealthCheck(
     process: withSection("process", () => checkProcess()),
     event_target: withSection("event_target", () => checkEventTarget()),
     blob,
-    form_data: withSection("form_data", () => checkFormData()),
+    form_data: formData,
     web_crypto_subtle: webCryptoSubtle,
     advanced_object_reflect_proxy: withSection("advanced_object_reflect_proxy", () => checkAdvancedObjectReflectProxy()),
     function_patterns: withSection("function_patterns", () => checkFunctionPatterns()),
