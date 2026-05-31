@@ -19,6 +19,10 @@ discover_suites() {
   done | sort
 }
 
+print_summary() {
+  node "$RUNTIME_CHECK_ROOT/scripts/suite-packages-summary.mjs" node "${SUITES[@]}"
+}
+
 SUITES=()
 while IFS= read -r suite; do
   SUITES+=("$suite")
@@ -49,6 +53,10 @@ for suite in "${SUITES[@]}"; do
   fi
   echo ""
 done
+
+echo ""
+print_summary
+echo ""
 
 if [[ ${#FAILED[@]} -gt 0 ]]; then
   echo "FAILED packages (node): ${FAILED[*]}"
