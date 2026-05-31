@@ -4,7 +4,7 @@
   "compilerOptionsLib": [
     "lib.es2023.d.ts"
   ],
-  "fileCount": 823,
+  "fileCount": 841,
   "packages": {
     "@mjackson/headers": {
       "fileCount": 13,
@@ -423,6 +423,14 @@
         "node_modules/@types/ms/package.json"
       ]
     },
+    "@types/mustache": {
+      "fileCount": 3,
+      "files": [
+        "node_modules/@types/mustache/index.d.mts",
+        "node_modules/@types/mustache/index.d.ts",
+        "node_modules/@types/mustache/package.json"
+      ]
+    },
     "@types/node": {
       "fileCount": 68,
       "files": [
@@ -791,12 +799,42 @@
         "node_modules/fflate/package.json"
       ]
     },
+    "handlebars": {
+      "fileCount": 3,
+      "files": [
+        "node_modules/handlebars/package.json",
+        "node_modules/handlebars/runtime.d.ts",
+        "node_modules/handlebars/types/index.d.ts"
+      ]
+    },
+    "marked": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/marked/lib/marked.d.ts",
+        "node_modules/marked/package.json"
+      ]
+    },
     "nanoid": {
       "fileCount": 3,
       "files": [
         "node_modules/nanoid/index.d.ts",
         "node_modules/nanoid/non-secure/index.d.ts",
         "node_modules/nanoid/package.json"
+      ]
+    },
+    "node-html-parser": {
+      "fileCount": 10,
+      "files": [
+        "node_modules/node-html-parser/dist/index.d.ts",
+        "node_modules/node-html-parser/dist/nodes/comment.d.ts",
+        "node_modules/node-html-parser/dist/nodes/html.d.ts",
+        "node_modules/node-html-parser/dist/nodes/node.d.ts",
+        "node_modules/node-html-parser/dist/nodes/text.d.ts",
+        "node_modules/node-html-parser/dist/nodes/type.d.ts",
+        "node_modules/node-html-parser/dist/parse.d.ts",
+        "node_modules/node-html-parser/dist/valid.d.ts",
+        "node_modules/node-html-parser/dist/void-tag.d.ts",
+        "node_modules/node-html-parser/package.json"
       ]
     },
     "p-limit": {
@@ -1373,6 +1411,9 @@
     "node_modules/@types/mime-types/package.json",
     "node_modules/@types/ms/index.d.ts",
     "node_modules/@types/ms/package.json",
+    "node_modules/@types/mustache/index.d.mts",
+    "node_modules/@types/mustache/index.d.ts",
+    "node_modules/@types/mustache/package.json",
     "node_modules/@types/node/assert.d.ts",
     "node_modules/@types/node/assert/strict.d.ts",
     "node_modules/@types/node/async_hooks.d.ts",
@@ -1666,9 +1707,24 @@
     "node_modules/fast-xml-parser/src/fxp.d.ts",
     "node_modules/fflate/esm/browser.d.ts",
     "node_modules/fflate/package.json",
+    "node_modules/handlebars/package.json",
+    "node_modules/handlebars/runtime.d.ts",
+    "node_modules/handlebars/types/index.d.ts",
+    "node_modules/marked/lib/marked.d.ts",
+    "node_modules/marked/package.json",
     "node_modules/nanoid/index.d.ts",
     "node_modules/nanoid/non-secure/index.d.ts",
     "node_modules/nanoid/package.json",
+    "node_modules/node-html-parser/dist/index.d.ts",
+    "node_modules/node-html-parser/dist/nodes/comment.d.ts",
+    "node_modules/node-html-parser/dist/nodes/html.d.ts",
+    "node_modules/node-html-parser/dist/nodes/node.d.ts",
+    "node_modules/node-html-parser/dist/nodes/text.d.ts",
+    "node_modules/node-html-parser/dist/nodes/type.d.ts",
+    "node_modules/node-html-parser/dist/parse.d.ts",
+    "node_modules/node-html-parser/dist/valid.d.ts",
+    "node_modules/node-html-parser/dist/void-tag.d.ts",
+    "node_modules/node-html-parser/package.json",
     "node_modules/p-limit/index.d.ts",
     "node_modules/p-limit/package.json",
     "node_modules/p-retry/index.d.ts",
