@@ -1,4 +1,11 @@
 // @ts-nocheck — side-effect imports for QuickJS shim bundling only.
+//
+// Every npm subpath that must load on the platform MUST be listed here as a bare import:
+//   import "zod/v4/mini";
+// scripts/build.mjs scans this file and bundles each specifier into dist/ + npm_shims_gen.rs.
+// Subpaths used only in LLM/unit code (not imported from packages/<name>/index.ts) still need
+// a line here — otherwise they are not shimmed at runtime.
+//
 /** Public zod package.json exports (skip v3, v4-mini, zod/locales alias). */
 import "zod/v4";
 import "zod/v4/core";

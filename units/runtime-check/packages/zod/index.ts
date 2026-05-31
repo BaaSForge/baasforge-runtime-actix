@@ -2,7 +2,7 @@
  * `zod` npm package test runner (`test.runtime.api.zod`).
  */
 
-import "./npm-shim-imports.js";
+import "./npm-shim-imports.js"; // registers subpaths for QuickJS shim bundling — add new ones in npm-shim-imports.ts
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { z as zMini } from "zod/mini";

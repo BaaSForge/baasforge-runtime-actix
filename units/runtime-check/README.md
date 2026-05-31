@@ -14,7 +14,8 @@ Used by `test.sh` before integration tests run.
 
 Each npm library gets a folder under `packages/` with:
 
-- `index.ts` — library tests + shared `lib/suite-harness.ts`; import npm root and any subpaths you want QuickJS shims for (see `npm-shim-imports.ts` when there are many). Build bundles each package to a single `dist/packages/<name>/index.js` for the platform
+- `index.ts` — library tests + shared `lib/suite-harness.ts`; import `./npm-shim-imports.js` so the build picks up shim specifiers
+- `npm-shim-imports.ts` — **required for subpaths**: list every npm subpath the platform must load as `import "pkg/subpath";` (side-effect only). `scripts/build.mjs` reads this file and bundles each specifier into `dist/` + `npm_shims_gen.rs`. Subpaths imported only from unit/LLM code are not discovered unless they appear here. Build also emits `dist/packages/<name>/index.js` for the suite
 - `test.sh` — platform e2e for this package (`scripts/suite-test.sh`)
 - `test-node.sh` — node CLI for this package (`scripts/suite-test-node.sh`)
 

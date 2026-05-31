@@ -97,6 +97,7 @@ function vendorEntryForPackage(pkg, { keys, hasDefault }) {
 }
 const packagesDir = join(projectDir, "packages");
 
+// Side-effect imports in packages/<name>/npm-shim-imports.ts declare npm subpaths to bundle.
 function readNpmShimImportSpecifiers(packageName) {
   const shimPath = join(packagesDir, packageName, "npm-shim-imports.ts");
   if (!existsSync(shimPath)) return [];
