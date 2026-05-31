@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@mjackson/multipart-parser": "^0.10.1",
+    "bcryptjs": "^3.0.3",
     "big.js": "^7.0.1",
     "change-case": "^5.4.4",
     "cookie": "^1.1.1",
@@ -26,6 +27,7 @@
     "fuse.js": "^7.4.0",
     "handlebars": "^4.7.9",
     "http-errors": "^2.0.1",
+    "jose": "^6.2.3",
     "js-yaml": "^4.1.1",
     "lodash-es": "^4.18.1",
     "luxon": "^3.7.2",
@@ -36,6 +38,7 @@
     "mustache": "^4.2.0",
     "nanoid": "^5.1.11",
     "node-html-parser": "^7.1.0",
+    "otplib": "^13.4.1",
     "p-limit": "^7.3.0",
     "p-retry": "^8.0.0",
     "p-timeout": "^7.0.1",

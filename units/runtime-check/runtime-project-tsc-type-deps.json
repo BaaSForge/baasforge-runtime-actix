@@ -4,7 +4,7 @@
   "compilerOptionsLib": [
     "lib.es2023.d.ts"
   ],
-  "fileCount": 993,
+  "fileCount": 1046,
   "packages": {
     "@mjackson/headers": {
       "fileCount": 13,
@@ -31,6 +31,44 @@
         "node_modules/@mjackson/multipart-parser/dist/lib/multipart.d.ts",
         "node_modules/@mjackson/multipart-parser/dist/multipart-parser.d.ts",
         "node_modules/@mjackson/multipart-parser/package.json"
+      ]
+    },
+    "@otplib/core": {
+      "fileCount": 5,
+      "files": [
+        "node_modules/@otplib/core/dist/errors.d.ts",
+        "node_modules/@otplib/core/dist/index.d.ts",
+        "node_modules/@otplib/core/dist/types.d.ts",
+        "node_modules/@otplib/core/dist/utils.d.ts",
+        "node_modules/@otplib/core/package.json"
+      ]
+    },
+    "@otplib/hotp": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/@otplib/hotp/dist/index.d.ts",
+        "node_modules/@otplib/hotp/package.json"
+      ]
+    },
+    "@otplib/plugin-base32-scure": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/@otplib/plugin-base32-scure/dist/index.d.ts",
+        "node_modules/@otplib/plugin-base32-scure/package.json"
+      ]
+    },
+    "@otplib/plugin-crypto-noble": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/@otplib/plugin-crypto-noble/dist/index.d.ts",
+        "node_modules/@otplib/plugin-crypto-noble/package.json"
+      ]
+    },
+    "@otplib/totp": {
+      "fileCount": 2,
+      "files": [
+        "node_modules/@otplib/totp/dist/index.d.ts",
+        "node_modules/@otplib/totp/package.json"
       ]
     },
     "@pdf-lib/standard-fonts": {
@@ -703,6 +741,14 @@
         "node_modules/@types/validator/package.json"
       ]
     },
+    "bcryptjs": {
+      "fileCount": 3,
+      "files": [
+        "node_modules/bcryptjs/index.d.ts",
+        "node_modules/bcryptjs/package.json",
+        "node_modules/bcryptjs/types.d.ts"
+      ]
+    },
     "change-case": {
       "fileCount": 3,
       "files": [
@@ -852,6 +898,43 @@
         "node_modules/handlebars/types/index.d.ts"
       ]
     },
+    "jose": {
+      "fileCount": 32,
+      "files": [
+        "node_modules/jose/dist/types/index.d.ts",
+        "node_modules/jose/dist/types/jwe/compact/decrypt.d.ts",
+        "node_modules/jose/dist/types/jwe/compact/encrypt.d.ts",
+        "node_modules/jose/dist/types/jwe/flattened/decrypt.d.ts",
+        "node_modules/jose/dist/types/jwe/flattened/encrypt.d.ts",
+        "node_modules/jose/dist/types/jwe/general/decrypt.d.ts",
+        "node_modules/jose/dist/types/jwe/general/encrypt.d.ts",
+        "node_modules/jose/dist/types/jwk/embedded.d.ts",
+        "node_modules/jose/dist/types/jwk/thumbprint.d.ts",
+        "node_modules/jose/dist/types/jwks/local.d.ts",
+        "node_modules/jose/dist/types/jwks/remote.d.ts",
+        "node_modules/jose/dist/types/jws/compact/sign.d.ts",
+        "node_modules/jose/dist/types/jws/compact/verify.d.ts",
+        "node_modules/jose/dist/types/jws/flattened/sign.d.ts",
+        "node_modules/jose/dist/types/jws/flattened/verify.d.ts",
+        "node_modules/jose/dist/types/jws/general/sign.d.ts",
+        "node_modules/jose/dist/types/jws/general/verify.d.ts",
+        "node_modules/jose/dist/types/jwt/decrypt.d.ts",
+        "node_modules/jose/dist/types/jwt/encrypt.d.ts",
+        "node_modules/jose/dist/types/jwt/sign.d.ts",
+        "node_modules/jose/dist/types/jwt/unsecured.d.ts",
+        "node_modules/jose/dist/types/jwt/verify.d.ts",
+        "node_modules/jose/dist/types/key/export.d.ts",
+        "node_modules/jose/dist/types/key/generate_key_pair.d.ts",
+        "node_modules/jose/dist/types/key/generate_secret.d.ts",
+        "node_modules/jose/dist/types/key/import.d.ts",
+        "node_modules/jose/dist/types/types.d.ts",
+        "node_modules/jose/dist/types/util/base64url.d.ts",
+        "node_modules/jose/dist/types/util/decode_jwt.d.ts",
+        "node_modules/jose/dist/types/util/decode_protected_header.d.ts",
+        "node_modules/jose/dist/types/util/errors.d.ts",
+        "node_modules/jose/package.json"
+      ]
+    },
     "marked": {
       "fileCount": 2,
       "files": [
@@ -888,6 +971,16 @@
         "node_modules/node-html-parser/dist/valid.d.ts",
         "node_modules/node-html-parser/dist/void-tag.d.ts",
         "node_modules/node-html-parser/package.json"
+      ]
+    },
+    "otplib": {
+      "fileCount": 5,
+      "files": [
+        "node_modules/otplib/dist/class.d.ts",
+        "node_modules/otplib/dist/functional.d.ts",
+        "node_modules/otplib/dist/index.d.ts",
+        "node_modules/otplib/dist/types-BBT_82HF.d.ts",
+        "node_modules/otplib/package.json"
       ]
     },
     "p-limit": {
@@ -1248,6 +1341,19 @@
     "node_modules/@mjackson/multipart-parser/dist/lib/multipart.d.ts",
     "node_modules/@mjackson/multipart-parser/dist/multipart-parser.d.ts",
     "node_modules/@mjackson/multipart-parser/package.json",
+    "node_modules/@otplib/core/dist/errors.d.ts",
+    "node_modules/@otplib/core/dist/index.d.ts",
+    "node_modules/@otplib/core/dist/types.d.ts",
+    "node_modules/@otplib/core/dist/utils.d.ts",
+    "node_modules/@otplib/core/package.json",
+    "node_modules/@otplib/hotp/dist/index.d.ts",
+    "node_modules/@otplib/hotp/package.json",
+    "node_modules/@otplib/plugin-base32-scure/dist/index.d.ts",
+    "node_modules/@otplib/plugin-base32-scure/package.json",
+    "node_modules/@otplib/plugin-crypto-noble/dist/index.d.ts",
+    "node_modules/@otplib/plugin-crypto-noble/package.json",
+    "node_modules/@otplib/totp/dist/index.d.ts",
+    "node_modules/@otplib/totp/package.json",
     "node_modules/@pdf-lib/standard-fonts/lib/Encoding.d.ts",
     "node_modules/@pdf-lib/standard-fonts/lib/Font.d.ts",
     "node_modules/@pdf-lib/standard-fonts/lib/index.d.ts",
@@ -1823,6 +1929,9 @@
     "node_modules/@types/validator/lib/unescape.d.ts",
     "node_modules/@types/validator/lib/whitelist.d.ts",
     "node_modules/@types/validator/package.json",
+    "node_modules/bcryptjs/index.d.ts",
+    "node_modules/bcryptjs/package.json",
+    "node_modules/bcryptjs/types.d.ts",
     "node_modules/change-case/dist/index.d.ts",
     "node_modules/change-case/dist/keys.d.ts",
     "node_modules/change-case/package.json",
@@ -1917,6 +2026,38 @@
     "node_modules/handlebars/package.json",
     "node_modules/handlebars/runtime.d.ts",
     "node_modules/handlebars/types/index.d.ts",
+    "node_modules/jose/dist/types/index.d.ts",
+    "node_modules/jose/dist/types/jwe/compact/decrypt.d.ts",
+    "node_modules/jose/dist/types/jwe/compact/encrypt.d.ts",
+    "node_modules/jose/dist/types/jwe/flattened/decrypt.d.ts",
+    "node_modules/jose/dist/types/jwe/flattened/encrypt.d.ts",
+    "node_modules/jose/dist/types/jwe/general/decrypt.d.ts",
+    "node_modules/jose/dist/types/jwe/general/encrypt.d.ts",
+    "node_modules/jose/dist/types/jwk/embedded.d.ts",
+    "node_modules/jose/dist/types/jwk/thumbprint.d.ts",
+    "node_modules/jose/dist/types/jwks/local.d.ts",
+    "node_modules/jose/dist/types/jwks/remote.d.ts",
+    "node_modules/jose/dist/types/jws/compact/sign.d.ts",
+    "node_modules/jose/dist/types/jws/compact/verify.d.ts",
+    "node_modules/jose/dist/types/jws/flattened/sign.d.ts",
+    "node_modules/jose/dist/types/jws/flattened/verify.d.ts",
+    "node_modules/jose/dist/types/jws/general/sign.d.ts",
+    "node_modules/jose/dist/types/jws/general/verify.d.ts",
+    "node_modules/jose/dist/types/jwt/decrypt.d.ts",
+    "node_modules/jose/dist/types/jwt/encrypt.d.ts",
+    "node_modules/jose/dist/types/jwt/sign.d.ts",
+    "node_modules/jose/dist/types/jwt/unsecured.d.ts",
+    "node_modules/jose/dist/types/jwt/verify.d.ts",
+    "node_modules/jose/dist/types/key/export.d.ts",
+    "node_modules/jose/dist/types/key/generate_key_pair.d.ts",
+    "node_modules/jose/dist/types/key/generate_secret.d.ts",
+    "node_modules/jose/dist/types/key/import.d.ts",
+    "node_modules/jose/dist/types/types.d.ts",
+    "node_modules/jose/dist/types/util/base64url.d.ts",
+    "node_modules/jose/dist/types/util/decode_jwt.d.ts",
+    "node_modules/jose/dist/types/util/decode_protected_header.d.ts",
+    "node_modules/jose/dist/types/util/errors.d.ts",
+    "node_modules/jose/package.json",
     "node_modules/marked/lib/marked.d.ts",
     "node_modules/marked/package.json",
     "node_modules/minisearch/dist/es/SearchableMap.d.ts",
@@ -1935,6 +2076,11 @@
     "node_modules/node-html-parser/dist/valid.d.ts",
     "node_modules/node-html-parser/dist/void-tag.d.ts",
     "node_modules/node-html-parser/package.json",
+    "node_modules/otplib/dist/class.d.ts",
+    "node_modules/otplib/dist/functional.d.ts",
+    "node_modules/otplib/dist/index.d.ts",
+    "node_modules/otplib/dist/types-BBT_82HF.d.ts",
+    "node_modules/otplib/package.json",
     "node_modules/p-limit/index.d.ts",
     "node_modules/p-limit/package.json",
     "node_modules/p-retry/index.d.ts",
