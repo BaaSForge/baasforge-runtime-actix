@@ -11,6 +11,8 @@ pub const NPM_STATUSES: &str =
     include_str!("../../../units/runtime-check/dist/statuses/node_module.js");
 pub const NPM_MULTIPART_PARSER: &str =
     include_str!("../../../units/runtime-check/dist/multipart-parser/node_module.js");
+pub const NPM_MIME_TYPES: &str =
+    include_str!("../../../units/runtime-check/dist/mime-types/node_module.js");
 
 pub const BAAL_EXT_CRYPTO_ALIAS: &str = "__baal_ext_crypto";
 
@@ -46,6 +48,7 @@ pub fn baal_module_source(name: &str) -> Option<&'static str> {
         "cookie" => Some(NPM_COOKIE),
         "statuses" => Some(NPM_STATUSES),
         "@mjackson/multipart-parser" => Some(NPM_MULTIPART_PARSER),
+        "mime-types" => Some(NPM_MIME_TYPES),
         _ => None,
     }
 }

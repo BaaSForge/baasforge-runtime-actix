@@ -212,6 +212,18 @@ const externalizeNodeBuiltinPlugin = {
   },
 };
 
+function createMimeTypesNodePathPlugin() {
+  return {
+    name: "mime-types-node-path",
+    setup(build) {
+      build.onResolve({ filter: /^path$/ }, () => ({
+        path: "node:path",
+        external: true,
+      }));
+    },
+  };
+}
+
 function createExternalizeNpmPlugin(npmPackages) {
   const pluginDataKey = "externalize-npm-resolve";
   return {
@@ -279,11 +291,13 @@ async function bundlePackageUnit(name) {
     const vendorEntryPath = join(projectDir, `.esbuild-vendor-entry-${name}.mjs`);
     writeFileSync(vendorEntryPath, vendorEntry);
     try {
+      const vendorPlugins = [externalizeNodeBuiltinPlugin];
+      if (name === "mime-types") vendorPlugins.push(createMimeTypesNodePathPlugin());
       await esbuild.build({
         ...browserBundle,
         entryPoints: [vendorEntryPath],
         outfile: nodeModulesOutfile,
-        plugins: [externalizeNodeBuiltinPlugin],
+        plugins: vendorPlugins,
       });
     } finally {
       unlinkSync(vendorEntryPath);
