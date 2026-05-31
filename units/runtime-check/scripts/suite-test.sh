@@ -13,8 +13,8 @@ PROJECT_ROOT="$(cd "$RUNTIME_CHECK_ROOT/../.." && pwd)"
 PORT="${TEST_PORT:-3333}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-120}"
 TEST_PROJECT_ID="00000000-aaaa-bbbb-cccc-000000000010"
-# Package folder names may contain '.' (e.g. big.js); API unit_name_slug must be hyphenated.
-UNIT_SLUG="${SUITE//./-}"
+# Package folder names may contain '.' or digits; unit_name_slug uses src/libs/unit_slug rules.
+UNIT_SLUG="$(node "$RUNTIME_CHECK_ROOT/scripts/suite-unit-slug.mjs" "$SUITE")"
 TRIGGER_URL="http://127.0.0.1:${PORT}/api/v1/trigger/${TEST_PROJECT_ID}/test/runtime/${UNIT_SLUG}"
 UNIT_LABEL="runtime-check-${SUITE}"
 
