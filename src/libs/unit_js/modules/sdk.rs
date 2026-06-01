@@ -610,23 +610,30 @@ fn host_get_secure_env(ctx: Ctx<'_>, key: String) -> rquickjs::Result<String> {
         let runtime_id = resolved_runtime_id.ok_or_else(|| {
             "sdk.getSecureEnv: resolved_runtime_id is not set".to_string()
         })?;
-        runtime_env::get_secure_env_blocking(&pool, &redis, project_id, runtime_id, &key)
+        let key = key.clone();
+        block_async(async move {
+            tokio::task::spawn_blocking(move || {
+                runtime_env::get_secure_env_blocking(&pool, &redis, project_id, runtime_id, &key)
+            })
+            .await
+            .map_err(|_| "sdk.getSecureEnv: task failed".to_string())?
             .map_err(|e| match e {
-                    RuntimeEnvError::NotFound(k) => {
-                        format!("sdk.getSecureEnv: env var not found: {k}")
-                    }
-                    RuntimeEnvError::InvalidKey => {
-                        "sdk.getSecureEnv: key must be non-empty".to_string()
-                    }
-                    RuntimeEnvError::EncryptionKeyMissing => {
-                        "sdk.getSecureEnv: encryption key missing for runtime".to_string()
-                    }
-                    RuntimeEnvError::Decrypt(msg) => {
-                        format!("sdk.getSecureEnv: decrypt failed: {msg}")
-                    }
-                    RuntimeEnvError::Db(e) => format!("sdk.getSecureEnv: database error: {e}"),
-                    RuntimeEnvError::Redis(e) => format!("sdk.getSecureEnv: cache error: {e}"),
-                })
+                RuntimeEnvError::NotFound(k) => {
+                    format!("sdk.getSecureEnv: env var not found: {k}")
+                }
+                RuntimeEnvError::InvalidKey => {
+                    "sdk.getSecureEnv: key must be non-empty".to_string()
+                }
+                RuntimeEnvError::EncryptionKeyMissing => {
+                    "sdk.getSecureEnv: encryption key missing for runtime".to_string()
+                }
+                RuntimeEnvError::Decrypt(msg) => {
+                    format!("sdk.getSecureEnv: decrypt failed: {msg}")
+                }
+                RuntimeEnvError::Db(e) => format!("sdk.getSecureEnv: database error: {e}"),
+                RuntimeEnvError::Redis(e) => format!("sdk.getSecureEnv: cache error: {e}"),
+            })
+        })
     });
     let out_json = match &res {
         Ok(value) => serde_json::json!({ "ok": true, "value": value }),
