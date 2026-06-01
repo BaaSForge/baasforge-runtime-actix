@@ -4,6 +4,7 @@
   "private": true,
   "description": "Source-of-truth tests for API unit features",
   "devDependencies": {
+    "@mjackson/multipart-parser": "^0.10.1",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.2"
   }
