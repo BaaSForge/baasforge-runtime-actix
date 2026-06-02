@@ -25,6 +25,18 @@ use uuid::Uuid;
 /// Max request body size forwarded into QuickJS `req` (bytes).
 const TRIGGER_MAX_BODY_BYTES: usize = 512 * 1024;
 
+/// HTTP field-values are opaque bytes; obs-text high bytes are ISO-8859-1 (RFC 9110). Modern
+/// clients often send UTF-8 — use that when valid, otherwise map each byte to U+0000..U+00FF.
+fn header_value_to_string(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_owned(),
+        Err(_) => bytes
+            .iter()
+            .map(|&b| char::from_u32(u32::from(b)).unwrap_or('\u{FFFD}'))
+            .collect(),
+    }
+}
+
 /// Path params for runtime units exposed at this API. The **type** segment of the composite unit id
 /// is not in the URL; handlers pass [`ProjectUnitType::Api`] into [`logical_unit_path`] and the load helpers.
 #[derive(Debug, Deserialize)]
@@ -199,7 +211,7 @@ fn trigger_http_snapshot(req: &HttpRequest, body: &web::Bytes, server_port: u16)
     let trigger_path = req.uri().path().to_string();
     let mut header_pairs = Vec::new();
     for (name, value) in req.headers().iter() {
-        let mut v = value.to_str().unwrap_or("").to_string();
+        let mut v = header_value_to_string(value.as_bytes());
         if name.as_str().eq_ignore_ascii_case("host") && !v.contains(':') {
             v = format!("{v}:{server_port}");
         }
@@ -444,5 +456,20 @@ fn map_service_err(e: ServiceError) -> HttpResponse {
         ServiceError::LoadedUnitTypeMismatch => HttpResponse::InternalServerError()
             .json(api_error("unit type mismatch", json!({}))),
         _ => HttpResponse::InternalServerError().json(api_error("internal error", json!({}))),
+    }
+}
+
+#[cfg(test)]
+mod header_value_tests {
+    use super::header_value_to_string;
+
+    #[test]
+    fn utf8_pound_sign() {
+        assert_eq!(header_value_to_string("a£b".as_bytes()), "a£b");
+    }
+
+    #[test]
+    fn latin1_pound_sign_byte() {
+        assert_eq!(header_value_to_string(b"a\xa3b"), "a£b");
     }
 }
