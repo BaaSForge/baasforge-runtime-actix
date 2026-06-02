@@ -74,10 +74,7 @@ fn parse_actor_tail(tail: &str, method: &str) -> Option<ParsedActorTail> {
                 ("POST", "test-evict-redis") => ActorOperation::TestEvictRedis,
                 ("GET", "state") => ActorOperation::GetState,
                 ("GET", "snapshot-pg") => ActorOperation::SnapshotPg,
-                ("POST", handler) => {
-                    if !is_valid_handler_name(handler) {
-                        return None;
-                    }
+                ("POST", handler) if !handler.is_empty() => {
                     ActorOperation::CallHandler(handler.to_string())
                 }
                 _ => return None,
@@ -119,21 +116,6 @@ fn build_actor_unit_path(
     unit_name_slug: &str,
 ) -> String {
     format!("{context_slug}.{module_slug}.actor.{unit_name_slug}")
-}
-
-fn is_valid_actor_id(actor_id: &str) -> bool {
-    !actor_id.is_empty()
-        && actor_id.len() <= 512
-        && actor_id
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == ':')
-}
-
-fn is_valid_handler_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 128
-        && s.starts_with(|c: char| c.is_ascii_alphabetic())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[tracing::instrument(
@@ -305,11 +287,6 @@ async fn actor_post_inner(
         }
     };
 
-    if !is_valid_actor_id(&parsed.actor_id) {
-        return HttpResponse::BadRequest()
-            .json(api_error("invalid actor_id", json!({})));
-    }
-
     let actor_redis = match require_actor_redis(&ctx) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -463,11 +440,6 @@ async fn actor_get_inner(
         }
     };
 
-    if !is_valid_actor_id(&parsed.actor_id) {
-        return HttpResponse::BadRequest()
-            .json(api_error("invalid actor_id", json!({})));
-    }
-
     let actor_redis = match require_actor_redis(&ctx) {
         Ok(r) => r,
         Err(resp) => return resp,
@@ -596,11 +568,6 @@ async fn actor_delete_inner(
                 .json(api_error("invalid actor URL path", json!({})));
         }
     };
-
-    if !is_valid_actor_id(&parsed.actor_id) {
-        return HttpResponse::BadRequest()
-            .json(api_error("invalid actor_id", json!({})));
-    }
 
     let actor_redis = match require_actor_redis(&ctx) {
         Ok(r) => r,

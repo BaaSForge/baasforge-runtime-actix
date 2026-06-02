@@ -55,7 +55,7 @@ fn parse_queue_worker_tail(tail: &str, is_post: bool) -> Option<ParsedQueueWorke
     if parts.len() == 5 {
         let run_id = parts[3];
         let op_str = parts[4];
-        if Uuid::parse_str(run_id).is_ok() {
+        if !run_id.is_empty() {
             let operation = match (is_post, op_str) {
                 (true, "cancel") => QueueWorkerOperation::Cancel,
                 (false, "status") => QueueWorkerOperation::GetStatus,

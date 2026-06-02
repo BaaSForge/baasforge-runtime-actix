@@ -3127,12 +3127,14 @@ function allEndpointTests(): ActorInlineTestDef[] {
       },
     },
     {
-      name: "invalid-actor-id-400",
+      name: "actor-id-email-like-accepted",
       category: "endpoints",
       run: async (baseUrl) => {
-        const resp = await callActorFull(baseUrl, "state-init", "id with spaces and @@@", "getState");
-        if (resp.status !== 400 && resp.status !== 404)
-          throw new Error(`expected 400 or 404 for invalid actor id, got ${resp.status}`);
+        const actorId = `user+tag@example.com-${uid()}`;
+        await deleteActor(baseUrl, "state-init", actorId);
+        const resp = await callActorFull(baseUrl, "state-init", actorId, "getState");
+        if (resp.status !== 200)
+          throw new Error(`expected 200 for email-like actor id, got ${resp.status}`);
       },
     },
     {
@@ -3201,14 +3203,14 @@ function allEndpointTests(): ActorInlineTestDef[] {
       },
     },
     {
-      name: "invalid-handler-name-chars-400",
+      name: "unknown-handler-with-special-chars-400",
       category: "endpoints",
       run: async (baseUrl) => {
         const id = `ep-badhandler-${uid()}`;
         const url = actorUrl(baseUrl, "state-init", id, "get-state!");
         const resp = await httpPostFull(`${url}?await=true`, {});
         if (resp.status !== 400)
-          throw new Error(`expected 400 for handler with invalid chars, got ${resp.status}`);
+          throw new Error(`expected 400 for unknown handler, got ${resp.status}`);
       },
     },
     {

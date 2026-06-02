@@ -80,10 +80,6 @@ pub struct StageHandlerPath {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn is_valid_handler_name(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
 fn build_unit_path(
     context_slug: &str,
     module_slug: &str,
@@ -212,10 +208,6 @@ async fn do_call_handler(
     body: &[u8],
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
-    if !is_valid_handler_name(handler_name) {
-        return HttpResponse::BadRequest().json(api_error("invalid handler name", json!({})));
-    }
-
     let wf_redis = match require_wf_redis(ctx) {
         Ok(r) => r,
         Err(resp) => return resp,
