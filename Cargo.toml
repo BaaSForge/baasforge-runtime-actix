@@ -121,6 +121,7 @@ thiserror = "2.0.18"
 regex = { version = "1.12.2", features = ["unicode-perl", "perf"] }
 
 base64 = "0.22.1"
+bcrypt = "0.19.1"
 rustls = { version = "0.23.36", features = ["ring"] }
 tokio-stream = "0.1.18"
 async-nats = "0.46"

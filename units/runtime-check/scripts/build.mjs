@@ -335,7 +335,37 @@ const browserBundle = {
   logLevel: "silent",
 };
 
+function npmVendorShimEntryPath(rootPkg) {
+  const shimPath = join(packagesDir, rootPkg, `${rootPkg}-shim.ts`);
+  return existsSync(shimPath) ? shimPath : null;
+}
+
+async function bundleVendorCustomEntry(specifier, suiteName, entryPath) {
+  const distRel = distRelForSpecifier(specifier);
+  const outfile = join(compilerOptions.outDir, distRel);
+  mkdirSync(dirname(outfile), { recursive: true });
+  const vendorPlugins = [externalizeNodeBuiltinPlugin];
+  if (rootPackageFromSpecifier(specifier) === "mime-types") {
+    vendorPlugins.push(createMimeTypesNodePathPlugin());
+  }
+  await esbuild.build({
+    ...browserBundle,
+    entryPoints: [entryPath],
+    outfile,
+    plugins: vendorPlugins,
+  });
+  console.log(
+    `Bundled npm vendor shim → ${relative(projectDir, outfile)} (${specifier}, entry: ${relative(projectDir, entryPath)})`,
+  );
+}
+
 async function bundleVendorSpecifier(specifier, suiteName) {
+  const rootPkg = rootPackageFromSpecifier(specifier);
+  const shimEntry = npmVendorShimEntryPath(rootPkg);
+  if (shimEntry) {
+    await bundleVendorCustomEntry(specifier, suiteName, shimEntry);
+    return;
+  }
   const distRel = distRelForSpecifier(specifier);
   const outfile = join(compilerOptions.outDir, distRel);
   mkdirSync(dirname(outfile), { recursive: true });
