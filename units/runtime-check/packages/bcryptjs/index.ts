@@ -7,13 +7,104 @@
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import bcrypt from "bcryptjs";
+import bcryptOrig from "bcryptjs";
 import {
   handleSuiteRequest,
   runSuiteTests,
   type SuiteResponseBody,
   type SuiteTest,
 } from "../../lib/suite-harness.js";
+
+const SLOW_MS = 1000;
+const timingRows: { op: string; ms: number; note?: string }[] = [];
+
+function recordTiming(op: string, startMs: number, note?: string): number {
+  const ms = performance.now() - startMs;
+  if (ms >= SLOW_MS) {
+    const row: { op: string; ms: number; note?: string } = { op, ms };
+    if (note !== undefined) row.note = note;
+    timingRows.push(row);
+    const suffix = note ? ` (${note})` : "";
+    console.log(`[bcryptjs-timing] SLOW ${op} ${ms.toFixed(0)}ms${suffix}`);
+  }
+  return ms;
+}
+
+function wrapSync<TArgs extends unknown[], TResult>(
+  op: string,
+  fn: (...args: TArgs) => TResult,
+): (...args: TArgs) => TResult {
+  return (...args: TArgs) => {
+    const t0 = performance.now();
+    try {
+      return fn(...args);
+    } finally {
+      recordTiming(op, t0);
+    }
+  };
+}
+
+function wrapAsync<T extends (...args: never[]) => unknown>(op: string, fn: T): T {
+  const wrapped = (...args: Parameters<T>): ReturnType<T> => {
+    const t0 = performance.now();
+    const last = args[args.length - 1];
+    if (typeof last === "function") {
+      const cb = last as (...cbArgs: unknown[]) => void;
+      (args as unknown[])[args.length - 1] = (...cbArgs: unknown[]) => {
+        recordTiming(op, t0, "callback");
+        cb(...cbArgs);
+      };
+      return fn(...args) as ReturnType<T>;
+    }
+    const ret = fn(...args) as ReturnType<T>;
+    const maybePromise = ret as unknown;
+    if (maybePromise != null && typeof (maybePromise as Promise<unknown>).then === "function") {
+      return (maybePromise as Promise<unknown>).finally(() => {
+        recordTiming(op, t0, "promise");
+      }) as ReturnType<T>;
+    }
+    recordTiming(op, t0);
+    return ret;
+  };
+  return wrapped as T;
+}
+
+const bcrypt = {
+  ...bcryptOrig,
+  setRandomFallback: wrapSync("setRandomFallback", bcryptOrig.setRandomFallback.bind(bcryptOrig)),
+  genSaltSync: wrapSync("genSaltSync", bcryptOrig.genSaltSync.bind(bcryptOrig)),
+  genSalt: wrapAsync("genSalt", bcryptOrig.genSalt.bind(bcryptOrig)),
+  hashSync: wrapSync("hashSync", bcryptOrig.hashSync.bind(bcryptOrig)),
+  hash: wrapAsync("hash", bcryptOrig.hash.bind(bcryptOrig)),
+  compareSync: wrapSync("compareSync", bcryptOrig.compareSync.bind(bcryptOrig)),
+  compare: wrapAsync("compare", bcryptOrig.compare.bind(bcryptOrig)),
+  getRounds: wrapSync("getRounds", bcryptOrig.getRounds.bind(bcryptOrig)),
+  getSalt: wrapSync("getSalt", bcryptOrig.getSalt.bind(bcryptOrig)),
+  truncates: wrapSync("truncates", bcryptOrig.truncates.bind(bcryptOrig)),
+  encodeBase64: wrapSync("encodeBase64", bcryptOrig.encodeBase64.bind(bcryptOrig)),
+  decodeBase64: wrapSync("decodeBase64", bcryptOrig.decodeBase64.bind(bcryptOrig)),
+};
+
+function logTimingSummary(): void {
+  if (timingRows.length === 0) {
+    console.log("[bcryptjs-timing] no operations exceeded 1s");
+    return;
+  }
+  const byOp = new Map<string, { count: number; totalMs: number; maxMs: number }>();
+  for (const row of timingRows) {
+    const cur = byOp.get(row.op) ?? { count: 0, totalMs: 0, maxMs: 0 };
+    cur.count += 1;
+    cur.totalMs += row.ms;
+    cur.maxMs = Math.max(cur.maxMs, row.ms);
+    byOp.set(row.op, cur);
+  }
+  console.log("[bcryptjs-timing] slow ops summary (>=1s):");
+  for (const [op, stats] of [...byOp.entries()].sort((a, b) => b[1].totalMs - a[1].totalMs)) {
+    console.log(
+      `  ${op}: count=${stats.count} total=${stats.totalMs.toFixed(0)}ms max=${stats.maxMs.toFixed(0)}ms`,
+    );
+  }
+}
 
 function assertBytesEqual(actual: number[], expected: number[]): void {
   if (actual.length !== expected.length) {
@@ -282,6 +373,29 @@ export type RequestBody = never;
 export type ResponseBody = SuiteResponseBody;
 export type QueryParams = never;
 
+async function runTimedSuiteTests() {
+  timingRows.length = 0;
+  const suiteStart = performance.now();
+  const results = await runSuiteTests(
+    TESTS.map((test) => ({
+      ...test,
+      run: async () => {
+        const testStart = performance.now();
+        const detail = await test.run();
+        const testMs = performance.now() - testStart;
+        if (testMs >= SLOW_MS) {
+          console.log(`[bcryptjs-timing] SLOW test "${test.name}" ${testMs.toFixed(0)}ms`);
+        }
+        return detail;
+      },
+    })),
+  );
+  const suiteMs = performance.now() - suiteStart;
+  console.log(`[bcryptjs-timing] suite total ${suiteMs.toFixed(0)}ms`);
+  logTimingSummary();
+  return results;
+}
+
 export async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  await handleSuiteRequest(req, res, "bcryptjs", () => runSuiteTests(TESTS));
+  await handleSuiteRequest(req, res, "bcryptjs", () => runTimedSuiteTests());
 }
