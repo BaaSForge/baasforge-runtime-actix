@@ -448,25 +448,18 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         actor_locks,
     );
 
-    let enable_dev_cors = cfg!(debug_assertions);
-
     use actix_cors::Cors;
     use actix_web::guard;
     use actix_web::http::header::HeaderName;
-    use actix_web::middleware::{from_fn, Condition};
+    use actix_web::middleware::from_fn;
 
     HttpServer::new(move || {
         App::new()
             .wrap(from_fn(crate::middlewares::trace_request_middleware))
-            .wrap(Condition::new(
-                enable_dev_cors,
+            .wrap(
                 Cors::default()
-                    .allowed_origin_fn(|origin, _| {
-                        matches!(
-                            origin.as_bytes(),
-                            b"http://localhost:1200" | b"http://localhost:1200/"
-                        )
-                    })
+                    .allowed_origin_fn(|_origin, _req| true)
+                    .supports_credentials()
                     .allow_any_method()
                     .allow_any_header()
                     .expose_headers([
@@ -474,7 +467,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         HeaderName::from_static("tracestate"),
                         HeaderName::from_static("x-trace-id"),
                     ]),
-            ))
+            )
             .app_data(web::Data::new(app_context.clone()))
             .route(
                 "/api/v1/ws/{project_id}/stage/{runtime_id}",
