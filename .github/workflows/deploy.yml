@@ -1,0 +1,322 @@
+name: Deploy
+
+on:
+  push:
+    tags:
+      - "v*-prod.*"
+      - "v*-stage.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to deploy (e.g. v0.0.1-prod.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy-${{ github.event_name == 'workflow_dispatch' && format('manual-{0}', github.event.inputs.tag) || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      app_env: ${{ steps.meta.outputs.app_env }}
+      environment: ${{ steps.meta.outputs.environment }}
+      deploy_suffix: ${{ steps.meta.outputs.deploy_suffix }}
+      app_image: ${{ steps.meta.outputs.app_image }}
+      services: ${{ steps.meta.outputs.services }}
+    steps:
+      - name: Resolve environment
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-prod\.[0-9]+$ ]]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "app_env=PROD" >> "$GITHUB_OUTPUT"
+            echo "deploy_suffix=prod" >> "$GITHUB_OUTPUT"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-stage\.[0-9]+$ ]]; then
+            echo "environment=staging" >> "$GITHUB_OUTPUT"
+            echo "app_env=STAGE" >> "$GITHUB_OUTPUT"
+            echo "deploy_suffix=stage" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $TAG does not match a deploy pattern."
+            exit 1
+          fi
+          IMAGE_BASE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "app_image=${IMAGE_BASE}:${TAG}" >> "$GITHUB_OUTPUT"
+          SERVICES=$(jq -nc \
+            --arg base "$IMAGE_BASE" \
+            --arg tag "$TAG" \
+            '[
+              {
+                "service": "app",
+                "dockerfile": "Dockerfile",
+                "image": ($base + ":" + $tag),
+                "container_suffix": "",
+                "expose_ports": true,
+                "cargo_features": ""
+              },
+              {
+                "service": "workflow-worker",
+                "dockerfile": "docker/Dockerfile.workflow_worker",
+                "image": ($base + "-workflow-worker:" + $tag),
+                "container_suffix": "-workflow-worker",
+                "expose_ports": false,
+                "cargo_features": ""
+              },
+              {
+                "service": "runtime-cache-listener",
+                "dockerfile": "docker/Dockerfile.runtime_cache_listener",
+                "image": ($base + "-runtime-cache-listener:" + $tag),
+                "container_suffix": "-runtime-cache-listener",
+                "expose_ports": false,
+                "cargo_features": ""
+              },
+              {
+                "service": "queue-worker-worker",
+                "dockerfile": "docker/Dockerfile.queue_worker_worker",
+                "image": ($base + "-queue-worker-worker:" + $tag),
+                "container_suffix": "-queue-worker-worker",
+                "expose_ports": false,
+                "cargo_features": ""
+              },
+              {
+                "service": "actor-worker",
+                "dockerfile": "docker/Dockerfile.actor_worker",
+                "image": ($base + "-actor-worker:" + $tag),
+                "container_suffix": "-actor-worker",
+                "expose_ports": false,
+                "cargo_features": ""
+              }
+            ]')
+          echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    needs: resolve-meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.resolve-meta.outputs.services) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-meta.outputs.tag }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ matrix.image }}
+          build-args: |
+            APP_ENV=${{ needs.resolve-meta.outputs.app_env }}
+            CARGO_FEATURES=${{ matrix.cargo_features }}
+          cache-from: type=gha,scope=${{ matrix.service }}-${{ needs.resolve-meta.outputs.app_env }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ needs.resolve-meta.outputs.app_env }}
+
+  migrate:
+    needs: [resolve-meta, build-and-push]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-meta.outputs.environment }}
+    env:
+      ACTOR_DATABASE_URL: ${{ secrets.ACTOR_DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+      NATS_URL: ${{ secrets.NATS_URL }}
+      WF_REDIS_URL: ${{ secrets.WF_REDIS_URL }}
+      WF_NATS_URL: ${{ secrets.WF_NATS_URL }}
+      WQ_REDIS_URL: ${{ secrets.WQ_REDIS_URL }}
+      WQ_NATS_URL: ${{ secrets.WQ_NATS_URL }}
+      ACTOR_REDIS_URL: ${{ secrets.ACTOR_REDIS_URL }}
+      ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+    steps:
+      - name: Run actor database migrations
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE: ${{ needs.resolve-meta.outputs.app_image }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: >-
+            IMAGE,GHCR_USER,GHCR_TOKEN,
+            ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
+            WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
+            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
+          script: |
+            set -euo pipefail
+
+            if command -v systemctl >/dev/null 2>&1; then
+              systemctl enable docker
+              systemctl start docker
+            fi
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            docker pull "$IMAGE"
+            docker run --rm --network host \
+              -e ACTOR_DATABASE_URL \
+              -e DATABASE_URL \
+              -e REDIS_URL \
+              -e NATS_URL \
+              -e WF_REDIS_URL \
+              -e WF_NATS_URL \
+              -e WQ_REDIS_URL \
+              -e WQ_NATS_URL \
+              -e ACTOR_REDIS_URL \
+              -e ACTOR_NATS_URL \
+              -e OTEL_EXPORTER_OTLP_ENDPOINT \
+              "$IMAGE" \
+              sh -c '
+                SAVED_ACTOR_DATABASE_URL="$ACTOR_DATABASE_URL"
+                SAVED_DATABASE_URL="$DATABASE_URL"
+                SAVED_REDIS_URL="$REDIS_URL"
+                SAVED_NATS_URL="$NATS_URL"
+                SAVED_WF_REDIS_URL="$WF_REDIS_URL"
+                SAVED_WF_NATS_URL="$WF_NATS_URL"
+                SAVED_WQ_REDIS_URL="$WQ_REDIS_URL"
+                SAVED_WQ_NATS_URL="$WQ_NATS_URL"
+                SAVED_ACTOR_REDIS_URL="$ACTOR_REDIS_URL"
+                SAVED_ACTOR_NATS_URL="$ACTOR_NATS_URL"
+                SAVED_OTEL_EXPORTER_OTLP_ENDPOINT="$OTEL_EXPORTER_OTLP_ENDPOINT"
+                set -a && . ./.env && set +a
+                export ACTOR_DATABASE_URL="$SAVED_ACTOR_DATABASE_URL"
+                export DATABASE_URL="$SAVED_DATABASE_URL"
+                export REDIS_URL="$SAVED_REDIS_URL"
+                export NATS_URL="$SAVED_NATS_URL"
+                export WF_REDIS_URL="$SAVED_WF_REDIS_URL"
+                export WF_NATS_URL="$SAVED_WF_NATS_URL"
+                export WQ_REDIS_URL="$SAVED_WQ_REDIS_URL"
+                export WQ_NATS_URL="$SAVED_WQ_NATS_URL"
+                export ACTOR_REDIS_URL="$SAVED_ACTOR_REDIS_URL"
+                export ACTOR_NATS_URL="$SAVED_ACTOR_NATS_URL"
+                export OTEL_EXPORTER_OTLP_ENDPOINT="$SAVED_OTEL_EXPORTER_OTLP_ENDPOINT"
+                diesel migration run \
+                  --config-file diesel-actors.toml \
+                  --migration-dir migrations/actors \
+                  --database-url "$ACTOR_DATABASE_URL"
+              '
+            echo "Actor migrations complete"
+
+  deploy:
+    needs: [resolve-meta, build-and-push, migrate]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-meta.outputs.environment }}
+    env:
+      ACTOR_DATABASE_URL: ${{ secrets.ACTOR_DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+      NATS_URL: ${{ secrets.NATS_URL }}
+      WF_REDIS_URL: ${{ secrets.WF_REDIS_URL }}
+      WF_NATS_URL: ${{ secrets.WF_NATS_URL }}
+      WQ_REDIS_URL: ${{ secrets.WQ_REDIS_URL }}
+      WQ_NATS_URL: ${{ secrets.WQ_NATS_URL }}
+      ACTOR_REDIS_URL: ${{ secrets.ACTOR_REDIS_URL }}
+      ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.resolve-meta.outputs.services) }}
+    steps:
+      - name: Deploy to DigitalOcean
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE: ${{ matrix.image }}
+          CONTAINER_NAME: baal-runtime${{ matrix.container_suffix }}-${{ needs.resolve-meta.outputs.deploy_suffix }}
+          EXPOSE_PORTS: ${{ matrix.expose_ports }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: >-
+            IMAGE,CONTAINER_NAME,EXPOSE_PORTS,GHCR_USER,GHCR_TOKEN,
+            ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
+            WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
+            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
+          script: |
+            set -euo pipefail
+
+            if command -v systemctl >/dev/null 2>&1; then
+              systemctl enable docker
+              systemctl start docker
+            fi
+
+            if docker info 2>/dev/null | grep -qi rootless; then
+              if ! loginctl show-user "$(id -un)" -p Linger 2>/dev/null | grep -q "Linger=yes"; then
+                echo "Rootless Docker needs linger enabled or containers stop when SSH ends."
+                echo "Run: sudo loginctl enable-linger $(id -un)"
+                exit 1
+              fi
+            fi
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            docker pull "$IMAGE"
+            docker stop "$CONTAINER_NAME" 2>/dev/null || true
+            docker rm "$CONTAINER_NAME" 2>/dev/null || true
+
+            RUN_ARGS=(
+              -d
+              --name "$CONTAINER_NAME"
+              --restart unless-stopped
+              -e "ACTOR_DATABASE_URL=$ACTOR_DATABASE_URL"
+              -e "DATABASE_URL=$DATABASE_URL"
+              -e "REDIS_URL=$REDIS_URL"
+              -e "NATS_URL=$NATS_URL"
+              -e "WF_REDIS_URL=$WF_REDIS_URL"
+              -e "WF_NATS_URL=$WF_NATS_URL"
+              -e "WQ_REDIS_URL=$WQ_REDIS_URL"
+              -e "WQ_NATS_URL=$WQ_NATS_URL"
+              -e "ACTOR_REDIS_URL=$ACTOR_REDIS_URL"
+              -e "ACTOR_NATS_URL=$ACTOR_NATS_URL"
+              -e "OTEL_EXPORTER_OTLP_ENDPOINT=$OTEL_EXPORTER_OTLP_ENDPOINT"
+            )
+
+            if [ "$EXPOSE_PORTS" = "true" ]; then
+              RUN_ARGS+=(-p 1501:1501)
+            fi
+
+            docker run "${RUN_ARGS[@]}" "$IMAGE"
+            docker update --restart unless-stopped "$CONTAINER_NAME"
+
+            RESTART_POLICY=$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$CONTAINER_NAME")
+            if [ "$RESTART_POLICY" != "unless-stopped" ]; then
+              echo "Restart policy not applied (got: $RESTART_POLICY)"
+              exit 1
+            fi
+
+            if [ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER_NAME")" != "true" ]; then
+              echo "Container failed to start"
+              docker logs "$CONTAINER_NAME" 2>&1 | tail -50
+              exit 1
+            fi
+
+            echo "Running $CONTAINER_NAME with restart policy: $RESTART_POLICY"
