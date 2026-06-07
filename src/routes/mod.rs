@@ -591,7 +591,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             )
     })
     .worker_max_blocking_threads(settings.api_worker_max_blocking_threads)
-    .bind(("127.0.0.1", port))?
+    .bind(("0.0.0.0", port))?
     .run()
     .await?;
 
