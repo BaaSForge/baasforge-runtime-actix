@@ -21,6 +21,8 @@
 #   ACTOR_TEST_HEARTBEAT_SEC=30      in-runner heartbeat interval (0=off)
 #   ACTOR_TEST_DEBUG_FETCH=1         log every fetch start/end (very verbose)
 #   RUST_LOG=runtime_trace=info,...  server-side invoke/heartbeat traces
+#   TEST_DATABASE_POOL_SIZE=20       override prod .env pool (default 3 starves parallel tests)
+#   ACTOR_TEST_RUNNER_CONCURRENCY=4  parallel inline/actor jobs (8 × pool-3 deadlocks on CI)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -100,7 +102,7 @@ fi
 # 2. Start the real server in TEST_MODE
 # ------------------------------------------------------------------
 free_listen_port "$PORT"
-echo "==> Starting server on port ${PORT} (TEST_MODE)…"
+echo "==> Starting server on port ${PORT} (TEST_MODE, DB pools ${TEST_DATABASE_POOL_SIZE:-20}, concurrency ${ACTOR_TEST_RUNNER_CONCURRENCY:-4})…"
 
 if [[ -n "${ACTOR_TEST_INJECT_HANG:-}" ]]; then
   export ACTOR_TEST_INJECT_HANG
@@ -110,7 +112,9 @@ TEST_MODE=1 \
 RUST_LOG="${RUST_LOG:-runtime_trace=info,baal_runtime_actix=info}" \
 APP_ENV=production \
 PORT="$PORT" \
-ACTOR_TEST_RUNNER_CONCURRENCY=8 \
+DATABASE_POOL_SIZE="${TEST_DATABASE_POOL_SIZE:-20}" \
+ACTOR_DATABASE_POOL_SIZE="${TEST_ACTOR_DATABASE_POOL_SIZE:-20}" \
+ACTOR_TEST_RUNNER_CONCURRENCY="${ACTOR_TEST_RUNNER_CONCURRENCY:-4}" \
 ACTOR_TEST_CASE_TIMEOUT_MS="$ACTOR_TEST_CASE_TIMEOUT_MS" \
 ACTOR_TEST_DEBUG_FETCH="${ACTOR_TEST_DEBUG_FETCH:-}" \
 ACTOR_TEST_HEARTBEAT_SEC="${ACTOR_TEST_HEARTBEAT_SEC:-30}" \
