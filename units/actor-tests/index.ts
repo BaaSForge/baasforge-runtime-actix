@@ -188,6 +188,13 @@ type CheckDef =
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
+let currentFetchSignal: AbortSignal | undefined;
+
+function fetchInit(init: RequestInit = {}): RequestInit {
+  if (!currentFetchSignal) return init;
+  return { ...init, signal: currentFetchSignal };
+}
+
 function fetchDebugEnabled(): boolean {
   return process.env["ACTOR_TEST_DEBUG_FETCH"] === "1";
 }
@@ -198,12 +205,13 @@ function shortUrl(url: string): string {
 }
 
 async function tracedFetch(label: string, url: string, init?: RequestInit): Promise<Response> {
-  const method = init?.method ?? "GET";
-  if (!fetchDebugEnabled()) return fetch(url, init);
+  const merged = fetchInit(init);
+  const method = merged.method ?? "GET";
+  if (!fetchDebugEnabled()) return fetch(url, merged);
   const started = Date.now();
   console.log(`  actor-fetch: ${label} ${method} ${shortUrl(url)} …`);
   try {
-    const resp = await fetch(url, init);
+    const resp = await fetch(url, merged);
     console.log(`  actor-fetch: ${label} ${method} -> ${resp.status} (${Date.now() - started}ms)`);
     return resp;
   } catch (e) {
@@ -697,21 +705,26 @@ function testCaseTimeoutMsFor(test: { category: string }): number {
   return base;
 }
 
-async function runWithTestCaseTimeout<T>(
-  label: string,
-  timeoutMs: number,
-  fn: () => Promise<T>,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`test case timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
+function isTestTimeoutError(e: unknown): boolean {
+  const msg = e instanceof Error ? e.message : String(e);
+  return msg.startsWith("timeout after ");
+}
+
+async function runUnderTestTimeout<T>(timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+  const ac = new AbortController();
+  const prev = currentFetchSignal;
+  currentFetchSignal = ac.signal;
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    return await Promise.race([fn(), timeoutPromise]);
+    return await fn();
+  } catch (e) {
+    if (ac.signal.aborted || (e instanceof Error && e.name === "AbortError")) {
+      throw new Error(`timeout after ${timeoutMs}ms`);
+    }
+    throw e;
   } finally {
-    if (timer !== undefined) clearTimeout(timer);
+    clearTimeout(timer);
+    currentFetchSignal = prev;
   }
 }
 
@@ -3565,18 +3578,22 @@ function buildReport(results: TestResult[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Handler
+// Suite runner (Node via run-suite.mjs — QuickJS loopback fetch deadlocks under load)
 // ---------------------------------------------------------------------------
 
-export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
-  const baseUrl = getBaseUrl(req);
+type ActorTestJob =
+  | { kind: "actor"; test: ActorTestDef }
+  | { kind: "inline"; test: ActorInlineTestDef };
+
+export type ActorTestSuiteReport = ReturnType<typeof buildReport>;
+
+export async function runActorTestSuite(
+  baseUrl: string,
+): Promise<{ report: ActorTestSuiteReport; timedOut: string[] }> {
   const suiteStarted = Date.now();
+  const timedOut: string[] = [];
 
-  type Job =
-    | { kind: "actor"; test: ActorTestDef }
-    | { kind: "inline"; test: ActorInlineTestDef };
-
-  const jobs: Job[] = [
+  const jobs: ActorTestJob[] = [
     ...allActorTests().map((test) => ({ kind: "actor" as const, test })),
     ...[...allInlineTests(), stateLimitAtLimitTest()].map((test) => ({ kind: "inline" as const, test })),
     ...allEndpointTests().map((test) => ({ kind: "inline" as const, test })),
@@ -3598,14 +3615,14 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   );
   startSuiteHeartbeat();
 
-  const runJob = async (job: Job): Promise<TestResult> => {
+  const runJob = async (job: ActorTestJob): Promise<TestResult> => {
     const label = `${job.test.category}: ${job.test.name}`;
     console.log(`  actor: ${label} …`);
     trackJobStart(label);
     const started = Date.now();
+    const timeoutMs = testCaseTimeoutMsFor(job.test);
     try {
-      const timeoutMs = testCaseTimeoutMsFor(job.test);
-      const result = await runWithTestCaseTimeout(label, timeoutMs, async () => {
+      const result = await runUnderTestTimeout(timeoutMs, async () => {
         if (hangTarget !== "" && job.test.name === hangTarget) {
           await sleep(120_000);
         }
@@ -3619,7 +3636,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     } catch (e) {
       const elapsed = Date.now() - started;
       const msg = e instanceof Error ? e.message : String(e);
-      console.log(`  actor: ${label} FAIL (${elapsed}ms): ${msg}`);
+      if (isTestTimeoutError(e)) {
+        timedOut.push(label);
+        console.log(`  actor: ${label} TIMEOUT (${elapsed}ms)`);
+      } else {
+        console.log(`  actor: ${label} FAIL (${elapsed}ms): ${msg}`);
+      }
       return fail(label, msg);
     } finally {
       trackJobEnd(label);
@@ -3648,15 +3670,28 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     const results = [...alarmResults, ...otherResults];
     const report = buildReport(results);
-    const body = JSON.stringify(report, null, 2);
 
     console.log(
       `  actor: suite done (${results.length} results, ${Date.now() - suiteStarted}ms elapsed)`,
     );
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(body);
+    if (timedOut.length > 0) {
+      console.log(`  actor: timed out (${timedOut.length}): ${timedOut.join(" | ")}`);
+    }
+    return { report, timedOut };
   } finally {
     stopSuiteHeartbeat();
     inFlightJobs.clear();
   }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handler (optional manual trigger — CI uses run-suite.mjs in Node)
+// ---------------------------------------------------------------------------
+
+export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
+  const { report, timedOut } = await runActorTestSuite(getBaseUrl(req));
+  const body = JSON.stringify(report, null, 2);
+  const status = report.summary.healthy && timedOut.length === 0 ? 200 : 503;
+  res.writeHead(status, { "Content-Type": "application/json" });
+  res.end(body);
 }

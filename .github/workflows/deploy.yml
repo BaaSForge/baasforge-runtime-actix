@@ -21,12 +21,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # TEMP: fast test debugging — clear PINNED_APP_TAG and re-enable flags for full deploy.
-  PINNED_APP_TAG: "v0.0.1-prod.8"
-  RUN_BUILD: "false"
-  BUILD_WORKERS: "false"
-  RUN_MIGRATE: "false"
-  RUN_DEPLOY: "false"
+  # Set PINNED_APP_TAG (e.g. v0.0.1-prod.8) to skip tag resolution and reuse an image.
+  PINNED_APP_TAG: ""
+  # Set RUN_BUILD=false to skip image build/push (requires PINNED_APP_TAG).
+  RUN_BUILD: "true"
+  BUILD_WORKERS: "true"
+  RUN_MIGRATE: "true"
+  RUN_DEPLOY: "true"
   DEPLOY_SECRET_VARS: >-
     ACTOR_DATABASE_URL DATABASE_URL REDIS_URL NATS_URL
     WF_REDIS_URL WF_NATS_URL WQ_REDIS_URL WQ_NATS_URL
@@ -324,7 +325,7 @@ jobs:
       ${{
         needs.resolve-meta.outputs.run_deploy == 'true' &&
         !cancelled() &&
-        needs.build-and-push.result == 'success' &&
+        (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
         (needs.migrate-actors.result == 'success' || needs.migrate-actors.result == 'skipped') &&
         needs.integration-tests.result == 'success'
       }}
