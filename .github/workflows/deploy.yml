@@ -22,7 +22,7 @@ concurrency:
 
 env:
   # TEMP: fast test debugging — clear PINNED_APP_TAG and re-enable flags for full deploy.
-  PINNED_APP_TAG: "v0.0.2-prod.9"
+  PINNED_APP_TAG: "v0.0.1-prod.8"
   RUN_BUILD: "false"
   BUILD_WORKERS: "false"
   RUN_MIGRATE: "false"
