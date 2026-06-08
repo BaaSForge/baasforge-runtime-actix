@@ -20,6 +20,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../test-server-lib.sh
+source "$SCRIPT_DIR/../test-server-lib.sh"
 PORT="${TEST_PORT:-3333}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-120}"
 
@@ -49,9 +51,7 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
   cp -R "$SCRIPT_DIR/dist/module-loader" "$SEED_DIR/"
   echo "    dist/index.js ready (api seed: module-loader)"
 
-  echo "==> Building main server binary (release)…"
-  cd "$PROJECT_ROOT"
-  cargo build --release 2>&1
+  maybe_build_server_binary "$PROJECT_ROOT"
 else
   echo "==> Skipping build (SKIP_BUILD=1)"
   SEED_DIR="$SCRIPT_DIR/dist/.api-seed"

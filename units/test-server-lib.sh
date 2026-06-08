@@ -20,6 +20,17 @@ free_listen_port() {
   sleep 0.5
 }
 
+maybe_build_server_binary() {
+  local project_root="$1"
+  local bin="$project_root/target/release/baal-runtime-actix"
+  if [[ -x "$bin" ]]; then
+    echo "==> Skipping server binary build (already present at $bin)"
+    return 0
+  fi
+  echo "==> Building main server binary (release)…"
+  (cd "$project_root" && cargo build --release 2>&1)
+}
+
 stop_test_server() {
   local pid="${1:-}"
   local port="$2"

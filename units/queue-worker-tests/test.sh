@@ -68,9 +68,7 @@ if [[ "${SKIP_BUILD:-}" != "1" ]]; then
     --noUnusedLocals false --noUnusedParameters false
   echo "    dist/ ready ($(find dist -name '*.js' | wc -l | tr -d ' ') JS files)"
 
-  echo "==> Building main server binary (release)…"
-  cd "$PROJECT_ROOT"
-  cargo build --release 2>&1
+  maybe_build_server_binary "$PROJECT_ROOT"
 else
   echo "==> Skipping build (SKIP_BUILD=1)"
 fi

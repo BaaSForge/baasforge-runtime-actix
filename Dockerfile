@@ -61,8 +61,12 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     libpq5 \
+    lsof \
     wget \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/.env /app/.env
@@ -70,6 +74,10 @@ COPY --from=builder /app/target/release/baal-runtime-actix /app/baal-runtime-act
 COPY --from=builder /app/migrations /app/migrations
 COPY diesel-actors.toml /app/diesel-actors.toml
 COPY --from=builder /usr/local/cargo/bin/diesel /usr/local/bin/diesel
+COPY units ./units
+RUN find ./units -name test.sh -exec chmod +x {} + \
+    && mkdir -p target/release \
+    && ln -sf /app/baal-runtime-actix target/release/baal-runtime-actix
 
 EXPOSE 1501
 

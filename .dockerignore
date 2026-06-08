@@ -5,3 +5,11 @@ target/
 target-local/
 .dev/
 .env.local
+
+# Local-only guards under units/ (gitignored; absent in CI checkout).
+units/**/node_modules
+units/**/dist
+units/**/.output*.log
+units/**/test.terminal.log
+units/**/*.tmp.json
+units/**/.last-*
