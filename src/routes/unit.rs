@@ -394,6 +394,11 @@ async fn invoke_api_unit(
     // Shared DbPool / Redis / NATS handles in SdkCommCtx are cloned per request; I/O is async on
     // the same runtime while only the QuickJS thread blocks.
     let unit_path_for_js = unit_path.clone();
+    let heartbeat = if ctx.settings.test_mode {
+        Some(crate::libs::runtime_bridge::spawn_api_invoke_heartbeat(unit_path.clone()))
+    } else {
+        None
+    };
     let run_result = match actix_web::web::block(move || {
         let handle = crate::libs::unit_js::module_loader::get_tokio_handle()
             .expect("tokio handle not initialized; call init_tokio_handle at startup");
@@ -409,6 +414,9 @@ async fn invoke_api_unit(
     {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
+            if let Some(hb) = heartbeat {
+                hb.abort();
+            }
             crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = %e);
             tracing::error!(
                 unit_id = %unit_id,
@@ -422,6 +430,9 @@ async fn invoke_api_unit(
             ));
         }
         Err(_) => {
+            if let Some(hb) = heartbeat {
+                hb.abort();
+            }
             crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = "blocking task cancelled");
             return HttpResponse::InternalServerError().json(api_error(
                 "javascript execution interrupted",
@@ -429,6 +440,9 @@ async fn invoke_api_unit(
             ));
         }
     };
+    if let Some(hb) = heartbeat {
+        hb.abort();
+    }
     crate::rt_step!(
         "api.invoke_unit.run_unit_handler.done",
         unit_path = %unit_path,

@@ -188,8 +188,33 @@ type CheckDef =
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
+function fetchDebugEnabled(): boolean {
+  return process.env["ACTOR_TEST_DEBUG_FETCH"] === "1";
+}
+
+function shortUrl(url: string): string {
+  const max = 140;
+  return url.length <= max ? url : `${url.slice(0, max)}…`;
+}
+
+async function tracedFetch(label: string, url: string, init?: RequestInit): Promise<Response> {
+  const method = init?.method ?? "GET";
+  if (!fetchDebugEnabled()) return fetch(url, init);
+  const started = Date.now();
+  console.log(`  actor-fetch: ${label} ${method} ${shortUrl(url)} …`);
+  try {
+    const resp = await fetch(url, init);
+    console.log(`  actor-fetch: ${label} ${method} -> ${resp.status} (${Date.now() - started}ms)`);
+    return resp;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.log(`  actor-fetch: ${label} ${method} ERROR (${Date.now() - started}ms): ${msg}`);
+    throw e;
+  }
+}
+
 async function httpPost(url: string, body?: any): Promise<any> {
-  const resp = await fetch(url, {
+  const resp = await tracedFetch("POST", url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : "{}",
@@ -199,13 +224,13 @@ async function httpPost(url: string, body?: any): Promise<any> {
 }
 
 async function httpGet(url: string): Promise<any> {
-  const resp = await fetch(url);
+  const resp = await tracedFetch("GET", url);
   const text = await resp.text();
   try { return JSON.parse(text); } catch { return text; }
 }
 
 async function httpPostFull(url: string, body?: any): Promise<{ status: number; body: any }> {
-  const resp = await fetch(url, {
+  const resp = await tracedFetch("POST-full", url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : "{}",
@@ -217,7 +242,7 @@ async function httpPostFull(url: string, body?: any): Promise<{ status: number; 
 }
 
 async function httpGetFull(url: string): Promise<{ status: number; body: any }> {
-  const resp = await fetch(url);
+  const resp = await tracedFetch("GET-full", url);
   const text = await resp.text();
   let parsed: any;
   try { parsed = JSON.parse(text); } catch { parsed = text; }
@@ -225,7 +250,7 @@ async function httpGetFull(url: string): Promise<{ status: number; body: any }> 
 }
 
 async function httpDeleteFull(url: string): Promise<{ status: number; body: any }> {
-  const resp = await fetch(url, { method: "DELETE" });
+  const resp = await tracedFetch("DELETE", url, { method: "DELETE" });
   const text = await resp.text();
   let parsed: any;
   try { parsed = JSON.parse(text); } catch { parsed = text; }
@@ -561,6 +586,48 @@ async function sleep(ms: number): Promise<void> {
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 10);
+}
+
+const inFlightJobs = new Map<string, number>();
+let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+function actorTestHeartbeatMs(): number {
+  const raw = process.env["ACTOR_TEST_HEARTBEAT_SEC"];
+  if (raw === "0" || raw === "off") return 0;
+  if (raw === undefined || raw === "") return 30_000;
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n > 0 ? n * 1000 : 30_000;
+}
+
+function trackJobStart(label: string): void {
+  inFlightJobs.set(label, Date.now());
+}
+
+function trackJobEnd(label: string): void {
+  inFlightJobs.delete(label);
+}
+
+function startSuiteHeartbeat(): void {
+  const intervalMs = actorTestHeartbeatMs();
+  if (intervalMs <= 0 || heartbeatTimer !== undefined) return;
+  heartbeatTimer = setInterval(() => {
+    const now = Date.now();
+    if (inFlightJobs.size === 0) {
+      console.log(`  actor-heartbeat: runner alive, 0 in-flight`);
+      return;
+    }
+    const parts: string[] = [];
+    for (const [label, started] of inFlightJobs) {
+      parts.push(`${label} (${now - started}ms)`);
+    }
+    console.log(`  actor-heartbeat: ${inFlightJobs.size} in-flight — ${parts.join("; ")}`);
+  }, intervalMs);
+}
+
+function stopSuiteHeartbeat(): void {
+  if (heartbeatTimer === undefined) return;
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = undefined;
 }
 
 function diagActorWfHomonymousTripleLeg(params: {
@@ -3503,6 +3570,7 @@ function buildReport(results: TestResult[]) {
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const baseUrl = getBaseUrl(req);
+  const suiteStarted = Date.now();
 
   type Job =
     | { kind: "actor"; test: ActorTestDef }
@@ -3519,10 +3587,21 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   );
 
   const hangTarget = process.env["ACTOR_TEST_INJECT_HANG"]?.trim() ?? "";
+  const concurrency = actorTestRunnerConcurrency();
+  const caseTimeoutMs = actorTestCaseTimeoutMs();
+
+  const alarmJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "alarms");
+  const otherJobs = jobs.filter((j) => !(j.kind === "inline" && j.test.category === "alarms"));
+
+  console.log(
+    `  actor: suite start (${jobs.length} jobs: ${alarmJobs.length} alarms sequential, ${otherJobs.length} parallel@${concurrency}; caseTimeout=${caseTimeoutMs}ms)`,
+  );
+  startSuiteHeartbeat();
 
   const runJob = async (job: Job): Promise<TestResult> => {
     const label = `${job.test.category}: ${job.test.name}`;
     console.log(`  actor: ${label} …`);
+    trackJobStart(label);
     const started = Date.now();
     try {
       const timeoutMs = testCaseTimeoutMsFor(job.test);
@@ -3542,22 +3621,42 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       const msg = e instanceof Error ? e.message : String(e);
       console.log(`  actor: ${label} FAIL (${elapsed}ms): ${msg}`);
       return fail(label, msg);
+    } finally {
+      trackJobEnd(label);
     }
   };
 
-  const alarmJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "alarms");
-  const otherJobs = jobs.filter((j) => !(j.kind === "inline" && j.test.category === "alarms"));
+  try {
+    if (alarmJobs.length > 0) {
+      console.log(`  actor: phase alarms start (${alarmJobs.length} jobs)`);
+    }
+    const alarmResults =
+      alarmJobs.length > 0
+        ? await mapPool(alarmJobs, 1, runJob)
+        : [];
+    if (alarmJobs.length > 0) {
+      console.log(`  actor: phase alarms done (${Date.now() - suiteStarted}ms elapsed)`);
+    }
 
-  const alarmResults =
-    alarmJobs.length > 0
-      ? await mapPool(alarmJobs, 1, runJob)
-      : [];
-  const otherResults = await mapPool(otherJobs, actorTestRunnerConcurrency(), runJob);
-  const results = [...alarmResults, ...otherResults];
+    if (otherJobs.length > 0) {
+      console.log(`  actor: phase parallel start (${otherJobs.length} jobs @${concurrency})`);
+    }
+    const otherResults = await mapPool(otherJobs, concurrency, runJob);
+    if (otherJobs.length > 0) {
+      console.log(`  actor: phase parallel done (${Date.now() - suiteStarted}ms elapsed)`);
+    }
 
-  const report = buildReport(results);
-  const body = JSON.stringify(report, null, 2);
+    const results = [...alarmResults, ...otherResults];
+    const report = buildReport(results);
+    const body = JSON.stringify(report, null, 2);
 
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(body);
+    console.log(
+      `  actor: suite done (${results.length} results, ${Date.now() - suiteStarted}ms elapsed)`,
+    );
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(body);
+  } finally {
+    stopSuiteHeartbeat();
+    inFlightJobs.clear();
+  }
 }
