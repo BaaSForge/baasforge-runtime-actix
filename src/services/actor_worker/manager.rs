@@ -23,9 +23,9 @@ use uuid::Uuid;
 
 fn actor_handler_payload_preview(payload_json: &str) -> String {
     let normalized = serde_json::from_str::<Value>(payload_json)
-        .map(|v| v.to_string())
-        .unwrap_or_else(|_| payload_json.to_string());
-    crate::libs::string::truncate_chars_for_log(&normalized)
+        .map(|v| crate::libs::string::json_value_preview_for_log(&v))
+        .unwrap_or_else(|_| crate::libs::string::truncate_chars_for_log(payload_json));
+    normalized
 }
 
 async fn sync_idle_tracker_after_touch(

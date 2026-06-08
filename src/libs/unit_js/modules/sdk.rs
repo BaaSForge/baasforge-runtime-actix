@@ -210,12 +210,21 @@ impl Drop for HostCtxGuard {
     }
 }
 
-fn sdk_trace_preview(s: &str) -> String {
-    crate::libs::string::truncate_chars_for_log(s)
+fn sdk_json_preview(v: &serde_json::Value) -> String {
+    crate::libs::string::json_value_preview_for_log(v)
 }
 
-fn sdk_json_preview(v: &serde_json::Value) -> String {
-    sdk_trace_preview(&v.to_string())
+fn record_sdk_field(span: &tracing::Span, field: &'static str, v: &serde_json::Value) {
+    let preview = sdk_json_preview(v);
+    span.record(field, preview.as_str());
+}
+
+fn record_sdk_input(span: &tracing::Span, v: &serde_json::Value) {
+    record_sdk_field(span, "baal.sdk.input", v);
+}
+
+fn record_sdk_output_json(span: &tracing::Span, v: &serde_json::Value) {
+    record_sdk_field(span, "baal.sdk.output", v);
 }
 
 macro_rules! sdk_span {
@@ -296,14 +305,6 @@ fn sdk_record_release_and_runtime_ids(span: &tracing::Span, comm: &SdkCommCtx) {
     if let Some(ref r) = runtime {
         span.record("baal.runtime.id", r.as_str());
     }
-}
-
-fn record_sdk_input(span: &tracing::Span, v: &serde_json::Value) {
-    span.record("baal.sdk.input", sdk_json_preview(v).as_str());
-}
-
-fn record_sdk_output_json(span: &tracing::Span, v: &serde_json::Value) {
-    span.record("baal.sdk.output", sdk_json_preview(v).as_str());
 }
 
 fn record_sdk_output_result_str(span: &tracing::Span, res: &Result<String, String>) {

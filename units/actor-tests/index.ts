@@ -1697,7 +1697,7 @@ function allInlineTests(): ActorInlineTestDef[] {
       },
     },
 
-    ---- state-limits (4) ----
+    // ---- state-limits (4) ----
     {
       name: "state-under-limit",
       category: "state-limits",
