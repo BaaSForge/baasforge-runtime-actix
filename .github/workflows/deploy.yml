@@ -252,16 +252,22 @@ jobs:
         include:
           - suite: common-tests
             test_script: ./units/common/test.sh
+            ssh_timeout: 15m
           - suite: actor-tests
             test_script: ./units/actor-tests/test.sh
+            ssh_timeout: 45m
           - suite: workflow-tests
             test_script: ./units/workflow-tests/test.sh
+            ssh_timeout: 20m
           - suite: queue-worker-tests
             test_script: ./units/queue-worker-tests/test.sh
+            ssh_timeout: 15m
           - suite: api-tests
             test_script: ./units/api-tests/test.sh
+            ssh_timeout: 15m
           - suite: runtime-check-tests
             test_script: ./units/runtime-check/test.sh
+            ssh_timeout: 10m
     env:
       ACTOR_DATABASE_URL: ${{ secrets.ACTOR_DATABASE_URL }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -286,6 +292,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: ${{ matrix.ssh_timeout }}
           envs: >-
             IMAGE,TEST_SCRIPT,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
