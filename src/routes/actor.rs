@@ -120,7 +120,7 @@ fn build_actor_unit_path(
 
 #[tracing::instrument(
     name = "actor.invoke",
-    skip(ctx, actor_redis, http_req),
+    skip(ctx, actor_redis, http_req, payload_json),
     fields(
         baal.project.id = %project_id_str,
         baal.unit.path = %unit_path,
@@ -129,6 +129,7 @@ fn build_actor_unit_path(
         baal.app.environment = tracing::field::Empty,
         baal.runtime.id = tracing::field::Empty,
         baal.release.id = tracing::field::Empty,
+        baal.actor.handler_payload = tracing::field::Empty,
     ),
 )]
 async fn invoke_actor_handler_http(
@@ -143,6 +144,10 @@ async fn invoke_actor_handler_http(
     http_req: HttpRequest,
 ) -> HttpResponse {
     let span = tracing::Span::current();
+    span.record(
+        "baal.actor.handler_payload",
+        crate::libs::string::truncate_chars_for_log(&payload_json).as_str(),
+    );
     span.record(
         "baal.app.environment",
         if stage_runtime_id.is_some() {

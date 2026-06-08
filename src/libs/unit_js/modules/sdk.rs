@@ -210,15 +210,8 @@ impl Drop for HostCtxGuard {
     }
 }
 
-const MAX_SDK_TRACE_CHARS: usize = 8192;
-
 fn sdk_trace_preview(s: &str) -> String {
-    if s.chars().count() <= MAX_SDK_TRACE_CHARS {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(MAX_SDK_TRACE_CHARS).collect();
-    out.push_str("…(truncated for trace)");
-    out
+    crate::libs::string::truncate_chars_for_log(s)
 }
 
 fn sdk_json_preview(v: &serde_json::Value) -> String {

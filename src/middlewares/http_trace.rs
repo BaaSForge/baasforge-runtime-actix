@@ -10,7 +10,6 @@ use bytes::Bytes;
 use tracing::Instrument;
 
 const MAX_TRACE_BODY_BYTES: usize = 256 * 1024;
-const MAX_PREVIEW_CHARS: usize = 8192;
 
 const HOP_HEADERS: [&str; 6] = [
     "connection",
@@ -115,13 +114,7 @@ fn preview_bytes(data: &[u8]) -> String {
         .chars()
         .map(|c| if c.is_control() && c != '\n' && c != '\t' { ' ' } else { c })
         .collect();
-    if s.chars().count() > MAX_PREVIEW_CHARS {
-        let mut out: String = s.chars().take(MAX_PREVIEW_CHARS).collect();
-        out.push_str("…(truncated for trace preview)");
-        out
-    } else {
-        s
-    }
+    crate::libs::string::truncate_chars_for_log(&s)
 }
 
 fn copy_headers_to_response_builder(src: &HeaderMap, dst: &mut HttpResponseBuilder) {

@@ -21,21 +21,11 @@ use tracing::{error, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
-const MAX_HANDLER_PAYLOAD_TRACE_CHARS: usize = 8192;
-
 fn actor_handler_payload_preview(payload_json: &str) -> String {
     let normalized = serde_json::from_str::<Value>(payload_json)
         .map(|v| v.to_string())
         .unwrap_or_else(|_| payload_json.to_string());
-    if normalized.chars().count() <= MAX_HANDLER_PAYLOAD_TRACE_CHARS {
-        return normalized;
-    }
-    let mut out: String = normalized
-        .chars()
-        .take(MAX_HANDLER_PAYLOAD_TRACE_CHARS)
-        .collect();
-    out.push_str("…(truncated for trace)");
-    out
+    crate::libs::string::truncate_chars_for_log(&normalized)
 }
 
 async fn sync_idle_tracker_after_touch(
