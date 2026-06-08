@@ -21,9 +21,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BUILD_WORKERS: "false"
-  RUN_MIGRATE: "false"
-  RUN_DEPLOY: "false"
+  BUILD_WORKERS: "true"
+  RUN_MIGRATE: "true"
+  RUN_DEPLOY: "true"
   DEPLOY_SECRET_VARS: >-
     ACTOR_DATABASE_URL DATABASE_URL REDIS_URL NATS_URL
     WF_REDIS_URL WF_NATS_URL WQ_REDIS_URL WQ_NATS_URL
