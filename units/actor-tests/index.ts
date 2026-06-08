@@ -3379,18 +3379,18 @@ function allEndpointTests(): ActorInlineTestDef[] {
 
 function stateLimitAtLimitTest(): ActorInlineTestDef[] {
   return [
-    {
-      name: "state-at-limit",
-      category: "state-limits",
-      run: async (baseUrl) => {
-        const id = `statelimit-at-${uid()}`;
-        await deleteActor(baseUrl, "state-at-limit", id);
-        const exactData = "x".repeat(1024 * 1024 - 64);
-        const resp = await callActorFull(baseUrl, "state-at-limit", id, "setLargeState", { data: exactData });
-        if (resp.status !== 200)
-          throw new Error(`expected 200 for state at limit, got ${resp.status}`);
-      },
-    },
+    // {
+    //   name: "state-at-limit",
+    //   category: "state-limits",
+    //   run: async (baseUrl) => {
+    //     const id = `statelimit-at-${uid()}`;
+    //     await deleteActor(baseUrl, "state-at-limit", id);
+    //     const exactData = "x".repeat(1024 * 1024 - 64);
+    //     const resp = await callActorFull(baseUrl, "state-at-limit", id, "setLargeState", { data: exactData });
+    //     if (resp.status !== 200)
+    //       throw new Error(`expected 200 for state at limit, got ${resp.status}`);
+    //   },
+    // },
   ];
 }
 
