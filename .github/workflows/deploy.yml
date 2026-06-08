@@ -21,9 +21,12 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BUILD_WORKERS: "true"
-  RUN_MIGRATE: "true"
-  RUN_DEPLOY: "true"
+  # TEMP: fast test debugging — clear PINNED_APP_TAG and re-enable flags for full deploy.
+  PINNED_APP_TAG: "v0.0.1-prod.8"
+  RUN_BUILD: "false"
+  BUILD_WORKERS: "false"
+  RUN_MIGRATE: "false"
+  RUN_DEPLOY: "false"
   DEPLOY_SECRET_VARS: >-
     ACTOR_DATABASE_URL DATABASE_URL REDIS_URL NATS_URL
     WF_REDIS_URL WF_NATS_URL WQ_REDIS_URL WQ_NATS_URL
@@ -39,19 +42,23 @@ jobs:
       deploy_suffix: ${{ steps.meta.outputs.deploy_suffix }}
       app_image: ${{ steps.meta.outputs.app_image }}
       services: ${{ steps.meta.outputs.services }}
+      run_build: ${{ steps.flags.outputs.run_build }}
       run_migrate: ${{ steps.flags.outputs.run_migrate }}
       run_deploy: ${{ steps.flags.outputs.run_deploy }}
     steps:
       - name: Resolve workflow flags
         id: flags
         run: |
+          echo "run_build=${RUN_BUILD}" >> "$GITHUB_OUTPUT"
           echo "run_migrate=${RUN_MIGRATE}" >> "$GITHUB_OUTPUT"
           echo "run_deploy=${RUN_DEPLOY}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve environment
         id: meta
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ -n "${PINNED_APP_TAG:-}" ]; then
+            TAG="$PINNED_APP_TAG"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
           else
             TAG="${GITHUB_REF#refs/tags/}"
@@ -127,6 +134,7 @@ jobs:
           echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
 
   build-and-push:
+    if: ${{ needs.resolve-meta.outputs.run_build == 'true' }}
     needs: resolve-meta
     runs-on: ubuntu-latest
     strategy:
@@ -220,16 +228,34 @@ jobs:
             "
             echo "Actor migrations complete"
 
-  test:
+  integration-tests:
+    name: ${{ matrix.suite }}
     needs: [resolve-meta, build-and-push, migrate]
     if: >-
       ${{
         !cancelled() &&
-        needs.build-and-push.result == 'success' &&
+        (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
         (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
       }}
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-meta.outputs.environment }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - suite: common-tests
+            test_script: ./units/common/test.sh
+          - suite: actor-tests
+            test_script: ./units/actor-tests/test.sh
+          - suite: workflow-tests
+            test_script: ./units/workflow-tests/test.sh
+          - suite: queue-worker-tests
+            test_script: ./units/queue-worker-tests/test.sh
+          - suite: api-tests
+            test_script: ./units/api-tests/test.sh
+          - suite: runtime-check-tests
+            test_script: ./units/runtime-check/test.sh
     env:
       ACTOR_DATABASE_URL: ${{ secrets.ACTOR_DATABASE_URL }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -243,10 +269,11 @@ jobs:
       ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
     steps:
-      - name: Run common integration tests
+      - name: Run integration test suite
         uses: appleboy/ssh-action@v1.2.2
         env:
           IMAGE: ${{ needs.resolve-meta.outputs.app_image }}
+          TEST_SCRIPT: ${{ matrix.test_script }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -254,7 +281,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: >-
-            IMAGE,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
+            IMAGE,TEST_SCRIPT,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
             ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
@@ -270,9 +297,9 @@ jobs:
             $(for v in $DEPLOY_SECRET_VARS; do printf 'saved_%s=$%s\n' "$v" "$v"; done)
             set -a && . ./.env && set +a
             $(for v in $DEPLOY_SECRET_VARS; do printf 'export %s=$saved_%s\n' "$v" "$v"; done)
-            ./units/common/test.sh
+            exec \"$TEST_SCRIPT\"
             "
-            echo "Common integration tests complete"
+            echo "${{ matrix.suite }} complete"
 
   deploy:
     if: >-
@@ -281,9 +308,9 @@ jobs:
         !cancelled() &&
         needs.build-and-push.result == 'success' &&
         (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') &&
-        needs.test.result == 'success'
+        needs.integration-tests.result == 'success'
       }}
-    needs: [resolve-meta, build-and-push, migrate, test]
+    needs: [resolve-meta, build-and-push, migrate, integration-tests]
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-meta.outputs.environment }}
     env:
