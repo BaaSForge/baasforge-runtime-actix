@@ -30,7 +30,6 @@
  * └──────────────────────────────────┴──────────────────────────────────────────────────────────────────────┘
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
@@ -189,12 +188,11 @@ type CheckDef =
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-const fetchSignalStorage = new AsyncLocalStorage<AbortSignal | undefined>();
+let currentFetchSignal: AbortSignal | undefined;
 
 function fetchInit(init: RequestInit = {}): RequestInit {
-  const signal = fetchSignalStorage.getStore();
-  if (!signal) return init;
-  return { ...init, signal };
+  if (!currentFetchSignal) return init;
+  return { ...init, signal: currentFetchSignal };
 }
 
 function fetchDebugEnabled(): boolean {
@@ -714,9 +712,11 @@ function isTestTimeoutError(e: unknown): boolean {
 
 async function runUnderTestTimeout<T>(timeoutMs: number, fn: () => Promise<T>): Promise<T> {
   const ac = new AbortController();
+  const prev = currentFetchSignal;
+  currentFetchSignal = ac.signal;
   const timer = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    return await fetchSignalStorage.run(ac.signal, fn);
+    return await fn();
   } catch (e) {
     if (ac.signal.aborted || (e instanceof Error && e.name === "AbortError")) {
       throw new Error(`timeout after ${timeoutMs}ms`);
@@ -724,6 +724,7 @@ async function runUnderTestTimeout<T>(timeoutMs: number, fn: () => Promise<T>): 
     throw e;
   } finally {
     clearTimeout(timer);
+    currentFetchSignal = prev;
   }
 }
 
@@ -3607,13 +3608,10 @@ export async function runActorTestSuite(
   const caseTimeoutMs = actorTestCaseTimeoutMs();
 
   const alarmJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "alarms");
-  const stateLimitJobs = jobs.filter((j) => j.test.category === "state-limits");
-  const otherJobs = jobs.filter(
-    (j) => !(j.kind === "inline" && j.test.category === "alarms") && j.test.category !== "state-limits",
-  );
+  const otherJobs = jobs.filter((j) => !(j.kind === "inline" && j.test.category === "alarms"));
 
   console.log(
-    `  actor: suite start (${jobs.length} jobs: ${alarmJobs.length} alarms + ${stateLimitJobs.length} state-limits sequential, ${otherJobs.length} parallel@${concurrency}; caseTimeout=${caseTimeoutMs}ms)`,
+    `  actor: suite start (${jobs.length} jobs: ${alarmJobs.length} alarms sequential, ${otherJobs.length} parallel@${concurrency}; caseTimeout=${caseTimeoutMs}ms)`,
   );
   startSuiteHeartbeat();
 
@@ -3662,17 +3660,6 @@ export async function runActorTestSuite(
       console.log(`  actor: phase alarms done (${Date.now() - suiteStarted}ms elapsed)`);
     }
 
-    if (stateLimitJobs.length > 0) {
-      console.log(`  actor: phase state-limits start (${stateLimitJobs.length} jobs)`);
-    }
-    const stateLimitResults =
-      stateLimitJobs.length > 0
-        ? await mapPool(stateLimitJobs, 1, runJob)
-        : [];
-    if (stateLimitJobs.length > 0) {
-      console.log(`  actor: phase state-limits done (${Date.now() - suiteStarted}ms elapsed)`);
-    }
-
     if (otherJobs.length > 0) {
       console.log(`  actor: phase parallel start (${otherJobs.length} jobs @${concurrency})`);
     }
@@ -3681,7 +3668,7 @@ export async function runActorTestSuite(
       console.log(`  actor: phase parallel done (${Date.now() - suiteStarted}ms elapsed)`);
     }
 
-    const results = [...alarmResults, ...stateLimitResults, ...otherResults];
+    const results = [...alarmResults, ...otherResults];
     const report = buildReport(results);
 
     console.log(

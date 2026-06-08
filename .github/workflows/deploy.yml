@@ -258,7 +258,6 @@ jobs:
             test_script: ./units/actor-tests/test.sh
             ssh_timeout: 45m
             test_debug: "1"
-            test_concurrency: "2"
           - suite: workflow-tests
             test_script: ./units/workflow-tests/test.sh
             ssh_timeout: 20m
@@ -290,7 +289,6 @@ jobs:
           IMAGE: ${{ needs.resolve-meta.outputs.app_image }}
           TEST_SCRIPT: ${{ matrix.test_script }}
           ACTOR_TEST_DEBUG: ${{ matrix.test_debug || '' }}
-          ACTOR_TEST_RUNNER_CONCURRENCY: ${{ matrix.test_concurrency || '' }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -299,7 +297,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           command_timeout: ${{ matrix.ssh_timeout }}
           envs: >-
-            IMAGE,TEST_SCRIPT,ACTOR_TEST_DEBUG,ACTOR_TEST_RUNNER_CONCURRENCY,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
+            IMAGE,TEST_SCRIPT,ACTOR_TEST_DEBUG,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
             ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
@@ -313,9 +311,6 @@ jobs:
             for v in $DEPLOY_SECRET_VARS; do docker_env+=(-e "$v"); done
             if [[ -n "${ACTOR_TEST_DEBUG:-}" ]]; then
               docker_env+=(-e "ACTOR_TEST_DEBUG=${ACTOR_TEST_DEBUG}")
-            fi
-            if [[ -n "${ACTOR_TEST_RUNNER_CONCURRENCY:-}" ]]; then
-              docker_env+=(-e "ACTOR_TEST_RUNNER_CONCURRENCY=${ACTOR_TEST_RUNNER_CONCURRENCY}")
             fi
             docker run --rm --network host "${docker_env[@]}" "$IMAGE" sh -ec "
             $(for v in $DEPLOY_SECRET_VARS; do printf 'saved_%s=$%s\n' "$v" "$v"; done)
