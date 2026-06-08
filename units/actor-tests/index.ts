@@ -677,9 +677,9 @@ function pass(name: string, detail?: string): TestResult {
 
 function actorTestRunnerConcurrency(): number {
   const raw = process.env["ACTOR_TEST_RUNNER_CONCURRENCY"];
-  if (raw === undefined || raw === "") return 4;
+  if (raw === undefined || raw === "") return 16;
   const n = Math.floor(Number(raw));
-  return Number.isFinite(n) && n >= 1 ? n : 4;
+  return Number.isFinite(n) && n >= 1 ? n : 16;
 }
 
 function actorTestCaseTimeoutMs(): number {
