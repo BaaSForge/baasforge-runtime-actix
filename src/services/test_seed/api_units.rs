@@ -31,6 +31,9 @@ fn api_unit_seed_metadata(module_slug: &str, unit_name_slug: &str) -> Option<ser
     if module_slug == "api-tests" && unit_name_slug == "index" {
         return Some(json!({ "method": "GET", "timeout_seconds": 120 }));
     }
+    if module_slug == "actor-tests" && unit_name_slug == "index" {
+        return Some(json!({ "method": "GET", "timeout_seconds": 900 }));
+    }
     Some(json!({ "method": "GET" }))
 }
 

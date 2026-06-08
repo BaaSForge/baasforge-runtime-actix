@@ -32,6 +32,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { sdk, type ActorInstanceId } from "@sdk";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -195,13 +196,48 @@ function actorHttpTimeoutMs(): number {
   return Number.isFinite(n) && n >= 1_000 ? n : 45_000;
 }
 
+async function waitForHttpResponse(
+  label: string,
+  timeoutMs: number,
+  run: () => Promise<Response>,
+): Promise<Response> {
+  let released = false;
+  let resp: Response | undefined;
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void run()
+      .then((r) => {
+        released = true;
+        resp = r;
+        if (timer !== undefined) clearTimeout(timer);
+        resolve();
+      })
+      .catch((e) => {
+        released = true;
+        if (timer !== undefined) clearTimeout(timer);
+        reject(e);
+      });
+    timer = setTimeout(() => {
+      if (!released) {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+  });
+  return resp!;
+}
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit = {},
   timeoutMs = actorHttpTimeoutMs(),
 ): Promise<Response> {
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    return await waitForHttpResponse(
+      `HTTP request to ${url}`,
+      timeoutMs,
+      () => fetch(url, { ...init, signal }),
+    );
   } catch (e) {
     const name = e instanceof Error ? e.name : "";
     const msg = e instanceof Error ? e.message : String(e);
@@ -213,19 +249,29 @@ async function fetchWithTimeout(
 }
 
 async function runWithTimeout<T>(label: string, timeoutMs: number, fn: () => Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      fn(),
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+  let released = false;
+  let result: T | undefined;
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    void fn()
+      .then((r) => {
+        released = true;
+        result = r;
+        if (timer !== undefined) clearTimeout(timer);
+        resolve();
+      })
+      .catch((e) => {
+        released = true;
+        if (timer !== undefined) clearTimeout(timer);
+        reject(e);
+      });
+    timer = setTimeout(() => {
+      if (!released) {
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+  });
+  return result as T;
 }
 
 async function httpPost(url: string, body?: any, timeoutMs?: number): Promise<any> {
@@ -249,11 +295,14 @@ async function httpPostFull(
   body?: any,
   opts?: { timeoutMs?: number },
 ): Promise<{ status: number; body: any }> {
+  const timeoutMs = opts?.timeoutMs ?? actorHttpTimeoutMs();
+  const bodyText = body !== undefined ? JSON.stringify(body) : "{}";
+  await Promise.resolve();
   const resp = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: body !== undefined ? JSON.stringify(body) : "{}",
-  }, opts?.timeoutMs);
+    body: bodyText,
+  }, timeoutMs);
   const text = await resp.text();
   let parsed: any;
   try { parsed = JSON.parse(text); } catch { parsed = text; }
@@ -332,7 +381,28 @@ function actorPerTestTimeoutMs(category: string): number {
     if (Number.isFinite(n) && n >= 5_000) return n;
   }
   if (category === "alarms") return ALARM_EVENTUAL_TIMEOUT_MS + 15_000;
+  if (category === "state-limits") return actorHttpTimeoutMs() + 10_000;
   return 90_000;
+}
+
+function actorSdkPath(unit: string): `test.actor-tests.actor.${string}` {
+  return `test.actor-tests.actor.${unit}`;
+}
+
+function callActorViaSdk(
+  unit: string,
+  actorId: string,
+  handler: string,
+  payload?: unknown,
+  timeoutMs = actorHttpTimeoutMs(),
+): unknown {
+  return sdk.callActorAndWaitForResultSync({
+    unitPath: actorSdkPath(unit),
+    actorId: actorId as ActorInstanceId,
+    handler,
+    payload,
+    opts: { timeoutMs },
+  });
 }
 
 async function waitForActorState(
@@ -1635,9 +1705,7 @@ function allInlineTests(): ActorInlineTestDef[] {
     //     const id = `statelimit-under-${uid()}`;
     //     await deleteActor(baseUrl, "state-under-limit", id);
     //     const kbData = "x".repeat(500 * 1024);
-    //     const resp = await callActorFull(baseUrl, "state-under-limit", id, "setLargeState", { data: kbData });
-    //     if (resp.status !== 200)
-    //       throw new Error(`expected 200 for 500KB state, got ${resp.status}`);
+    //     callActorViaSdk("state-under-limit", id, "setLargeState", { data: kbData });
     //   },
     // },
     // {
@@ -1647,12 +1715,13 @@ function allInlineTests(): ActorInlineTestDef[] {
     //     const id = `statelimit-over-${uid()}`;
     //     await deleteActor(baseUrl, "state-over-limit", id);
     //     const mbData = "x".repeat(2 * 1024 * 1024);
-    //     const resp = await callActorFull(baseUrl, "state-over-limit", id, "setLargeState", { data: mbData });
-    //     if (resp.status === 200 && (resp.body?.result?.error ?? "").includes("StateLimitExceeded")) {
-    //       return;
+    //     try {
+    //       callActorViaSdk("state-over-limit", id, "setLargeState", { data: mbData });
+    //       throw new Error(`expected StateLimitExceeded for 2MB state, got success`);
+    //     } catch (e) {
+    //       const msg = e instanceof Error ? e.message : String(e);
+    //       if (!msg.includes("StateLimitExceeded")) throw e;
     //     }
-    //     if (resp.status === 200)
-    //       throw new Error(`expected StateLimitExceeded for 2MB state, got 200 with no error`);
     //   },
     // },
     // {
@@ -3436,9 +3505,7 @@ function stateLimitAtLimitTest(): ActorInlineTestDef[] {
         const id = `statelimit-at-${uid()}`;
         await deleteActor(baseUrl, "state-at-limit", id);
         const exactData = "x".repeat(1024 * 1024 - 64);
-        const resp = await callActorFull(baseUrl, "state-at-limit", id, "setLargeState", { data: exactData });
-        if (resp.status !== 200)
-          throw new Error(`expected 200 for state at limit, got ${resp.status}`);
+        callActorViaSdk("state-at-limit", id, "setLargeState", { data: exactData });
       },
     },
   ];
@@ -3554,14 +3621,21 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   };
 
   const alarmJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "alarms");
-  const otherJobs = jobs.filter((j) => !(j.kind === "inline" && j.test.category === "alarms"));
+  const stateLimitJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "state-limits");
+  const otherJobs = jobs.filter(
+    (j) => !(j.kind === "inline" && (j.test.category === "alarms" || j.test.category === "state-limits")),
+  );
 
   const alarmResults =
     alarmJobs.length > 0
       ? await mapPool(alarmJobs, 1, runJob)
       : [];
+  const stateLimitResults =
+    stateLimitJobs.length > 0
+      ? await mapPool(stateLimitJobs, 1, runJob)
+      : [];
   const otherResults = await mapPool(otherJobs, actorTestRunnerConcurrency(), runJob);
-  const results = [...alarmResults, ...otherResults];
+  const results = [...alarmResults, ...stateLimitResults, ...otherResults];
 
   const report = buildReport(results);
   const body = JSON.stringify(report, null, 2);

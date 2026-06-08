@@ -25,6 +25,31 @@ use uuid::Uuid;
 /// Max request body size forwarded into QuickJS `req` (bytes).
 const TRIGGER_MAX_BODY_BYTES: usize = 512 * 1024;
 
+/// When unit metadata omits `timeout_seconds`, sets it to `0`, or uses a non-integer.
+const DEFAULT_API_UNIT_TIMEOUT_SECS: u64 = 30;
+
+const MAX_API_UNIT_TIMEOUT_SECS: u64 = 3600;
+
+fn api_unit_timeout_secs(metadata: &Option<serde_json::Value>) -> u64 {
+    let Some(meta) = metadata else {
+        return DEFAULT_API_UNIT_TIMEOUT_SECS;
+    };
+    let Some(v) = meta.get("timeout_seconds") else {
+        return DEFAULT_API_UNIT_TIMEOUT_SECS;
+    };
+    match v {
+        serde_json::Value::Number(n) => {
+            let secs = n.as_u64().unwrap_or(0);
+            if secs == 0 {
+                DEFAULT_API_UNIT_TIMEOUT_SECS
+            } else {
+                secs.min(MAX_API_UNIT_TIMEOUT_SECS)
+            }
+        }
+        _ => DEFAULT_API_UNIT_TIMEOUT_SECS,
+    }
+}
+
 /// HTTP field-values are opaque bytes; obs-text high bytes are ISO-8859-1 (RFC 9110). Modern
 /// clients often send UTF-8 — use that when valid, otherwise map each byte to U+0000..U+00FF.
 fn header_value_to_string(bytes: &[u8]) -> String {
@@ -388,13 +413,19 @@ async fn invoke_api_unit(
     );
     let parent_ctx_for_js = parent_ctx.clone();
     let _otel = parent_ctx.attach();
-    crate::rt_step!("api.invoke_unit.run_unit_handler.start", unit_path = %unit_path);
+    let timeout_secs = api_unit_timeout_secs(&unit.metadata);
+    let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+    crate::rt_step!(
+        "api.invoke_unit.run_unit_handler.start",
+        unit_path = %unit_path,
+        timeout_secs = timeout_secs
+    );
     // JS + sync SDK host calls run on the Tokio blocking pool (not Actix arbiters) so hundreds of
     // concurrent triggers can each block_in_place without pinning the small arbiter thread set.
     // Shared DbPool / Redis / NATS handles in SdkCommCtx are cloned per request; I/O is async on
     // the same runtime while only the QuickJS thread blocks.
     let unit_path_for_js = unit_path.clone();
-    let run_result = match actix_web::web::block(move || {
+    let block_future = actix_web::web::block(move || {
         let handle = crate::libs::unit_js::module_loader::get_tokio_handle()
             .expect("tokio handle not initialized; call init_tokio_handle at startup");
         let _otel = parent_ctx_for_js.attach();
@@ -404,11 +435,10 @@ async fn invoke_api_unit(
             Some(comm),
             Some(unit_path_for_js.as_str()),
         ))
-    })
-    .await
-    {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
+    });
+    let run_result = match tokio::time::timeout(timeout_dur, block_future).await {
+        Ok(Ok(Ok(r))) => r,
+        Ok(Ok(Err(e))) => {
             crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = %e);
             tracing::error!(
                 unit_id = %unit_id,
@@ -421,11 +451,23 @@ async fn invoke_api_unit(
                 json!({ "detail": e }),
             ));
         }
-        Err(_) => {
+        Ok(Err(_)) => {
             crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = "blocking task cancelled");
             return HttpResponse::InternalServerError().json(api_error(
                 "javascript execution interrupted",
                 json!({}),
+            ));
+        }
+        Err(_) => {
+            crate::rt_exit_err!(
+                "api.invoke_unit",
+                unit_path = %unit_path,
+                error = "api unit execution timed out",
+                timeout_secs = timeout_secs
+            );
+            return HttpResponse::GatewayTimeout().json(api_error(
+                "api unit execution timed out",
+                json!({ "timeout_seconds": timeout_secs }),
             ));
         }
     };
@@ -460,8 +502,9 @@ fn map_service_err(e: ServiceError) -> HttpResponse {
 }
 
 #[cfg(test)]
-mod header_value_tests {
-    use super::header_value_to_string;
+mod tests {
+    use super::{api_unit_timeout_secs, header_value_to_string};
+    use serde_json::json;
 
     #[test]
     fn utf8_pound_sign() {
@@ -471,5 +514,20 @@ mod header_value_tests {
     #[test]
     fn latin1_pound_sign_byte() {
         assert_eq!(header_value_to_string(b"a\xa3b"), "a£b");
+    }
+
+    #[test]
+    fn api_unit_timeout_secs_defaults() {
+        assert_eq!(api_unit_timeout_secs(&None), 30);
+        assert_eq!(api_unit_timeout_secs(&Some(json!({ "method": "GET" }))), 30);
+        assert_eq!(api_unit_timeout_secs(&Some(json!({ "timeout_seconds": 0 }))), 30);
+        assert_eq!(api_unit_timeout_secs(&Some(json!({ "timeout_seconds": null }))), 30);
+        assert_eq!(api_unit_timeout_secs(&Some(json!({ "timeout_seconds": "5" }))), 30);
+    }
+
+    #[test]
+    fn api_unit_timeout_secs_custom() {
+        assert_eq!(api_unit_timeout_secs(&Some(json!({ "timeout_seconds": 2 }))), 2);
+        assert_eq!(api_unit_timeout_secs(&Some(json!({ "timeout_seconds": 120 }))), 120);
     }
 }
