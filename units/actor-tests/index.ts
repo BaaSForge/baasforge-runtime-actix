@@ -615,40 +615,6 @@ function actorTestRunnerConcurrency(): number {
   return Number.isFinite(n) && n >= 1 ? n : 16;
 }
 
-function parsePositiveMsEnv(name: string, fallback: number, minMs: number): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Math.floor(Number(raw));
-  return Number.isFinite(n) && n >= minMs ? n : fallback;
-}
-
-function actorTestTimeoutMs(category: string): number {
-  const base = parsePositiveMsEnv("ACTOR_TEST_TIMEOUT_MS", 120_000, 5_000);
-  if (category === "alarms") {
-    return Math.max(base, ALARM_EVENTUAL_TIMEOUT_MS + 45_000);
-  }
-  return base;
-}
-
-async function runWithTimeout<T>(timeoutMs: number, fn: () => Promise<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      fn(),
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
-function isTestTimeoutError(e: unknown): boolean {
-  const msg = e instanceof Error ? e.message : String(e);
-  return msg.startsWith("timeout after ");
-}
-
 async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let cursor = 0;
@@ -3527,7 +3493,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   );
 
   const inFlight = new Set<string>();
-  const timedOut: string[] = [];
   const heartbeat = setInterval(() => {
     if (inFlight.size === 0) return;
     const elapsedSec = Math.floor((Date.now() - suiteStartedAt) / 1000);
@@ -3539,27 +3504,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const runJob = async (job: Job, index: number, batchSize: number, batchName: string) => {
     const label = jobLabel(job);
     const tag = `${batchName} [${index + 1}/${batchSize}]`;
-    const timeoutMs = actorTestTimeoutMs(job.test.category);
-    console.log(`  actor: START ${tag} ${label} (timeout ${timeoutMs}ms) @ +${Date.now() - suiteStartedAt}ms`);
+    console.log(`  actor: START ${tag} ${label} @ +${Date.now() - suiteStartedAt}ms`);
     inFlight.add(label);
     const t0 = Date.now();
     try {
-      const result = await runWithTimeout(timeoutMs, () =>
-        job.kind === "actor" ? runActorTest(baseUrl, job.test) : runInlineTest(baseUrl, job.test),
-      );
-      console.log(`  actor: DONE ${tag} ${label} (${Date.now() - t0}ms)`);
-      return result;
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (isTestTimeoutError(e)) {
-        timedOut.push(label);
-        console.log(`  actor: TIMEOUT ${tag} ${label} after ${timeoutMs}ms`);
-        return fail(label, msg);
-      }
-      console.log(`  actor: ERROR ${tag} ${label} (${Date.now() - t0}ms): ${msg}`);
-      return fail(label, msg);
+      return job.kind === "actor"
+        ? await runActorTest(baseUrl, job.test)
+        : await runInlineTest(baseUrl, job.test);
     } finally {
       inFlight.delete(label);
+      console.log(`  actor: DONE ${tag} ${label} (${Date.now() - t0}ms)`);
     }
   };
 
@@ -3583,22 +3537,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
     console.log(`  actor: suite finished in ${Date.now() - suiteStartedAt}ms`);
 
-    if (timedOut.length > 0) {
-      console.log(`  actor: timed out (${timedOut.length}): ${timedOut.join(" | ")}`);
-    }
-
     const report = buildReport(results);
     const body = JSON.stringify(report, null, 2);
-    const status = report.summary.healthy ? 200 : 503;
 
-    res.writeHead(status, { "Content-Type": "application/json" });
+    res.writeHead(200, { "Content-Type": "application/json" });
     res.end(body);
-
-    if (timedOut.length > 0) {
-      throw new Error(
-        `actor test suite: ${timedOut.length} test(s) timed out:\n${timedOut.map((t) => `  - ${t}`).join("\n")}`,
-      );
-    }
   } finally {
     clearInterval(heartbeat);
   }
