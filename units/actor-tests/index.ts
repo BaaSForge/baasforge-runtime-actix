@@ -631,12 +631,6 @@ async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, inde
   return out;
 }
 
-const ACTOR_TEST_HEARTBEAT_MS = 30_000;
-
-function jobLabel(job: { test: { category: string; name: string } }): string {
-  return `${job.test.category}: ${job.test.name}`;
-}
-
 // ---------------------------------------------------------------------------
 // Actor test runner
 // ---------------------------------------------------------------------------
@@ -3476,7 +3470,6 @@ function buildReport(results: TestResult[]) {
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const baseUrl = getBaseUrl(req);
-  const suiteStartedAt = Date.now();
 
   type Job =
     | { kind: "actor"; test: ActorTestDef }
@@ -3492,57 +3485,25 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       RUN_ONLY.some((f) => f.name === j.test.name && f.category === j.test.category),
   );
 
-  const inFlight = new Set<string>();
-  const heartbeat = setInterval(() => {
-    if (inFlight.size === 0) return;
-    const elapsedSec = Math.floor((Date.now() - suiteStartedAt) / 1000);
-    console.log(
-      `  actor: heartbeat +${elapsedSec}s in-flight (${inFlight.size}): ${[...inFlight].join(" | ")}`,
-    );
-  }, ACTOR_TEST_HEARTBEAT_MS);
-
-  const runJob = async (job: Job, index: number, batchSize: number, batchName: string) => {
-    const label = jobLabel(job);
-    const tag = `${batchName} [${index + 1}/${batchSize}]`;
-    console.log(`  actor: START ${tag} ${label} @ +${Date.now() - suiteStartedAt}ms`);
-    inFlight.add(label);
-    const t0 = Date.now();
-    try {
-      return job.kind === "actor"
-        ? await runActorTest(baseUrl, job.test)
-        : await runInlineTest(baseUrl, job.test);
-    } finally {
-      inFlight.delete(label);
-      console.log(`  actor: DONE ${tag} ${label} (${Date.now() - t0}ms)`);
-    }
+  const runJob = async (job: Job) => {
+    const label = `${job.test.category}: ${job.test.name}`;
+    console.log(`  actor: ${label} …`);
+    return job.kind === "actor" ? runActorTest(baseUrl, job.test) : runInlineTest(baseUrl, job.test);
   };
 
   const alarmJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "alarms");
   const otherJobs = jobs.filter((j) => !(j.kind === "inline" && j.test.category === "alarms"));
-  const concurrency = actorTestRunnerConcurrency();
 
-  console.log(
-    `  actor: suite starting (${jobs.length} jobs: ${alarmJobs.length} alarms sequential, ${otherJobs.length} other @ concurrency ${concurrency})`,
-  );
+  const alarmResults =
+    alarmJobs.length > 0
+      ? await mapPool(alarmJobs, 1, runJob)
+      : [];
+  const otherResults = await mapPool(otherJobs, actorTestRunnerConcurrency(), runJob);
+  const results = [...alarmResults, ...otherResults];
 
-  try {
-    const alarmResults =
-      alarmJobs.length > 0
-        ? await mapPool(alarmJobs, 1, (job, i) => runJob(job, i, alarmJobs.length, "alarms"))
-        : [];
-    const otherResults = await mapPool(otherJobs, concurrency, (job, i) =>
-      runJob(job, i, otherJobs.length, "parallel"),
-    );
-    const results = [...alarmResults, ...otherResults];
+  const report = buildReport(results);
+  const body = JSON.stringify(report, null, 2);
 
-    console.log(`  actor: suite finished in ${Date.now() - suiteStartedAt}ms`);
-
-    const report = buildReport(results);
-    const body = JSON.stringify(report, null, 2);
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(body);
-  } finally {
-    clearInterval(heartbeat);
-  }
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(body);
 }

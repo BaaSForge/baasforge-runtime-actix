@@ -85,14 +85,12 @@ fi
 # 2. Start the real server in TEST_MODE
 # ------------------------------------------------------------------
 free_listen_port "$PORT"
-echo "==> Starting server on port ${PORT} (TEST_MODE, DB pools ${TEST_DATABASE_POOL_SIZE:-20}, actor-test concurrency ${ACTOR_TEST_RUNNER_CONCURRENCY:-4})…"
+echo "==> Starting server on port ${PORT} (TEST_MODE)…"
 
 TEST_MODE=1 \
 APP_ENV=production \
 PORT="$PORT" \
-DATABASE_POOL_SIZE="${TEST_DATABASE_POOL_SIZE:-20}" \
-ACTOR_DATABASE_POOL_SIZE="${TEST_ACTOR_DATABASE_POOL_SIZE:-20}" \
-ACTOR_TEST_RUNNER_CONCURRENCY="${ACTOR_TEST_RUNNER_CONCURRENCY:-4}" \
+ACTOR_TEST_RUNNER_CONCURRENCY=8 \
 ACTOR_IDLE_SWEEP_SECS=1 \
 TEST_UNIT_FILES="actor-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_ACTOR_DIR="$SCRIPT_DIR/dist" \
