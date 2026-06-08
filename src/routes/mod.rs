@@ -453,7 +453,12 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     use actix_web::http::header::HeaderName;
     use actix_web::middleware::from_fn;
 
-    HttpServer::new(move || {
+    let http_workers = std::env::var("ACTIX_HTTP_WORKERS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|&n| n > 0);
+
+    let mut server = HttpServer::new(move || {
         App::new()
             .wrap(from_fn(crate::middlewares::trace_request_middleware))
             .wrap(
@@ -589,11 +594,16 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                             ),
                     ),
             )
-    })
-    .worker_max_blocking_threads(settings.api_worker_max_blocking_threads)
-    .bind(("0.0.0.0", port))?
-    .run()
-    .await?;
+    });
+    if let Some(n) = http_workers {
+        tracing::info!(workers = n, "[http] ACTIX_HTTP_WORKERS override");
+        server = server.workers(n);
+    }
+    server
+        .worker_max_blocking_threads(settings.api_worker_max_blocking_threads)
+        .bind(("0.0.0.0", port))?
+        .run()
+        .await?;
 
     crate::shutdown_telemetry();
 

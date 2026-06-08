@@ -99,7 +99,7 @@ fi
 # 2. Start the real server in TEST_MODE
 # ------------------------------------------------------------------
 free_listen_port "$PORT"
-echo "==> Starting server on port ${PORT} (TEST_MODE, DB pools ${TEST_DATABASE_POOL_SIZE:-20}, concurrency ${ACTOR_TEST_RUNNER_CONCURRENCY:-4})…"
+echo "==> Starting server on port ${PORT} (TEST_MODE, DB pools ${TEST_DATABASE_POOL_SIZE:-20}, actix workers ${ACTIX_HTTP_WORKERS:-default}, concurrency ${ACTOR_TEST_RUNNER_CONCURRENCY:-4})…"
 
 if [[ -n "${ACTOR_TEST_INJECT_HANG:-}" ]]; then
   export ACTOR_TEST_INJECT_HANG
@@ -111,6 +111,7 @@ APP_ENV=production \
 PORT="$PORT" \
 DATABASE_POOL_SIZE="${TEST_DATABASE_POOL_SIZE:-20}" \
 ACTOR_DATABASE_POOL_SIZE="${TEST_ACTOR_DATABASE_POOL_SIZE:-20}" \
+ACTIX_HTTP_WORKERS="${ACTIX_HTTP_WORKERS:-8}" \
 ACTOR_TEST_RUNNER_CONCURRENCY="${ACTOR_TEST_RUNNER_CONCURRENCY:-4}" \
 ACTOR_TEST_CASE_TIMEOUT_MS="$ACTOR_TEST_CASE_TIMEOUT_MS" \
 ACTOR_TEST_DEBUG_FETCH="${ACTOR_TEST_DEBUG_FETCH:-}" \

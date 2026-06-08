@@ -1692,8 +1692,9 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `statelimit-under-${uid()}`;
         await deleteActor(baseUrl, "state-under-limit", id);
-        const kbData = "x".repeat(500 * 1024);
-        const resp = await callActorFull(baseUrl, "state-under-limit", id, "setLargeState", { data: kbData });
+        const resp = await callActorFull(baseUrl, "state-under-limit", id, "setLargeState", {
+          bytes: 500 * 1024,
+        });
         if (resp.status !== 200)
           throw new Error(`expected 200 for 500KB state, got ${resp.status}`);
       },
@@ -1704,8 +1705,9 @@ function allInlineTests(): ActorInlineTestDef[] {
       run: async (baseUrl) => {
         const id = `statelimit-over-${uid()}`;
         await deleteActor(baseUrl, "state-over-limit", id);
-        const mbData = "x".repeat(2 * 1024 * 1024);
-        const resp = await callActorFull(baseUrl, "state-over-limit", id, "setLargeState", { data: mbData });
+        const resp = await callActorFull(baseUrl, "state-over-limit", id, "setLargeState", {
+          bytes: 2 * 1024 * 1024,
+        });
         if (resp.status === 200 && (resp.body?.result?.error ?? "").includes("StateLimitExceeded")) {
           return;
         }
@@ -3496,8 +3498,9 @@ function stateLimitAtLimitTest(): ActorInlineTestDef {
     run: async (baseUrl) => {
       const id = `statelimit-at-${uid()}`;
       await deleteActor(baseUrl, "state-at-limit", id);
-      const exactData = "x".repeat(1024 * 1024 - 64);
-      const resp = await callActorFull(baseUrl, "state-at-limit", id, "setLargeState", { data: exactData });
+      const resp = await callActorFull(baseUrl, "state-at-limit", id, "setLargeState", {
+        bytes: 1024 * 1024 - 64,
+      });
       if (resp.status !== 200)
         throw new Error(`expected 200 for state at limit, got ${resp.status}`);
     },
