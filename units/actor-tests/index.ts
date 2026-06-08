@@ -188,35 +188,28 @@ type CheckDef =
 // HTTP helpers
 // ---------------------------------------------------------------------------
 
-let currentFetchSignal: AbortSignal | undefined;
-
-function fetchInit(init: RequestInit = {}): RequestInit {
-  if (!currentFetchSignal) return init;
-  return { ...init, signal: currentFetchSignal };
-}
-
 async function httpPost(url: string, body?: any): Promise<any> {
-  const resp = await fetch(url, fetchInit({
+  const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : "{}",
-  }));
+  });
   const text = await resp.text();
   try { return JSON.parse(text); } catch { return text; }
 }
 
 async function httpGet(url: string): Promise<any> {
-  const resp = await fetch(url, fetchInit());
+  const resp = await fetch(url);
   const text = await resp.text();
   try { return JSON.parse(text); } catch { return text; }
 }
 
 async function httpPostFull(url: string, body?: any): Promise<{ status: number; body: any }> {
-  const resp = await fetch(url, fetchInit({
+  const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : "{}",
-  }));
+  });
   const text = await resp.text();
   let parsed: any;
   try { parsed = JSON.parse(text); } catch { parsed = text; }
@@ -224,7 +217,7 @@ async function httpPostFull(url: string, body?: any): Promise<{ status: number; 
 }
 
 async function httpGetFull(url: string): Promise<{ status: number; body: any }> {
-  const resp = await fetch(url, fetchInit());
+  const resp = await fetch(url);
   const text = await resp.text();
   let parsed: any;
   try { parsed = JSON.parse(text); } catch { parsed = text; }
@@ -232,7 +225,7 @@ async function httpGetFull(url: string): Promise<{ status: number; body: any }> 
 }
 
 async function httpDeleteFull(url: string): Promise<{ status: number; body: any }> {
-  const resp = await fetch(url, fetchInit({ method: "DELETE" }));
+  const resp = await fetch(url, { method: "DELETE" });
   const text = await resp.text();
   let parsed: any;
   try { parsed = JSON.parse(text); } catch { parsed = text; }
@@ -637,21 +630,17 @@ function actorTestTimeoutMs(category: string): number {
   return base;
 }
 
-async function runUnderTestTimeout<T>(timeoutMs: number, fn: () => Promise<T>): Promise<T> {
-  const ac = new AbortController();
-  const prev = currentFetchSignal;
-  currentFetchSignal = ac.signal;
-  const timer = setTimeout(() => ac.abort(), timeoutMs);
+async function runWithTimeout<T>(timeoutMs: number, fn: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await fn();
-  } catch (e) {
-    if (ac.signal.aborted || (e instanceof Error && e.name === "AbortError")) {
-      throw new Error(`timeout after ${timeoutMs}ms`);
-    }
-    throw e;
+    return await Promise.race([
+      fn(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timeout after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
   } finally {
-    clearTimeout(timer);
-    currentFetchSignal = prev;
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 
@@ -3300,11 +3289,11 @@ function allEndpointTests(): ActorInlineTestDef[] {
         const innerLen = maxBody - 10 + 2048;
         const largeBody = "x".repeat(innerLen);
         const url = `${actorUrl(baseUrl, "state-init", id, "getState")}?await=true`;
-        const resp = await fetch(url, fetchInit({
+        const resp = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ data: largeBody }),
-        }));
+        });
         if (resp.status !== 413)
           throw new Error(`expected 413 for oversized payload, got ${resp.status}`);
       },
@@ -3516,21 +3505,18 @@ function buildReport(results: TestResult[]) {
 }
 
 // ---------------------------------------------------------------------------
-// Suite runner (Node via run-suite.mjs — QuickJS cannot time out in-process fetch)
+// Handler
 // ---------------------------------------------------------------------------
 
-type ActorTestJob =
-  | { kind: "actor"; test: ActorTestDef }
-  | { kind: "inline"; test: ActorInlineTestDef };
-
-export type ActorTestSuiteReport = ReturnType<typeof buildReport>;
-
-export async function runActorTestSuite(
-  baseUrl: string,
-): Promise<{ report: ActorTestSuiteReport; timedOut: string[] }> {
+export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
+  const baseUrl = getBaseUrl(req);
   const suiteStartedAt = Date.now();
 
-  const jobs: ActorTestJob[] = [
+  type Job =
+    | { kind: "actor"; test: ActorTestDef }
+    | { kind: "inline"; test: ActorInlineTestDef };
+
+  const jobs: Job[] = [
     ...allActorTests().map((test) => ({ kind: "actor" as const, test })),
     ...[...allInlineTests(), stateLimitAtLimitTest()].map((test) => ({ kind: "inline" as const, test })),
     ...allEndpointTests().map((test) => ({ kind: "inline" as const, test })),
@@ -3550,7 +3536,7 @@ export async function runActorTestSuite(
     );
   }, ACTOR_TEST_HEARTBEAT_MS);
 
-  const runJob = async (job: ActorTestJob, index: number, batchSize: number, batchName: string) => {
+  const runJob = async (job: Job, index: number, batchSize: number, batchName: string) => {
     const label = jobLabel(job);
     const tag = `${batchName} [${index + 1}/${batchSize}]`;
     const timeoutMs = actorTestTimeoutMs(job.test.category);
@@ -3558,7 +3544,7 @@ export async function runActorTestSuite(
     inFlight.add(label);
     const t0 = Date.now();
     try {
-      const result = await runUnderTestTimeout(timeoutMs, () =>
+      const result = await runWithTimeout(timeoutMs, () =>
         job.kind === "actor" ? runActorTest(baseUrl, job.test) : runInlineTest(baseUrl, job.test),
       );
       console.log(`  actor: DONE ${tag} ${label} (${Date.now() - t0}ms)`);
@@ -3601,26 +3587,19 @@ export async function runActorTestSuite(
       console.log(`  actor: timed out (${timedOut.length}): ${timedOut.join(" | ")}`);
     }
 
-    return { report: buildReport(results), timedOut };
+    const report = buildReport(results);
+    const body = JSON.stringify(report, null, 2);
+    const status = report.summary.healthy ? 200 : 503;
+
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(body);
+
+    if (timedOut.length > 0) {
+      throw new Error(
+        `actor test suite: ${timedOut.length} test(s) timed out:\n${timedOut.map((t) => `  - ${t}`).join("\n")}`,
+      );
+    }
   } finally {
     clearInterval(heartbeat);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// HTTP handler (optional — CI uses run-suite.mjs in Node instead)
-// ---------------------------------------------------------------------------
-
-export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
-  const baseUrl = getBaseUrl(req);
-  const { report, timedOut } = await runActorTestSuite(baseUrl);
-  const body = JSON.stringify(report, null, 2);
-  const status = report.summary.healthy ? 200 : 503;
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(body);
-  if (timedOut.length > 0) {
-    throw new Error(
-      `actor test suite: ${timedOut.length} test(s) timed out:\n${timedOut.map((t) => `  - ${t}`).join("\n")}`,
-    );
   }
 }

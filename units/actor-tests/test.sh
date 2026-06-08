@@ -4,8 +4,8 @@
 #
 # Builds the TypeScript actor units + test runner (including in-tree
 # seed-workflows / seed-queue-workers copies for homonymous-path isolation),
-# starts the **real** application server in TEST_MODE, seeds actor units,
-# runs the suite from Node (run-suite.mjs), then WebSocket tests.
+# starts the **real** application server in TEST_MODE, seeds units + API
+# runner, hits the trigger URL, and prints the report.
 #
 # Requires:
 #   - docker compose up -d   (Redis, NATS, Postgres, Actor Redis, Actor NATS, Actor PG)
@@ -38,6 +38,9 @@ if [[ "$NODE_VERSION" != v22.* ]]; then
   echo "       Switch with: nvm use 22"
   exit 1
 fi
+
+TEST_PROJECT_ID="00000000-aaaa-bbbb-cccc-000000000010"
+TEST_RUNNER_URL="http://127.0.0.1:${PORT}/api/v1/trigger/${TEST_PROJECT_ID}/test/actor-tests/index"
 
 SERVER_PID=""
 CLEANED_UP=0
@@ -91,6 +94,7 @@ DATABASE_POOL_SIZE="${TEST_DATABASE_POOL_SIZE:-20}" \
 ACTOR_DATABASE_POOL_SIZE="${TEST_ACTOR_DATABASE_POOL_SIZE:-20}" \
 ACTOR_TEST_RUNNER_CONCURRENCY="${ACTOR_TEST_RUNNER_CONCURRENCY:-4}" \
 ACTOR_IDLE_SWEEP_SECS=1 \
+TEST_UNIT_FILES="actor-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_ACTOR_DIR="$SCRIPT_DIR/dist" \
 TEST_WORKFLOW_DIR="$SCRIPT_DIR/dist/seed-workflows" \
 TEST_QUEUE_WORKER_DIR="$SCRIPT_DIR/dist/seed-queue-workers" \
@@ -111,15 +115,34 @@ if ! kill -0 "$SERVER_PID" 2>/dev/null; then
 fi
 echo "    server ready (pid $SERVER_PID)"
 
+echo ""
+echo "  TEST RUNNER URL: $TEST_RUNNER_URL"
+echo ""
+
 # ------------------------------------------------------------------
-# 3–4. Node actor suite, then WebSocket tests (sequential — WS load
+# 3–4. QuickJS actor suite, then WebSocket tests (sequential — WS load
 #     starves the alarm sweeper and causes false alarm-loss failures)
 # ------------------------------------------------------------------
-echo "==> Running actor suite via Node (suite cap ${TEST_TIMEOUT}s, per-test ${ACTOR_TEST_TIMEOUT_MS:-120000}ms)…"
+echo "==> Running actor trigger (curl max ${TEST_TIMEOUT}s, per-test timeout ${ACTOR_TEST_TIMEOUT_MS:-120000}ms)…"
 ACTOR_OUTPUT="$SCRIPT_DIR/.actor-output.tmp.json"
 WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
-if ! node "$SCRIPT_DIR/run-suite.mjs" "http://127.0.0.1:${PORT}" "$ACTOR_OUTPUT"; then
-  echo "ERROR: actor suite failed" >&2
+if ! curl -sf --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" >"$ACTOR_OUTPUT"; then
+  echo "ERROR: actor trigger failed (HTTP error, curl timeout, or connection error)" >&2
+  exit 1
+fi
+if ! node -e "
+const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));
+if (r.summary?.healthy === true) process.exit(0);
+const fails = [];
+for (const sec of Object.values(r.sections ?? {})) {
+  for (const t of sec.tests ?? []) {
+    if (!t.pass) fails.push((t.error ?? t.detail ?? t.name) + ' [' + t.name + ']');
+  }
+}
+console.error('ERROR: actor tests unhealthy (' + (r.summary?.total_failed ?? '?') + ' failed)');
+for (const f of fails) console.error('  ' + f);
+process.exit(1);
+" "$ACTOR_OUTPUT"; then
   exit 1
 fi
 echo "==> Running WebSocket tests…"
@@ -132,7 +155,7 @@ fi
 # 5. Merge parallel job reports → .output.log
 # ------------------------------------------------------------------
 echo "==> Merging reports…"
-echo "    (actor suite)     $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$ACTOR_OUTPUT" | tr -d '\n')"
+echo "    (trigger/QuickJS) $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$ACTOR_OUTPUT" | tr -d '\n')"
 echo "    (WebSocket)       $(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$WS_OUTPUT" | tr -d '\n')"
 node "$PROJECT_ROOT/units/merge-test-reports.mjs" "$ACTOR_OUTPUT" "$WS_OUTPUT" "$OUTPUT_FILE"
 rm -f "$ACTOR_OUTPUT" "$WS_OUTPUT"
@@ -142,4 +165,4 @@ echo "    $OUTPUT_FILE"
 echo ""
 
 SUMMARY=$(node "$PROJECT_ROOT/units/report-summary-line.mjs" "$OUTPUT_FILE" | tr -d '\n')
-echo "==> Combined: ${SUMMARY} [actor suite + WebSocket]"
+echo "==> Combined: ${SUMMARY} [trigger + WebSocket]"
