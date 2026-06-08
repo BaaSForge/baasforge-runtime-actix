@@ -2,6 +2,8 @@
 
 /target-local
 
+/*.rlib
+
 .DS_Store
 
 .env.local
