@@ -1,0 +1,54 @@
+name: Copy repo file override
+description: Copy a repo file to the integration test host for docker bind-mount into the image
+
+outputs:
+  host_file_path:
+    description: Copied file path on the integration test host
+    value: ${{ steps.paths.outputs.host_file_path }}
+  container_file_path:
+    description: Target bind-mount path inside the test container
+    value: ${{ steps.paths.outputs.container_file_path }}
+
+inputs:
+  repo_file_path:
+    description: Path relative to repo root (e.g. units/actor-tests/index.ts)
+    required: true
+  run_id:
+    description: GitHub Actions run id (isolates override files per workflow run)
+    required: true
+  host:
+    required: true
+  username:
+    required: true
+  ssh_key:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve override paths
+      id: paths
+      shell: bash
+      run: |
+        lib="${{ github.workspace }}/.github/scripts/repo-file-override.sh"
+        chmod +x "$lib"
+        echo "override_host_dir=$("$lib" override-host-dir "${{ inputs.run_id }}")" >> "$GITHUB_OUTPUT"
+        echo "host_file_path=$("$lib" host-file-path "${{ inputs.run_id }}" "${{ inputs.repo_file_path }}")" >> "$GITHUB_OUTPUT"
+        echo "container_file_path=$("$lib" container-file-path "${{ inputs.repo_file_path }}")" >> "$GITHUB_OUTPUT"
+
+    - name: Create host override directory
+      uses: appleboy/ssh-action@v1.2.2
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.ssh_key }}
+        script: mkdir -p "${{ steps.paths.outputs.override_host_dir }}"
+
+    - name: Copy repo file to host
+      uses: appleboy/scp-action@v1.0.0
+      with:
+        host: ${{ inputs.host }}
+        username: ${{ inputs.username }}
+        key: ${{ inputs.ssh_key }}
+        source: ${{ inputs.repo_file_path }}
+        target: ${{ steps.paths.outputs.override_host_dir }}/

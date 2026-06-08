@@ -22,11 +22,12 @@ concurrency:
 
 env:
   # TEMP: fast test debugging — clear PINNED_APP_TAG and re-enable flags for full deploy.
-  PINNED_APP_TAG: "v0.0.1-prod.8"
+  PINNED_APP_TAG: "v0.0.2-prod.9"
   RUN_BUILD: "false"
   BUILD_WORKERS: "false"
   RUN_MIGRATE: "false"
   RUN_DEPLOY: "false"
+  OVERRIDE_REPO_FILE_IN_CONTAINER: "true"
   DEPLOY_SECRET_VARS: >-
     ACTOR_DATABASE_URL DATABASE_URL REDIS_URL NATS_URL
     WF_REDIS_URL WF_NATS_URL WQ_REDIS_URL WQ_NATS_URL
@@ -45,6 +46,7 @@ jobs:
       run_build: ${{ steps.flags.outputs.run_build }}
       run_migrate: ${{ steps.flags.outputs.run_migrate }}
       run_deploy: ${{ steps.flags.outputs.run_deploy }}
+      override_repo_file_in_container: ${{ steps.flags.outputs.override_repo_file_in_container }}
     steps:
       - name: Resolve workflow flags
         id: flags
@@ -52,6 +54,7 @@ jobs:
           echo "run_build=${RUN_BUILD}" >> "$GITHUB_OUTPUT"
           echo "run_migrate=${RUN_MIGRATE}" >> "$GITHUB_OUTPUT"
           echo "run_deploy=${RUN_DEPLOY}" >> "$GITHUB_OUTPUT"
+          echo "override_repo_file_in_container=${OVERRIDE_REPO_FILE_IN_CONTAINER}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve environment
         id: meta
@@ -252,21 +255,27 @@ jobs:
         include:
           - suite: common-tests
             test_script: ./units/common/test.sh
+            repo_file_path: units/common/index.ts
             ssh_timeout: 15m
           - suite: actor-tests
             test_script: ./units/actor-tests/test.sh
+            repo_file_path: units/actor-tests/index.ts
             ssh_timeout: 45m
           - suite: workflow-tests
             test_script: ./units/workflow-tests/test.sh
+            repo_file_path: units/workflow-tests/index.ts
             ssh_timeout: 20m
           - suite: queue-worker-tests
             test_script: ./units/queue-worker-tests/test.sh
+            repo_file_path: units/queue-worker-tests/index.ts
             ssh_timeout: 15m
           - suite: api-tests
             test_script: ./units/api-tests/test.sh
+            repo_file_path: units/api-tests/index.ts
             ssh_timeout: 15m
           - suite: runtime-check-tests
             test_script: ./units/runtime-check/test.sh
+            repo_file_path: units/runtime-check/index.ts
             ssh_timeout: 10m
     env:
       ACTOR_DATABASE_URL: ${{ secrets.ACTOR_DATABASE_URL }}
@@ -281,6 +290,21 @@ jobs:
       ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
     steps:
+      - name: Checkout repo for file override
+        if: ${{ needs.resolve-meta.outputs.override_repo_file_in_container == 'true' }}
+        uses: actions/checkout@v4
+
+      - name: Copy repo file override to test host
+        id: repo_file_override
+        if: ${{ needs.resolve-meta.outputs.override_repo_file_in_container == 'true' }}
+        uses: ./.github/actions/copy-repo-file-override
+        with:
+          repo_file_path: ${{ matrix.repo_file_path }}
+          run_id: ${{ github.run_id }}
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          ssh_key: ${{ secrets.SSH_PRIVATE_KEY }}
+
       - name: Run integration test suite
         uses: appleboy/ssh-action@v1.2.2
         env:
@@ -288,6 +312,9 @@ jobs:
           TEST_SCRIPT: ${{ matrix.test_script }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OVERRIDE_REPO_FILE_IN_CONTAINER: ${{ needs.resolve-meta.outputs.override_repo_file_in_container }}
+          OVERRIDE_HOST_FILE_PATH: ${{ steps.repo_file_override.outputs.host_file_path }}
+          OVERRIDE_CONTAINER_FILE_PATH: ${{ steps.repo_file_override.outputs.container_file_path }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
@@ -295,6 +322,7 @@ jobs:
           command_timeout: ${{ matrix.ssh_timeout }}
           envs: >-
             IMAGE,TEST_SCRIPT,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
+            OVERRIDE_REPO_FILE_IN_CONTAINER,OVERRIDE_HOST_FILE_PATH,OVERRIDE_CONTAINER_FILE_PATH,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
             ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
@@ -306,7 +334,22 @@ jobs:
 
             docker_env=()
             for v in $DEPLOY_SECRET_VARS; do docker_env+=(-e "$v"); done
-            docker run --rm --network host "${docker_env[@]}" "$IMAGE" sh -ec "
+
+            mount_args=()
+            if [ "${OVERRIDE_REPO_FILE_IN_CONTAINER:-false}" = "true" ]; then
+              if [ -z "${OVERRIDE_HOST_FILE_PATH:-}" ] || [ -z "${OVERRIDE_CONTAINER_FILE_PATH:-}" ]; then
+                echo "Repo file override enabled but paths are missing"
+                exit 1
+              fi
+              if [ ! -f "$OVERRIDE_HOST_FILE_PATH" ]; then
+                echo "Repo file override enabled but file missing: $OVERRIDE_HOST_FILE_PATH"
+                exit 1
+              fi
+              mount_args+=(-v "${OVERRIDE_HOST_FILE_PATH}:${OVERRIDE_CONTAINER_FILE_PATH}:ro")
+              echo "Overriding ${OVERRIDE_CONTAINER_FILE_PATH} from repo (${OVERRIDE_HOST_FILE_PATH})"
+            fi
+
+            docker run --rm --network host "${mount_args[@]}" "${docker_env[@]}" "$IMAGE" sh -ec "
             $(for v in $DEPLOY_SECRET_VARS; do printf 'saved_%s=$%s\n' "$v" "$v"; done)
             set -a && . ./.env && set +a
             $(for v in $DEPLOY_SECRET_VARS; do printf 'export %s=$saved_%s\n' "$v" "$v"; done)
