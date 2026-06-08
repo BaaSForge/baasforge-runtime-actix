@@ -171,7 +171,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}-${{ needs.resolve-meta.outputs.app_env }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}-${{ needs.resolve-meta.outputs.app_env }}
 
-  migrate:
+  migrate-actors:
     if: ${{ needs.resolve-meta.outputs.run_migrate == 'true' }}
     needs: [resolve-meta, build-and-push]
     runs-on: ubuntu-latest
@@ -189,10 +189,11 @@ jobs:
       ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
     steps:
-      - name: Run actor database migrations
+      - name: Migrate actors database
         uses: appleboy/ssh-action@v1.2.2
         env:
           IMAGE: ${{ needs.resolve-meta.outputs.app_image }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -200,42 +201,47 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           envs: >-
-            IMAGE,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
+            IMAGE,GITHUB_RUN_ID,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
             ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
           script: |
             set -euo pipefail
 
-            if command -v systemctl >/dev/null 2>&1; then
-              systemctl enable docker
-              systemctl start docker
-            fi
-
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker pull "$IMAGE"
 
+            REVERT_MARKER="/tmp/baal-actor-migration-${GITHUB_RUN_ID}.revert-count"
             docker_env=()
             for v in $DEPLOY_SECRET_VARS; do docker_env+=(-e "$v"); done
             docker run --rm --network host "${docker_env[@]}" "$IMAGE" sh -ec "
             $(for v in $DEPLOY_SECRET_VARS; do printf 'saved_%s=$%s\n' "$v" "$v"; done)
             set -a && . ./.env && set +a
             $(for v in $DEPLOY_SECRET_VARS; do printf 'export %s=$saved_%s\n' "$v" "$v"; done)
+            count_applied() {
+              diesel migration list \
+                --config-file diesel-actors.toml \
+                --migration-dir migrations/actors \
+                --database-url \"\$ACTOR_DATABASE_URL\" | grep -c '^\[X\]' || true
+            }
+            before=\$(count_applied)
             diesel migration run \
               --config-file diesel-actors.toml \
               --migration-dir migrations/actors \
               --database-url \"\$ACTOR_DATABASE_URL\"
-            "
-            echo "Actor migrations complete"
+            after=\$(count_applied)
+            echo \$((after - before))
+            " > "$REVERT_MARKER"
+            echo "Actor migrations complete ($(cat "$REVERT_MARKER") applied, marker: $REVERT_MARKER)"
 
   integration-tests:
     name: ${{ matrix.suite }}
-    needs: [resolve-meta, build-and-push, migrate]
+    needs: [resolve-meta, build-and-push, migrate-actors]
     if: >-
       ${{
         !cancelled() &&
         (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
-        (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
+        (needs.migrate-actors.result == 'success' || needs.migrate-actors.result == 'skipped')
       }}
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-meta.outputs.environment }}
@@ -307,10 +313,10 @@ jobs:
         needs.resolve-meta.outputs.run_deploy == 'true' &&
         !cancelled() &&
         needs.build-and-push.result == 'success' &&
-        (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') &&
+        (needs.migrate-actors.result == 'success' || needs.migrate-actors.result == 'skipped') &&
         needs.integration-tests.result == 'success'
       }}
-    needs: [resolve-meta, build-and-push, migrate, integration-tests]
+    needs: [resolve-meta, build-and-push, migrate-actors, integration-tests]
     runs-on: ubuntu-latest
     environment: ${{ needs.resolve-meta.outputs.environment }}
     env:
@@ -406,3 +412,81 @@ jobs:
             fi
 
             echo "Running $CONTAINER_NAME with restart policy: $RESTART_POLICY"
+
+  rollback-actors-migration:
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-meta.outputs.run_migrate == 'true' &&
+        needs.migrate-actors.result == 'success' &&
+        (needs.integration-tests.result == 'failure' || needs.deploy.result == 'failure')
+      }}
+    needs: [resolve-meta, migrate-actors, integration-tests, deploy]
+    runs-on: ubuntu-latest
+    environment: ${{ needs.resolve-meta.outputs.environment }}
+    env:
+      ACTOR_DATABASE_URL: ${{ secrets.ACTOR_DATABASE_URL }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REDIS_URL: ${{ secrets.REDIS_URL }}
+      NATS_URL: ${{ secrets.NATS_URL }}
+      WF_REDIS_URL: ${{ secrets.WF_REDIS_URL }}
+      WF_NATS_URL: ${{ secrets.WF_NATS_URL }}
+      WQ_REDIS_URL: ${{ secrets.WQ_REDIS_URL }}
+      WQ_NATS_URL: ${{ secrets.WQ_NATS_URL }}
+      ACTOR_REDIS_URL: ${{ secrets.ACTOR_REDIS_URL }}
+      ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+    steps:
+      - name: Roll back actors database migrations
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          IMAGE: ${{ needs.resolve-meta.outputs.app_image }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: >-
+            IMAGE,GITHUB_RUN_ID,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
+            ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
+            WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
+            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
+          script: |
+            set -euo pipefail
+
+            REVERT_MARKER="/tmp/baal-actor-migration-${GITHUB_RUN_ID}.revert-count"
+            if [ ! -f "$REVERT_MARKER" ]; then
+              echo "No actor migration marker at $REVERT_MARKER; nothing to roll back."
+              exit 0
+            fi
+
+            revert_count="$(cat "$REVERT_MARKER")"
+            if [ "${revert_count:-0}" -le 0 ]; then
+              echo "No actor migrations were applied in this run; nothing to roll back."
+              rm -f "$REVERT_MARKER"
+              exit 0
+            fi
+
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+            docker pull "$IMAGE"
+
+            docker_env=()
+            for v in $DEPLOY_SECRET_VARS; do docker_env+=(-e "$v"); done
+            docker run --rm --network host "${docker_env[@]}" "$IMAGE" sh -ec "
+            $(for v in $DEPLOY_SECRET_VARS; do printf 'saved_%s=$%s\n' "$v" "$v"; done)
+            set -a && . ./.env && set +a
+            $(for v in $DEPLOY_SECRET_VARS; do printf 'export %s=$saved_%s\n' "$v" "$v"; done)
+            i=1
+            while [ \"\$i\" -le \"$revert_count\" ]; do
+              echo \"==> Reverting actor migration \$i/$revert_count\"
+              diesel migration revert \
+                --config-file diesel-actors.toml \
+                --migration-dir migrations/actors \
+                --database-url \"\$ACTOR_DATABASE_URL\"
+              i=\$((i + 1))
+            done
+            "
+            rm -f "$REVERT_MARKER"
+            echo "Rolled back $revert_count actor migration(s)"
