@@ -3377,19 +3377,21 @@ function allEndpointTests(): ActorInlineTestDef[] {
 // State-limits inline — "at-limit" test
 // ---------------------------------------------------------------------------
 
-function stateLimitAtLimitTest(): ActorInlineTestDef {
-  return {
-    name: "state-at-limit",
-    category: "state-limits",
-    run: async (baseUrl) => {
-      const id = `statelimit-at-${uid()}`;
-      await deleteActor(baseUrl, "state-at-limit", id);
-      const exactData = "x".repeat(1024 * 1024 - 64);
-      const resp = await callActorFull(baseUrl, "state-at-limit", id, "setLargeState", { data: exactData });
-      if (resp.status !== 200)
-        throw new Error(`expected 200 for state at limit, got ${resp.status}`);
+function stateLimitAtLimitTest(): ActorInlineTestDef[] {
+  return [
+    {
+      name: "state-at-limit",
+      category: "state-limits",
+      run: async (baseUrl) => {
+        const id = `statelimit-at-${uid()}`;
+        await deleteActor(baseUrl, "state-at-limit", id);
+        const exactData = "x".repeat(1024 * 1024 - 64);
+        const resp = await callActorFull(baseUrl, "state-at-limit", id, "setLargeState", { data: exactData });
+        if (resp.status !== 200)
+          throw new Error(`expected 200 for state at limit, got ${resp.status}`);
+      },
     },
-  };
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -3477,7 +3479,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
 
   const jobs: Job[] = [
     ...allActorTests().map((test) => ({ kind: "actor" as const, test })),
-    ...[...allInlineTests(), stateLimitAtLimitTest()].map((test) => ({ kind: "inline" as const, test })),
+    ...[...allInlineTests(), ...stateLimitAtLimitTest()].map((test) => ({ kind: "inline" as const, test })),
     ...allEndpointTests().map((test) => ({ kind: "inline" as const, test })),
   ].filter(
     (j) =>
