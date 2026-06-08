@@ -615,39 +615,6 @@ function actorTestRunnerConcurrency(): number {
   return Number.isFinite(n) && n >= 1 ? n : 16;
 }
 
-function actorTestCaseTimeoutMs(): number {
-  const raw = process.env["ACTOR_TEST_CASE_TIMEOUT_MS"];
-  if (raw === undefined || raw === "") return 60_000;
-  const n = Math.floor(Number(raw));
-  return Number.isFinite(n) && n >= 1 ? n : 60_000;
-}
-
-function testCaseTimeoutMsFor(test: { category: string }): number {
-  const base = actorTestCaseTimeoutMs();
-  if (test.category === "alarms") {
-    return Math.max(base, ALARM_EVENTUAL_TIMEOUT_MS + 15_000);
-  }
-  return base;
-}
-
-async function runWithTestCaseTimeout<T>(
-  label: string,
-  timeoutMs: number,
-  fn: () => Promise<T>,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      reject(new Error(`test case timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-  });
-  try {
-    return await Promise.race([fn(), timeoutPromise]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
 async function mapPool<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let cursor = 0;
@@ -3518,31 +3485,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
       RUN_ONLY.some((f) => f.name === j.test.name && f.category === j.test.category),
   );
 
-  const hangTarget = process.env["ACTOR_TEST_INJECT_HANG"]?.trim() ?? "";
-
-  const runJob = async (job: Job): Promise<TestResult> => {
+  const runJob = async (job: Job) => {
     const label = `${job.test.category}: ${job.test.name}`;
     console.log(`  actor: ${label} …`);
-    const started = Date.now();
-    try {
-      const timeoutMs = testCaseTimeoutMsFor(job.test);
-      const result = await runWithTestCaseTimeout(label, timeoutMs, async () => {
-        if (hangTarget !== "" && job.test.name === hangTarget) {
-          await sleep(120_000);
-        }
-        return job.kind === "actor"
-          ? runActorTest(baseUrl, job.test)
-          : runInlineTest(baseUrl, job.test);
-      });
-      const elapsed = Date.now() - started;
-      console.log(`  actor: ${label} ${result.pass ? "ok" : "FAIL"} (${elapsed}ms)`);
-      return result;
-    } catch (e) {
-      const elapsed = Date.now() - started;
-      const msg = e instanceof Error ? e.message : String(e);
-      console.log(`  actor: ${label} FAIL (${elapsed}ms): ${msg}`);
-      return fail(label, msg);
-    }
+    return job.kind === "actor" ? runActorTest(baseUrl, job.test) : runInlineTest(baseUrl, job.test);
   };
 
   const alarmJobs = jobs.filter((j) => j.kind === "inline" && j.test.category === "alarms");

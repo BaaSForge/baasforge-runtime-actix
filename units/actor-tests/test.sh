@@ -15,8 +15,6 @@
 #   ./units/actor-tests/test.sh
 #   TEST_PORT=4445 ./units/actor-tests/test.sh
 #   SKIP_BUILD=1 ./units/actor-tests/test.sh
-#   ACTOR_TEST_CASE_TIMEOUT_SEC=60   per-test case limit (default 60s, starts when each test begins)
-#   ACTOR_TEST_INJECT_HANG=state-init  debug: make one test sleep 120s to verify per-test timeout
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -26,9 +24,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/../test-server-lib.sh"
 PORT="${TEST_PORT:-3335}"
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
-ACTOR_TEST_CASE_TIMEOUT_SEC="${ACTOR_TEST_CASE_TIMEOUT_SEC:-60}"
-export ACTOR_TEST_CASE_TIMEOUT_MS=$((ACTOR_TEST_CASE_TIMEOUT_SEC * 1000))
-TEST_TIMEOUT="${TEST_TIMEOUT:-900}"
+TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
 TERMINAL_LOG="$SCRIPT_DIR/test.terminal.log"
 : > "$TERMINAL_LOG"
 exec > >(tee -a "$TERMINAL_LOG") 2>&1
@@ -91,15 +87,10 @@ fi
 free_listen_port "$PORT"
 echo "==> Starting server on port ${PORT} (TEST_MODE)…"
 
-if [[ -n "${ACTOR_TEST_INJECT_HANG:-}" ]]; then
-  export ACTOR_TEST_INJECT_HANG
-fi
-
 TEST_MODE=1 \
 APP_ENV=production \
 PORT="$PORT" \
 ACTOR_TEST_RUNNER_CONCURRENCY=8 \
-ACTOR_TEST_CASE_TIMEOUT_MS="$ACTOR_TEST_CASE_TIMEOUT_MS" \
 ACTOR_IDLE_SWEEP_SECS=1 \
 TEST_UNIT_FILES="actor-tests=$SCRIPT_DIR/dist/index.js" \
 TEST_ACTOR_DIR="$SCRIPT_DIR/dist" \
@@ -130,25 +121,11 @@ echo ""
 # 3–4. QuickJS actor suite, then WebSocket tests (sequential — WS load
 #     starves the alarm sweeper and causes false alarm-loss failures)
 # ------------------------------------------------------------------
-echo "==> Running actor trigger (per-test timeout ${ACTOR_TEST_CASE_TIMEOUT_SEC}s, curl max ${TEST_TIMEOUT}s)…"
+echo "==> Running actor trigger (timeout ${TEST_TIMEOUT}s)…"
 ACTOR_OUTPUT="$SCRIPT_DIR/.actor-output.tmp.json"
 WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
 if ! curl -s --max-time "$TEST_TIMEOUT" "$TEST_RUNNER_URL" >"$ACTOR_OUTPUT"; then
-  echo "ERROR: actor trigger failed or curl timed out after ${TEST_TIMEOUT}s" >&2
-  if [[ -s "$ACTOR_OUTPUT" ]]; then
-    echo "    partial response:" >&2
-    head -c 4000 "$ACTOR_OUTPUT" >&2 || true
-    echo "" >&2
-  fi
-  echo "    timed-out / in-progress tests (last lines from server log):" >&2
-  grep -E 'actor: .+ …$' "$TERMINAL_LOG" 2>/dev/null | while read -r line; do
-  label="${line#  actor: }"
-  label="${label% …}"
-  if ! grep -qF "actor: ${label} ok" "$TERMINAL_LOG" 2>/dev/null \
-    && ! grep -qF "actor: ${label} FAIL" "$TERMINAL_LOG" 2>/dev/null; then
-    echo "      - ${label}" >&2
-  fi
-  done
+  echo "ERROR: actor trigger failed" >&2
   exit 1
 fi
 echo "==> Running WebSocket tests…"
