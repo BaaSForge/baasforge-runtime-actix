@@ -5,10 +5,12 @@ on:
     tags:
       - "v*-prod.*"
       - "v*-stage.*"
+      - "v*-prod-test.*"
+      - "v*-stage-test.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to deploy (e.g. v0.0.1-prod.0)"
+        description: "Existing tag (e.g. v0.0.1-prod.0 or v0.0.1-stage-test.0)"
         required: true
         type: string
 
@@ -25,6 +27,7 @@ env:
   RUN_BUILD: "true"
   BUILD_WORKERS: "true"
   RUN_MIGRATE: "true"
+  RUN_TESTS: ""
   RUN_DEPLOY: "false"
   OVERRIDE_REPO_FILE_IN_CONTAINER: "false"
   DEPLOY_SECRET_VARS: >-
@@ -40,6 +43,7 @@ jobs:
       app_env: ${{ steps.meta.outputs.app_env }}
       environment: ${{ steps.meta.outputs.environment }}
       deploy_suffix: ${{ steps.meta.outputs.deploy_suffix }}
+      run_tests: ${{ steps.meta.outputs.run_tests }}
       app_image: ${{ steps.meta.outputs.app_image }}
       services: ${{ steps.meta.outputs.services }}
       run_build: ${{ steps.flags.outputs.run_build }}
@@ -65,17 +69,34 @@ jobs:
           else
             TAG="${GITHUB_REF#refs/tags/}"
           fi
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-prod\.[0-9]+$ ]]; then
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-prod-test\.[0-9]+$ ]]; then
             echo "environment=production" >> "$GITHUB_OUTPUT"
             echo "app_env=PROD" >> "$GITHUB_OUTPUT"
             echo "deploy_suffix=prod" >> "$GITHUB_OUTPUT"
+            TAG_RUN_TESTS=true
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-stage-test\.[0-9]+$ ]]; then
+            echo "environment=staging" >> "$GITHUB_OUTPUT"
+            echo "app_env=STAGE" >> "$GITHUB_OUTPUT"
+            echo "deploy_suffix=stage" >> "$GITHUB_OUTPUT"
+            TAG_RUN_TESTS=true
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-prod\.[0-9]+$ ]]; then
+            echo "environment=production" >> "$GITHUB_OUTPUT"
+            echo "app_env=PROD" >> "$GITHUB_OUTPUT"
+            echo "deploy_suffix=prod" >> "$GITHUB_OUTPUT"
+            TAG_RUN_TESTS=false
           elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-stage\.[0-9]+$ ]]; then
             echo "environment=staging" >> "$GITHUB_OUTPUT"
             echo "app_env=STAGE" >> "$GITHUB_OUTPUT"
             echo "deploy_suffix=stage" >> "$GITHUB_OUTPUT"
+            TAG_RUN_TESTS=false
           else
-            echo "Tag $TAG does not match a deploy pattern."
+            echo "Tag $TAG does not match a deploy or test pattern."
             exit 1
+          fi
+          if [ -n "${RUN_TESTS:-}" ]; then
+            echo "run_tests=${RUN_TESTS}" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_tests=${TAG_RUN_TESTS}" >> "$GITHUB_OUTPUT"
           fi
           IMAGE_BASE="ghcr.io/${GITHUB_REPOSITORY,,}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -241,6 +262,7 @@ jobs:
     needs: [resolve-meta, build-and-push, migrate-actors]
     if: >-
       ${{
+        needs.resolve-meta.outputs.run_tests == 'true' &&
         !cancelled() &&
         (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
         (needs.migrate-actors.result == 'success' || needs.migrate-actors.result == 'skipped')
@@ -363,7 +385,10 @@ jobs:
         !cancelled() &&
         needs.build-and-push.result == 'success' &&
         (needs.migrate-actors.result == 'success' || needs.migrate-actors.result == 'skipped') &&
-        needs.integration-tests.result == 'success'
+        (
+          needs.resolve-meta.outputs.run_tests != 'true' ||
+          needs.integration-tests.result == 'success'
+        )
       }}
     needs: [resolve-meta, build-and-push, migrate-actors, integration-tests]
     runs-on: ubuntu-latest
@@ -468,7 +493,10 @@ jobs:
         always() &&
         needs.resolve-meta.outputs.run_migrate == 'true' &&
         needs.migrate-actors.result == 'success' &&
-        (needs.integration-tests.result == 'failure' || needs.deploy.result == 'failure')
+        (
+          (needs.resolve-meta.outputs.run_tests == 'true' && needs.integration-tests.result == 'failure') ||
+          needs.deploy.result == 'failure'
+        )
       }}
     needs: [resolve-meta, migrate-actors, integration-tests, deploy]
     runs-on: ubuntu-latest
