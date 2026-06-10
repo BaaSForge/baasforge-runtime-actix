@@ -25,7 +25,8 @@ env:
   RUN_BUILD: "true"
   BUILD_WORKERS: "true"
   RUN_MIGRATE: "true"
-  RUN_DEPLOY: "false"
+  RUN_DEPLOY: "true"
+  RUN_TESTS: "false"
   OVERRIDE_REPO_FILE_IN_CONTAINER: "false"
   DEPLOY_SECRET_VARS: >-
     ACTOR_DATABASE_URL DATABASE_URL REDIS_URL NATS_URL
@@ -45,6 +46,7 @@ jobs:
       run_build: ${{ steps.flags.outputs.run_build }}
       run_migrate: ${{ steps.flags.outputs.run_migrate }}
       run_deploy: ${{ steps.flags.outputs.run_deploy }}
+      run_tests: ${{ steps.flags.outputs.run_tests }}
       override_repo_file_in_container: ${{ steps.flags.outputs.override_repo_file_in_container }}
     steps:
       - name: Resolve workflow flags
@@ -53,6 +55,7 @@ jobs:
           echo "run_build=${RUN_BUILD}" >> "$GITHUB_OUTPUT"
           echo "run_migrate=${RUN_MIGRATE}" >> "$GITHUB_OUTPUT"
           echo "run_deploy=${RUN_DEPLOY}" >> "$GITHUB_OUTPUT"
+          echo "run_tests=${RUN_TESTS}" >> "$GITHUB_OUTPUT"
           echo "override_repo_file_in_container=${OVERRIDE_REPO_FILE_IN_CONTAINER}" >> "$GITHUB_OUTPUT"
 
       - name: Resolve environment
@@ -346,6 +349,7 @@ jobs:
     needs: [resolve-meta, build-and-push, migrate-actors, deploy]
     if: >-
       ${{
+        needs.resolve-meta.outputs.run_tests == 'true' &&
         !cancelled() &&
         (needs.build-and-push.result == 'success' || needs.build-and-push.result == 'skipped') &&
         (needs.migrate-actors.result == 'success' || needs.migrate-actors.result == 'skipped') &&
@@ -468,7 +472,10 @@ jobs:
         always() &&
         needs.resolve-meta.outputs.run_migrate == 'true' &&
         needs.migrate-actors.result == 'success' &&
-        (needs.integration-tests.result == 'failure' || needs.deploy.result == 'failure')
+        (
+          (needs.resolve-meta.outputs.run_tests == 'true' && needs.integration-tests.result == 'failure') ||
+          needs.deploy.result == 'failure'
+        )
       }}
     needs: [resolve-meta, migrate-actors, deploy, integration-tests]
     runs-on: ubuntu-latest
