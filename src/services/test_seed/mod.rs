@@ -576,7 +576,7 @@ pub async fn clear_test_project_runtime_redis_cache(redis: &SharedRedisConn) -> 
     let Some(rc) = redis else {
         return Ok(());
     };
-    let mut conn = rc.lock().await;
+    let mut conn = rc.clone();
     for prefix in [
         format!("shared:units:{TEST_PROJECT_ID}:prod:"),
         format!("shared:units:{TEST_ALT_PROJECT_ID}:prod:"),
@@ -586,7 +586,7 @@ pub async fn clear_test_project_runtime_redis_cache(redis: &SharedRedisConn) -> 
         format!("shared:env:{TEST_ALT_PROJECT_ID}:"),
     ] {
         let pattern = format!("{prefix}*");
-        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut conn).await?;
         for key in keys {
             let _: () = conn.del(key).await?;
         }
@@ -594,14 +594,11 @@ pub async fn clear_test_project_runtime_redis_cache(redis: &SharedRedisConn) -> 
     Ok(())
 }
 
-pub async fn clear_test_workflow_redis(wf: &Option<SharedRedis>) -> Result<(), redis::RedisError> {
-    let Some(rc) = wf else {
-        return Ok(());
-    };
-    let mut conn = rc.lock().await;
+pub async fn clear_test_workflow_redis(wf: &SharedRedis) -> Result<(), redis::RedisError> {
+    let mut conn = wf.clone();
     for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
         let pattern = format!("wf:{pid}:*");
-        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut conn).await?;
         for key in keys {
             let _: () = conn.del(key).await?;
         }
@@ -609,14 +606,11 @@ pub async fn clear_test_workflow_redis(wf: &Option<SharedRedis>) -> Result<(), r
     Ok(())
 }
 
-pub async fn clear_test_queue_worker_redis(wq: &Option<SharedRedis>) -> Result<(), redis::RedisError> {
-    let Some(rc) = wq else {
-        return Ok(());
-    };
-    let mut conn = rc.lock().await;
+pub async fn clear_test_queue_worker_redis(wq: &SharedRedis) -> Result<(), redis::RedisError> {
+    let mut conn = wq.clone();
     for pid in [TEST_PROJECT_ID, TEST_ALT_PROJECT_ID] {
         let pattern = format!("wq:{pid}:*");
-        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut *conn).await?;
+        let keys: Vec<String> = redis::cmd("KEYS").arg(&pattern).query_async(&mut conn).await?;
         for key in keys {
             let _: () = conn.del(key).await?;
         }
@@ -638,11 +632,8 @@ fn test_mode_alarm_zset_member_is_seeded(m: &str) -> bool {
     }
 }
 
-pub async fn clear_test_actor_redis(actor: &Option<ActorRedis>) -> Result<(), redis::RedisError> {
-    let Some(rc) = actor else {
-        return Ok(());
-    };
-    let mut conn = rc.clone();
+pub async fn clear_test_actor_redis(actor: &ActorRedis) -> Result<(), redis::RedisError> {
+    let mut conn = actor.clone();
     for prefix in [
         format!("actor:p:{TEST_PROJECT_ID}:"),
         format!("actor:p:{TEST_ALT_PROJECT_ID}:"),
@@ -694,9 +685,9 @@ pub struct TestModeTeardown {
     pub settings: Settings,
     pub redis_conn: SharedRedisConn,
     pub actor_pg: Option<crate::models::actor_store::ActorPgPool>,
-    pub wf_redis: Option<SharedRedis>,
-    pub wq_redis: Option<SharedRedis>,
-    pub actor_redis: Option<ActorRedis>,
+    pub wf_redis: SharedRedis,
+    pub wq_redis: SharedRedis,
+    pub actor_redis: ActorRedis,
     pub wf_jetstream: Option<async_nats::jetstream::Context>,
     pub wq_jetstream: Option<async_nats::jetstream::Context>,
     pub actor_jetstream: Option<async_nats::jetstream::Context>,
@@ -746,9 +737,9 @@ pub async fn teardown_test_mode_persistence(
     settings: &Settings,
     redis_conn: &SharedRedisConn,
     actor_pg: &Option<crate::models::actor_store::ActorPgPool>,
-    wf_redis: &Option<SharedRedis>,
-    wq_redis: &Option<SharedRedis>,
-    actor_redis: &Option<ActorRedis>,
+    wf_redis: &SharedRedis,
+    wq_redis: &SharedRedis,
+    actor_redis: &ActorRedis,
     wf_jetstream: &Option<async_nats::jetstream::Context>,
     wq_jetstream: &Option<async_nats::jetstream::Context>,
     actor_jetstream: &Option<async_nats::jetstream::Context>,

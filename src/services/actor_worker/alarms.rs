@@ -114,10 +114,7 @@ pub async fn run_alarm_sweeper(comm: Arc<SdkCommCtx>) {
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        let actor_redis = match comm.actor_redis.clone() {
-            Some(r) => r,
-            None => continue,
-        };
+        let actor_redis = comm.actor_redis.clone();
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let due = pop_due_alarms(&actor_redis, now_ms).await;

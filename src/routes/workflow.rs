@@ -117,12 +117,6 @@ async fn attach_workflow_http_trigger_trace(
     .put_http_request(req);
 }
 
-fn require_wf_redis(ctx: &AppContext) -> Result<SharedRedis, HttpResponse> {
-    ctx.wf_redis.clone().ok_or_else(|| {
-        HttpResponse::ServiceUnavailable().json(api_error("workflow redis not available", json!({})))
-    })
-}
-
 // ---------------------------------------------------------------------------
 // Shared core logic
 // ---------------------------------------------------------------------------
@@ -135,10 +129,7 @@ async fn do_start_workflow(
     body: &[u8],
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
-    let wf_redis = match require_wf_redis(ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let wf_redis = ctx.wf_redis.clone();
 
     let input_json = String::from_utf8_lossy(body).into_owned();
     let instance_id = new_uuid().to_string();
@@ -155,7 +146,7 @@ async fn do_start_workflow(
     let comm = Arc::new(SdkCommCtx {
         pool: ctx.pool.clone(),
         redis_conn: ctx.redis_conn.clone(),
-        wf_redis: Some(wf_redis.clone()),
+        wf_redis: wf_redis.clone(),
         wf_nats: ctx.wf_nats_client.clone(),
         wf_js: ctx.wf_jetstream.clone(),
         wq_redis: ctx.wq_redis.clone(),
@@ -208,10 +199,7 @@ async fn do_call_handler(
     body: &[u8],
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
-    let wf_redis = match require_wf_redis(ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let wf_redis = ctx.wf_redis.clone();
 
     let handler_input = String::from_utf8_lossy(body).into_owned();
     let project_id_str = project_id.to_string();
@@ -227,7 +215,7 @@ async fn do_call_handler(
     let comm = Arc::new(SdkCommCtx {
         pool: ctx.pool.clone(),
         redis_conn: ctx.redis_conn.clone(),
-        wf_redis: Some(wf_redis.clone()),
+        wf_redis: wf_redis.clone(),
         wf_nats: ctx.wf_nats_client.clone(),
         wf_js: ctx.wf_jetstream.clone(),
         wq_redis: ctx.wq_redis.clone(),
@@ -279,10 +267,7 @@ async fn do_call_handler(
 }
 
 async fn do_get_status(ctx: &AppContext, project_id: Uuid, instance_id: &str) -> HttpResponse {
-    let wf_redis = match require_wf_redis(ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let wf_redis = ctx.wf_redis.clone();
 
     match workflow_engine::get_workflow_status(
         &wf_redis,
@@ -304,10 +289,7 @@ async fn do_get_status(ctx: &AppContext, project_id: Uuid, instance_id: &str) ->
 }
 
 async fn do_cancel(ctx: &AppContext, project_id: Uuid, instance_id: &str) -> HttpResponse {
-    let wf_redis = match require_wf_redis(ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let wf_redis = ctx.wf_redis.clone();
 
     match workflow_engine::cancel_workflow(
         &wf_redis,
@@ -328,10 +310,7 @@ async fn do_cancel(ctx: &AppContext, project_id: Uuid, instance_id: &str) -> Htt
 }
 
 async fn do_get_result(ctx: &AppContext, project_id: Uuid, instance_id: &str) -> HttpResponse {
-    let wf_redis = match require_wf_redis(ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let wf_redis = ctx.wf_redis.clone();
 
     let project_id_str = project_id.to_string();
 

@@ -74,10 +74,7 @@ pub async fn run_actor_with_lock(
         kind = ?input.kind,
         stage = comm.stage_runtime_id.is_some()
     );
-    let actor_redis = comm
-        .actor_redis
-        .clone()
-        .ok_or_else(|| "actor_redis not configured".to_string())?;
+    let actor_redis = comm.actor_redis.clone();
 
     let lock_key = (
         input.project_id.clone(),

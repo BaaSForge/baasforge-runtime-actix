@@ -5,7 +5,6 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
@@ -14,7 +13,7 @@ use crate::libs::unit_js::workflow_runner::{
     run_workflow_handler, WorkflowExecutionContext, WorkflowExecutionResult,
 };
 
-pub type SharedRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
+pub type SharedRedis = crate::database::RedisConn;
 
 fn redis_key(project_id: &str, instance_id: &str, suffix: &str) -> String {
     format!("wf:{project_id}:{instance_id}:{suffix}")
@@ -105,12 +104,12 @@ pub async fn prepare_workflow_instance_for_start(
     );
     let name_key = workflow_dedup_name_key(project_id, unit_path, comm.stage_runtime_id);
     {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         let claimed: bool = redis::cmd("SET")
             .arg(&name_key)
             .arg(instance_id)
             .arg("NX")
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -126,7 +125,7 @@ pub async fn prepare_workflow_instance_for_start(
                             let lock_key = format!("wf:{project_id}:{eid}:exec_lock");
                             let lock_exists: bool = redis::cmd("EXISTS")
                                 .arg(&lock_key)
-                                .query_async(&mut *conn)
+                                .query_async(&mut conn)
                                 .await
                                 .unwrap_or(false);
                             if lock_exists && workflow_start_inputs_equivalent(&meta.input, input_json) {
@@ -156,7 +155,7 @@ pub async fn prepare_workflow_instance_for_start(
     let meta_json = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
 
     {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         let _: () = conn.set(&meta_key, &meta_json).await.map_err(|e| e.to_string())?;
     }
 
@@ -208,7 +207,7 @@ pub async fn resume_workflow(
 ) -> Result<(), String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
     let old_meta = {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         match transition_status(&mut conn, &meta_key, &["suspended", "running"], "running").await? {
             StatusTransition::Done(meta) => meta,
             _ => return Ok(()),
@@ -234,7 +233,7 @@ pub async fn call_handler(
     crate::rt_enter!("wf.call_handler", project_id, instance_id, handler_name);
     {
         let meta_key = redis_key(project_id, instance_id, "meta");
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         let meta: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
         if meta.is_none() {
             return Err("workflow instance not found".to_string());
@@ -268,7 +267,7 @@ pub async fn cancel_workflow(
     instance_id: &str,
 ) -> Result<(), String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     match transition_status(&mut conn, &meta_key, &["running", "suspended"], "cancelled").await? {
         StatusTransition::NotFound => Err("workflow instance not found".to_string()),
         StatusTransition::Rejected { current } => Err(format!("workflow already {current}")),
@@ -286,7 +285,7 @@ pub async fn get_workflow_status(
     let result_key = redis_key(project_id, instance_id, "result");
     let suspended_key = redis_key(project_id, instance_id, "suspended");
 
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let meta_json: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
     let result_json: Option<String> = conn.get(&result_key).await.map_err(|e| e.to_string())?;
     let suspended_json: Option<String> = conn.get(&suspended_key).await.map_err(|e| e.to_string())?;
@@ -326,7 +325,7 @@ pub async fn get_workflow_result(
 ) -> Result<Option<String>, String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
     let result_key = redis_key(project_id, instance_id, "result");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let meta: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
     if meta.is_none() {
         return Err("workflow instance not found".to_string());
@@ -352,12 +351,12 @@ pub async fn resolve_promise(
     .to_string();
 
     let set_ok: bool = {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         redis::cmd("SET")
             .arg(&rkey)
             .arg(&value)
             .arg("NX")
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| e.to_string())?
     };
@@ -498,12 +497,12 @@ pub(crate) async fn reject_caller_promise(
     let value = serde_json::json!({ "status": "rejected", "error": error }).to_string();
 
     let set_ok: bool = {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         match redis::cmd("SET")
             .arg(&rkey)
             .arg(&value)
             .arg("NX")
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
         {
             Ok(v) => v,
@@ -560,7 +559,7 @@ enum StatusTransition {
 }
 
 async fn transition_status(
-    conn: &mut redis::aio::MultiplexedConnection,
+    conn: &mut crate::database::RedisConn,
     meta_key: &str,
     allowed_from: &[&str],
     new_status: &str,
@@ -595,7 +594,7 @@ async fn load_execution_context(
     project_id: &str,
     instance_id: &str,
 ) -> Result<(HashMap<String, String>, HashMap<String, String>, HashMap<String, String>), String> {
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let prefix = format!("wf:{project_id}:{instance_id}:");
 
     // SCAN for all keys with the instance prefix
@@ -606,7 +605,7 @@ async fn load_execution_context(
 
     let keys: Vec<String> = redis::cmd("KEYS")
         .arg(&pattern)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .map_err(|e| format!("redis KEYS failed: {e}"))?;
 
@@ -646,7 +645,7 @@ pub async fn launch_callee_workflow(
 ) -> Result<(), String> {
     let meta_key = redis_key(project_id, instance_id, "meta");
     let meta_json: String = {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         conn.get(&meta_key).await.map_err(|e| e.to_string())?
     };
     let mut meta: WorkflowMeta = serde_json::from_str(&meta_json)
@@ -660,7 +659,7 @@ pub async fn launch_callee_workflow(
     let updated_meta = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
     let name_key = workflow_dedup_name_key(project_id, unit_path, meta.stage_runtime_id);
     {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         let _: () = conn.set(&meta_key, &updated_meta).await.map_err(|e| e.to_string())?;
         let _: () = conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
     }
@@ -808,7 +807,7 @@ async fn drive_workflow_on_runtime(
         WorkflowExecutionResult::Completed(value) => {
             let result_key = redis_key(&pid, &iid, "result");
             let meta_key = redis_key(&pid, &iid, "meta");
-            let mut conn = redis.lock().await;
+            let mut conn = redis.clone();
 
             let (unit_path, caller_iid, caller_promise) =
                 match transition_status(&mut conn, &meta_key, &["running"], "completed").await? {
@@ -862,7 +861,7 @@ async fn drive_workflow_on_runtime(
                 let retry_policy = config.get("retryPolicy").cloned().unwrap_or(serde_json::json!({}));
                 let max_attempts = retry_policy.get("maxAttempts").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
 
-                let mut conn = redis.lock().await;
+                let mut conn = redis.clone();
                 let retry_state: Option<String> = conn.get(&retry_key).await.map_err(|e| e.to_string())?;
                 let attempt = retry_state
                     .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
@@ -974,7 +973,7 @@ async fn drive_workflow_on_runtime(
             })
             .to_string();
 
-            let mut conn = redis.lock().await;
+            let mut conn = redis.clone();
             let _: () = conn
                 .set(&suspended_key, &suspended_val)
                 .await
@@ -1059,7 +1058,7 @@ async fn drive_workflow_on_runtime(
         WorkflowExecutionResult::Failed(error) => {
             let meta_key = redis_key(&pid, &iid, "meta");
             let result_key = redis_key(&pid, &iid, "result");
-            let mut conn = redis.lock().await;
+            let mut conn = redis.clone();
 
             let (unit_path, caller_iid, caller_promise) =
                 match transition_status(&mut conn, &meta_key, &["running"], "failed").await? {

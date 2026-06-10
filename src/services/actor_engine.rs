@@ -3,7 +3,7 @@ use redis::AsyncCommands;
 use serde_json::Value;
 use uuid::Uuid;
 
-pub type ActorRedis = redis::aio::MultiplexedConnection;
+pub type ActorRedis = crate::database::RedisConn;
 
 pub const ACTOR_NATS_STREAM: &str = "ACTOR_MAIL";
 pub const ACTOR_NATS_STREAM_SUBJECTS: &[&str] = &["actor.*.*.*.*.msg"];

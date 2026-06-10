@@ -46,28 +46,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         settings.database_pool_idle_timeout_secs,
     );
 
-    let wf_redis: Option<Arc<Mutex<redis::aio::MultiplexedConnection>>> =
-        if let Some(url) = &settings.wf_redis_url {
-            match redis::Client::open(url.as_str()) {
-                Ok(client) => match client.get_multiplexed_async_connection().await {
-                    Ok(conn) => {
-                        info!("[wf_redis] workflow Redis connected");
-                        Some(Arc::new(Mutex::new(conn)))
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "[wf_redis] connection failed, workflow wake disabled");
-                        None
-                    }
-                },
-                Err(e) => {
-                    warn!(error = %e, "[wf_redis] client open failed");
-                    None
-                }
-            }
-        } else {
-            info!("[wf_redis] WF_REDIS_URL not set, workflow wake disabled");
-            None
-        };
+    let wf_redis = crate::database::connect_redis(&settings.wf_redis_url).await?;
+    info!("[wf_redis] workflow Redis connected");
 
     let nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
         match crate::configs::connect_nats(url).await {
@@ -87,27 +67,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let actor_locks: SdkActorLocks = Arc::new(Mutex::new(HashMap::new()));
 
-    let actor_redis: Option<ActorRedis> = if let Some(url) = &settings.actor_redis_url {
-        match redis::Client::open(url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    info!("[actor_redis] connected for workflow wake (sdk.callActor*)");
-                    Some(conn)
-                }
-                Err(e) => {
-                    warn!(error = %e, "[actor_redis] connection failed");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!(error = %e, "[actor_redis] client open failed");
-                None
-            }
-        }
-    } else {
-        info!("[actor_redis] ACTOR_REDIS_URL unset; sdk.callActor* disabled in workflow wake");
-        None
-    };
+    let actor_redis = crate::database::connect_redis(&settings.actor_redis_url).await?;
+    info!("[actor_redis] actor Redis connected");
 
     let actor_nats: Option<async_nats::Client> = if let Some(url) = settings.actor_nats_url.as_deref() {
         match crate::configs::connect_nats(url).await {
@@ -138,27 +99,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     });
 
-    let wq_redis: Option<SharedRedis> = if let Some(url) = &settings.wq_redis_url {
-        match redis::Client::open(url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    info!("[wq_redis] connected for workflow wake (sdk.enqueueWorker*)");
-                    Some(Arc::new(Mutex::new(conn)))
-                }
-                Err(e) => {
-                    warn!(error = %e, "[wq_redis] connection failed");
-                    None
-                }
-            },
-            Err(e) => {
-                warn!(error = %e, "[wq_redis] client open failed");
-                None
-            }
-        }
-    } else {
-        info!("[wq_redis] WQ_REDIS_URL unset; sdk.enqueueWorker* disabled in workflow wake");
-        None
-    };
+    let wq_redis = crate::database::connect_redis(&settings.wq_redis_url).await?;
+    info!("[wq_redis] queue worker Redis connected");
 
     let wq_nats: Option<async_nats::Client> = if let Some(url) = settings.wq_nats_url.as_deref() {
         match crate::configs::connect_nats(url).await {
@@ -180,8 +122,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .as_ref()
         .map(|nc| jetstream::new(nc.clone()));
 
-    // If both wf_redis and nats are available, start the workflow wake consumer
-    if let (Some(wf_redis), Some(nats)) = (&wf_redis, &nats_client) {
+    if let Some(nats) = &nats_client {
         let wf_redis = wf_redis.clone();
         let nats = nats.clone();
         let pool = pool.clone();
@@ -241,18 +182,18 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 
 pub async fn run_wake_consumer(
-    wf_redis: Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    wf_redis: SharedRedis,
     nats: async_nats::Client,
     pool: crate::database::DbPool,
     redis_conn: crate::database::SharedRedisConn,
     stream_name: &str,
     consumer_name: &str,
-    actor_redis: Option<ActorRedis>,
+    actor_redis: ActorRedis,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
-    wq_redis: Option<SharedRedis>,
+    wq_redis: SharedRedis,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -451,19 +392,19 @@ async fn finalize_wake_message(
 }
 
 async fn handle_start(
-    wf_redis: &Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    wf_redis: &SharedRedis,
     nats_client: &Option<async_nats::Client>,
     pool: &crate::database::DbPool,
     redis_conn: &crate::database::SharedRedisConn,
     project_id: &str,
     instance_id: &str,
     _payload: Option<&serde_json::Value>,
-    actor_redis: Option<ActorRedis>,
+    actor_redis: ActorRedis,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
-    wq_redis: Option<SharedRedis>,
+    wq_redis: SharedRedis,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
 ) -> Result<WakeProcessOutcome, String> {
@@ -487,10 +428,10 @@ async fn handle_start(
     (async move {
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
     let meta_json: String = {
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         let raw: Option<String> = redis::cmd("GET")
             .arg(&meta_key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| format!("handle_start: redis GET meta: {e}"))?;
         raw.ok_or_else(|| "handle_start: meta not found".to_string())?
@@ -576,14 +517,14 @@ async fn handle_start(
 
     let lock_key = format!("wf:{project_id}:{instance_id}:exec_lock");
     let acquired: bool = {
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         redis::cmd("SET")
             .arg(&lock_key)
             .arg("1")
             .arg("NX")
             .arg("EX")
             .arg(300u64)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| format!("exec_lock acquire: {e}"))?
     };
@@ -594,7 +535,7 @@ async fn handle_start(
     let comm = Arc::new(SdkCommCtx {
         pool: pool.clone(),
         redis_conn: redis_conn.clone(),
-        wf_redis: Some(wf_redis.clone()),
+        wf_redis: wf_redis.clone(),
         wf_nats: nats_client.clone(),
         wf_js: js.clone(),
         wq_redis,
@@ -628,10 +569,10 @@ async fn handle_start(
     .await;
 
     {
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         let _: () = redis::cmd("DEL")
             .arg(&lock_key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .unwrap_or(());
     }
@@ -645,19 +586,19 @@ async fn handle_start(
 }
 
 async fn handle_wake(
-    wf_redis: &Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    wf_redis: &SharedRedis,
     nats_client: &Option<async_nats::Client>,
     pool: &crate::database::DbPool,
     redis_conn: &crate::database::SharedRedisConn,
     project_id: &str,
     instance_id: &str,
     payload: Option<&serde_json::Value>,
-    actor_redis: Option<ActorRedis>,
+    actor_redis: ActorRedis,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
-    wq_redis: Option<SharedRedis>,
+    wq_redis: SharedRedis,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
 ) -> Result<WakeProcessOutcome, String> {
@@ -685,10 +626,10 @@ async fn handle_wake(
     // Load the workflow meta to get the unit path
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
     let meta_json: String = {
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         redis::cmd("GET")
             .arg(&meta_key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| format!("redis GET meta: {e}"))?
     };
@@ -746,10 +687,10 @@ async fn handle_wake(
     // Mark sleep as elapsed before resuming
     let suspended_key = format!("wf:{project_id}:{instance_id}:suspended");
     let suspended_json: Option<String> = {
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         redis::cmd("GET")
             .arg(&suspended_key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| format!("redis GET suspended: {e}"))?
     };
@@ -761,11 +702,11 @@ async fn handle_wake(
     {
         let sleep_key = format!("wf:{project_id}:{instance_id}:sleep:{sleep_name}");
         let sleep_val = serde_json::json!({"elapsed": true}).to_string();
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         redis::cmd("SET")
             .arg(&sleep_key)
             .arg(&sleep_val)
-            .query_async::<()>(&mut *conn)
+            .query_async::<()>(&mut conn)
             .await
             .map_err(|e| format!("redis SET sleep elapsed: {e}"))?;
     }
@@ -781,11 +722,11 @@ async fn handle_wake(
         {
             let promise_key = format!("wf:{project_id}:{instance_id}:promise:{promise_name}");
             let timed_out_val = serde_json::json!({"status": "timed_out"}).to_string();
-            let mut conn = wf_redis.lock().await;
+            let mut conn = wf_redis.clone();
             redis::cmd("SET")
                 .arg(&promise_key)
                 .arg(&timed_out_val)
-                .query_async::<()>(&mut *conn)
+                .query_async::<()>(&mut conn)
                 .await
                 .map_err(|e| format!("redis SET promise timed_out: {e}"))?;
         }
@@ -839,14 +780,14 @@ async fn handle_wake(
 
     let lock_key = format!("wf:{project_id}:{instance_id}:exec_lock");
     let acquired: bool = {
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         redis::cmd("SET")
             .arg(&lock_key)
             .arg("1")
             .arg("NX")
             .arg("EX")
             .arg(300u64)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .map_err(|e| format!("exec_lock acquire: {e}"))?
     };
@@ -857,7 +798,7 @@ async fn handle_wake(
     let comm = Arc::new(SdkCommCtx {
         pool: pool.clone(),
         redis_conn: redis_conn.clone(),
-        wf_redis: Some(wf_redis.clone()),
+        wf_redis: wf_redis.clone(),
         wf_nats: nats_client.clone(),
         wf_js: js.clone(),
         wq_redis,
@@ -889,10 +830,10 @@ async fn handle_wake(
     .await;
 
     {
-        let mut conn = wf_redis.lock().await;
+        let mut conn = wf_redis.clone();
         let _: () = redis::cmd("DEL")
             .arg(&lock_key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .unwrap_or(());
     }

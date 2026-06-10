@@ -2,10 +2,9 @@ use async_nats::jetstream;
 use async_nats::jetstream::stream;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use uuid::Uuid;
-pub type QueueWorkerRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
+
+pub type QueueWorkerRedis = crate::database::RedisConn;
 
 fn wq_redis_key(project_id: &str, run_id: &str, suffix: &str) -> String {
     format!("wq:{project_id}:{run_id}:{suffix}")
@@ -80,7 +79,7 @@ pub async fn enqueue_queue_worker_run(
     let meta_key = wq_redis_key(project_id, &run_id, "meta");
 
     {
-        let mut conn = redis.lock().await;
+        let mut conn = redis.clone();
         let _: () = conn.set(&meta_key, &meta_json).await.map_err(|e| e.to_string())?;
     }
 
@@ -140,7 +139,7 @@ pub async fn load_queue_worker_run_meta(
     run_id: &str,
 ) -> Result<QueueWorkerRunMeta, String> {
     let meta_key = wq_redis_key(project_id, run_id, "meta");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let meta_json: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
     let Some(raw) = meta_json else {
         return Err("queue_worker run not found".to_string());
@@ -169,7 +168,7 @@ pub async fn get_queue_worker_run_result(
 ) -> Result<serde_json::Value, String> {
     let meta = load_queue_worker_run_meta(redis, project_id, run_id).await?;
     let result_key = wq_redis_key(project_id, run_id, "result");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let result_json: Option<String> = conn.get(&result_key).await.map_err(|e| e.to_string())?;
     let result_val = result_json
         .as_deref()
@@ -190,7 +189,7 @@ pub async fn cancel_queue_worker_run(
     url_stage_runtime_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
     let meta_key = wq_redis_key(project_id, run_id, "meta");
-    let mut conn = redis.lock().await;
+    let mut conn = redis.clone();
     let meta_json: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
     let Some(raw) = meta_json else {
         return Err("queue_worker run not found".to_string());
@@ -265,7 +264,7 @@ pub async fn publish_qw_event(
 }
 
 pub fn set_queue_worker_run_meta_sync<'a>(
-    conn: &'a mut redis::aio::MultiplexedConnection,
+    conn: &'a mut crate::database::RedisConn,
     project_id: &'a str,
     run_id: &'a str,
     status: &'a str,

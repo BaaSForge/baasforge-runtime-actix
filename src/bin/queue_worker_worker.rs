@@ -33,34 +33,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     .await
     .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
 
-    let (Some(wq_redis_url), Some(wq_nats_url)) = (&settings.wq_redis_url, &settings.wq_nats_url)
-    else {
-        error!("WQ_REDIS_URL and WQ_NATS_URL must both be set");
-        std::process::exit(1);
-    };
+    let wq_nats_url = settings.wq_nats_url.as_deref().ok_or("WQ_NATS_URL must be set")?;
 
-    let wq_redis = {
-        let client = redis::Client::open(wq_redis_url.as_str())?;
-        let conn = client.get_multiplexed_async_connection().await?;
-        info!("[wq_redis] queue worker Redis connected");
-        Arc::new(Mutex::new(conn))
-    };
+    let wq_redis = baal_runtime_actix::database::connect_redis(&settings.wq_redis_url).await?;
+    info!("[wq_redis] queue worker Redis connected");
+
+    let wf_redis = baal_runtime_actix::database::connect_redis(&settings.wf_redis_url).await?;
+    info!("[wf_redis] workflow Redis connected");
+
+    let actor_redis =
+        baal_runtime_actix::database::connect_redis(&settings.actor_redis_url).await?;
+    info!("[actor_redis] actor Redis connected");
 
     let nats = baal_runtime_actix::configs::connect_nats(wq_nats_url).await?;
     info!("[nats_wq] connected for queue worker work consumer");
-
-    let wf_redis = if let Some(url) = &settings.wf_redis_url {
-        match redis::Client::open(url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    info!("[wf_redis] workflow Redis connected (for sdk.callWorkflow)");
-                    Some(Arc::new(Mutex::new(conn)))
-                }
-                Err(e) => { warn!(error = %e, "[wf_redis] connection failed"); None }
-            },
-            Err(e) => { warn!(error = %e, "[wf_redis] client open failed"); None }
-        }
-    } else { None };
 
     let wf_nats = if let Some(url) = &settings.wf_nats_url {
         match baal_runtime_actix::configs::connect_nats(url).await {
@@ -68,29 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Err(e) => { warn!(error = %e, "[nats_wf] connect failed"); None }
         }
     } else { None };
-
-    let actor_redis: Option<baal_runtime_actix::services::actor_engine::ActorRedis> =
-        if let Some(url) = settings.actor_redis_url.as_deref() {
-            match redis::Client::open(url) {
-                Ok(client) => match client.get_multiplexed_async_connection().await {
-                    Ok(conn) => {
-                        info!("[actor_redis] actor Redis connected (for sdk.callActor*)");
-                        Some(conn)
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "[actor_redis] connection failed");
-                        None
-                    }
-                },
-                Err(e) => {
-                    warn!(error = %e, "[actor_redis] client open failed");
-                    None
-                }
-            }
-        } else {
-            info!("[actor_redis] ACTOR_REDIS_URL unset; sdk.callActor* disabled in this process");
-            None
-        };
 
     let actor_nats: Option<async_nats::Client> = if let Some(url) = settings.actor_nats_url.as_deref() {
         match baal_runtime_actix::configs::connect_nats(url).await {

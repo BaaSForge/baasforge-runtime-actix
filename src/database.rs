@@ -8,13 +8,32 @@
 
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 
 pub type DbPool = Pool<ConnectionManager<PgConnection>>;
 
-pub type SharedRedisConn = Option<Arc<Mutex<redis::aio::MultiplexedConnection>>>;
+/// Auto-reconnecting Redis handle (`redis` crate `ConnectionManager`).
+pub type RedisConn = redis::aio::ConnectionManager;
+
+pub type SharedRedisConn = Option<RedisConn>;
+
+fn redis_connection_manager_config() -> redis::aio::ConnectionManagerConfig {
+    let per_attempt = Duration::from_secs(2);
+    redis::aio::ConnectionManagerConfig::new()
+        .set_connection_timeout(Some(per_attempt))
+        .set_response_timeout(Some(per_attempt))
+        .set_min_delay(Duration::from_millis(100))
+        .set_max_delay(Duration::from_secs(1))
+        // Fail fast: ~4 connect attempts × 2s + backoffs ≈ 10s, then error to caller.
+        .set_number_of_retries(3)
+}
+
+pub async fn connect_redis(url: &str) -> Result<RedisConn, String> {
+    let client = redis::Client::open(url).map_err(|e| format!("redis client open: {e}"))?;
+    redis::aio::ConnectionManager::new_with_config(client, redis_connection_manager_config())
+        .await
+        .map_err(|e| format!("redis connect ({url}): {e}"))
+}
 
 pub type PooledConn = diesel::r2d2::PooledConnection<ConnectionManager<PgConnection>>;
 
@@ -95,13 +114,9 @@ pub async fn connect_shared_redis_cache(
         tracing::info!("[redis] cache disabled (REDIS_CACHE_ENABLED=false); skipping connection");
         return Ok(None);
     }
-    let client = redis::Client::open(redis_url).map_err(|e| format!("redis client open: {e}"))?;
-    let conn = client
-        .get_multiplexed_async_connection()
-        .await
-        .map_err(|e| format!("redis connect ({redis_url}): {e}"))?;
+    let conn = connect_redis(redis_url).await?;
     tracing::info!(%redis_url, "[redis] shared metadata cache connected");
-    Ok(Some(Arc::new(Mutex::new(conn))))
+    Ok(Some(conn))
 }
 
 pub fn pg_pool_builder(

@@ -24,7 +24,7 @@ pub(crate) async fn redis_get_json<T: DeserializeOwned>(
         return Ok(None);
     };
     crate::rt_step!("redis.get_json", key);
-    let mut conn = rc.lock().await;
+    let mut conn = rc.clone();
     let s: Option<String> = conn.get(key).await?;
     let Some(raw) = s else {
         crate::rt_step!("redis.get_json.miss", key);
@@ -44,7 +44,7 @@ pub(crate) async fn redis_set_json<T: Serialize>(
         return Ok(());
     };
     crate::rt_step!("redis.set_json", key);
-    let mut conn = rc.lock().await;
+    let mut conn = rc.clone();
     let raw = serde_json::to_string(value).expect("serialize redis cache value");
     let _: () = conn.set(key, raw).await?;
     Ok(())
@@ -91,7 +91,7 @@ pub async fn clear_project_runtime_cache_on_deploy(
     let Some(rc) = redis else {
         return Ok(());
     };
-    let mut conn = rc.lock().await;
+    let mut conn = rc.clone();
     let scope_prefix = redis_scope_prefix(project_id, scope);
 
     let _: () = conn.del(redis_key_release(project_id, scope)).await?;
@@ -99,7 +99,7 @@ pub async fn clear_project_runtime_cache_on_deploy(
     let pattern = format!("{scope_prefix}unit:*");
     let keys: Vec<String> = redis::cmd("KEYS")
         .arg(&pattern)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await?;
     for key in keys {
         let _: () = conn.del(key).await?;

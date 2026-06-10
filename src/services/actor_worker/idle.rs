@@ -18,9 +18,7 @@ fn parse_idle_member(member: &str) -> Option<(String, Option<Uuid>, String, Stri
 }
 
 async fn sweep_once(comm: &Arc<SdkCommCtx>) {
-    let Some(redis) = comm.actor_redis.as_ref() else {
-        return;
-    };
+    let redis = &comm.actor_redis;
     let now = chrono::Utc::now().timestamp_millis() as f64;
     let members: Vec<String> = {
         let mut c = redis.clone();
@@ -62,9 +60,6 @@ async fn sweep_once(comm: &Arc<SdkCommCtx>) {
 }
 
 pub async fn run_actor_idle_sweep(comm: Arc<SdkCommCtx>, interval: Duration) {
-    if comm.actor_redis.is_none() {
-        return;
-    }
     loop {
         tokio::time::sleep(interval).await;
         sweep_once(&comm).await;

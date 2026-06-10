@@ -55,7 +55,7 @@ pub struct Settings {
     // -- Workflow runtime infrastructure --
 
     /// Dedicated Redis URL for workflow state persistence (step results, promises, timers).
-    pub wf_redis_url: Option<String>,
+    pub wf_redis_url: String,
     /// NATS URL used by the workflow runtime for wake signals (sleep timers, promise resolution).
     pub wf_nats_url: Option<String>,
     /// JetStream stream name for durable workflow wake timers. Default: `"WF_WAKE"`.
@@ -66,7 +66,7 @@ pub struct Settings {
     // -- Queue worker runtime infrastructure --
 
     /// Dedicated Redis URL for queue worker state (run metadata, results, execution locks).
-    pub wq_redis_url: Option<String>,
+    pub wq_redis_url: String,
     /// NATS URL for queue worker work queue (JetStream) and lifecycle events (Core).
     pub wq_nats_url: Option<String>,
 
@@ -91,7 +91,7 @@ pub struct Settings {
     pub actor_database_pool_size: u32,
     pub actor_database_connection_timeout_secs: u64,
     pub actor_database_pool_idle_timeout_secs: u64,
-    pub actor_redis_url: Option<String>,
+    pub actor_redis_url: String,
     pub actor_nats_url: Option<String>,
     pub actor_nats_jetstream_stream: Option<String>,
     pub actor_nats_jetstream_consumer: Option<String>,
@@ -193,10 +193,7 @@ impl Settings {
             }
         }
 
-        let wf_redis_url = env::var("WF_REDIS_URL")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let wf_redis_url = require_non_empty_env("WF_REDIS_URL")?;
         let wf_nats_url = env::var("WF_NATS_URL")
             .ok()
             .map(|s| s.trim().to_string())
@@ -210,10 +207,7 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let wq_redis_url = env::var("WQ_REDIS_URL")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let wq_redis_url = require_non_empty_env("WQ_REDIS_URL")?;
         let wq_nats_url = env::var("WQ_NATS_URL")
             .ok()
             .map(|s| s.trim().to_string())
@@ -267,10 +261,7 @@ impl Settings {
             .expect("ACTOR_DATABASE_POOL_IDLE_TIMEOUT_SECS must be set")
             .parse()
             .expect("ACTOR_DATABASE_POOL_IDLE_TIMEOUT_SECS must be a valid u64");
-        let actor_redis_url = env::var("ACTOR_REDIS_URL")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
+        let actor_redis_url = require_non_empty_env("ACTOR_REDIS_URL")?;
         let actor_nats_url = env::var("ACTOR_NATS_URL")
             .ok()
             .map(|s| s.trim().to_string())
@@ -367,6 +358,15 @@ pub async fn connect_nats(url: &str) -> Result<async_nats::Client, async_nats::C
         }
     }
     async_nats::connect(url).await
+}
+
+fn require_non_empty_env(key: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let value = env::var(key).map_err(|_| format!("{key} must be set"))?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(format!("{key} must be set").into());
+    }
+    Ok(value)
 }
 
 /// Parses typical env truthy/falsey strings (e.g. `true`, `1`, `on`, `false`, `0`, `off`).

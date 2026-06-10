@@ -20,13 +20,6 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-fn require_actor_redis(ctx: &AppContext) -> Result<ActorRedis, HttpResponse> {
-    ctx.actor_redis.clone().ok_or_else(|| {
-        HttpResponse::ServiceUnavailable()
-            .json(api_error("actor redis not configured", json!({})))
-    })
-}
-
 #[derive(Deserialize)]
 pub struct ActorQuery {
     #[serde(rename = "await", default = "default_await")]
@@ -189,7 +182,7 @@ async fn invoke_actor_handler_http(
         wq_redis: ctx.wq_redis.clone(),
         wq_nats: ctx.wq_nats_client.clone(),
         wq_js: ctx.wq_jetstream.clone(),
-        actor_redis: Some(actor_redis.clone()),
+        actor_redis: actor_redis.clone(),
         actor_nats: ctx.actor_nats_client.clone(),
         actor_js: ctx.actor_jetstream.clone(),
         actor_pg: ctx.actor_pg.clone(),
@@ -292,10 +285,7 @@ async fn actor_post_inner(
         }
     };
 
-    let actor_redis = match require_actor_redis(&ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let actor_redis = ctx.actor_redis.clone();
 
     const MAX_BODY: usize = 32 * 1024 * 1024;
 
@@ -445,10 +435,7 @@ async fn actor_get_inner(
         }
     };
 
-    let actor_redis = match require_actor_redis(&ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let actor_redis = ctx.actor_redis.clone();
 
     let project_id_str = project_id.to_string();
     let unit_path = build_actor_unit_path(
@@ -574,10 +561,7 @@ async fn actor_delete_inner(
         }
     };
 
-    let actor_redis = match require_actor_redis(&ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let actor_redis = ctx.actor_redis.clone();
 
     let project_id_str = project_id.to_string();
     let unit_path = build_actor_unit_path(

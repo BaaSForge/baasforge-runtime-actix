@@ -2,7 +2,6 @@ use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
@@ -39,7 +38,7 @@ pub enum WorkflowExecutionResult {
 pub async fn run_workflow_handler(
     source: &str,
     wf_ctx: &WorkflowExecutionContext,
-    redis: &Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    redis: &crate::database::RedisConn,
     nats: &Option<async_nats::Client>,
     comm: Arc<SdkCommCtx>,
 ) -> Result<WorkflowExecutionResult, String> {

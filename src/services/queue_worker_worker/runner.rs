@@ -31,9 +31,9 @@ pub async fn run_work_consumer(
     redis_conn: crate::database::SharedRedisConn,
     stream_name: &str,
     consumer_name: &str,
-    wf_redis: Option<SharedRedis>,
+    wf_redis: SharedRedis,
     wf_nats: Option<async_nats::Client>,
-    actor_redis: Option<ActorRedis>,
+    actor_redis: ActorRedis,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
@@ -133,10 +133,10 @@ async fn handle_work_message(
     wq_js: async_nats::jetstream::Context,
     pool: DbPool,
     redis_conn: crate::database::SharedRedisConn,
-    wf_redis: Option<SharedRedis>,
+    wf_redis: SharedRedis,
     wf_nats: Option<async_nats::Client>,
     wf_js: Option<async_nats::jetstream::Context>,
-    actor_redis: Option<ActorRedis>,
+    actor_redis: ActorRedis,
     actor_nats: Option<async_nats::Client>,
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
@@ -186,7 +186,7 @@ async fn handle_work_message(
     let meta_key = format!("wq:{project_id}:{run_id}:meta");
 
     let meta_raw: Option<String> = {
-        let mut conn = wq_redis.lock().await;
+        let mut conn = wq_redis.clone();
         conn.get(&meta_key).await.unwrap_or(None)
     };
     let Some(raw) = meta_raw else {
@@ -337,7 +337,7 @@ async fn handle_work_message(
             wf_redis: wf_redis.clone(),
             wf_nats: wf_nats.clone(),
             wf_js: wf_js.clone(),
-            wq_redis: Some(wq_redis.clone()),
+            wq_redis: wq_redis.clone(),
             wq_nats: Some(nats.clone()),
             wq_js: Some(wq_js.clone()),
             actor_redis: actor_redis.clone(),
@@ -363,14 +363,14 @@ async fn handle_work_message(
 
     let lock_key = format!("wq:{project_id}:{run_id}:exec_lock");
     let acquired: bool = {
-        let mut conn = wq_redis.lock().await;
+        let mut conn = wq_redis.clone();
         redis::cmd("SET")
             .arg(&lock_key)
             .arg("1")
             .arg("NX")
             .arg("EX")
             .arg(300u64)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .unwrap_or(false)
     };
@@ -390,7 +390,7 @@ async fn handle_work_message(
             stage_runtime_id: wq_stage,
         };
         if let Ok(json) = serde_json::to_string(&updated) {
-            let mut conn = wq_redis.lock().await;
+            let mut conn = wq_redis.clone();
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
     }
@@ -420,7 +420,7 @@ async fn handle_work_message(
         wf_redis: wf_redis.clone(),
         wf_nats: wf_nats.clone(),
         wf_js: wf_js.clone(),
-        wq_redis: Some(wq_redis.clone()),
+        wq_redis: wq_redis.clone(),
         wq_nats: Some(nats.clone()),
         wq_js: Some(wq_js.clone()),
         actor_redis: actor_redis.clone(),
@@ -475,7 +475,7 @@ async fn handle_work_message(
                         stage_runtime_id: wq_stage,
                     };
                     if let Ok(json) = serde_json::to_string(&retry_meta) {
-                        let mut conn = wq_redis.lock().await;
+                        let mut conn = wq_redis.clone();
                         let _: Result<(), _> = conn.set(&meta_key, &json).await;
                     }
                     publish_qw_event(
@@ -515,7 +515,7 @@ async fn handle_work_message(
                 QueueWorkerRunOutcome::Completed(value_json) => {
                     let result_key = format!("wq:{project_id}:{run_id}:result");
                     {
-                        let mut conn = wq_redis.lock().await;
+                        let mut conn = wq_redis.clone();
                         let _: Result<(), _> = conn.set(&result_key, &value_json).await;
                     }
                     let completed_meta = QueueWorkerRunMeta {
@@ -527,7 +527,7 @@ async fn handle_work_message(
                         stage_runtime_id: wq_stage,
                     };
                     if let Ok(json) = serde_json::to_string(&completed_meta) {
-                        let mut conn = wq_redis.lock().await;
+                        let mut conn = wq_redis.clone();
                         let _: Result<(), _> = conn.set(&meta_key, &json).await;
                     }
                     let result_val: serde_json::Value = serde_json::from_str(&value_json)
@@ -583,7 +583,7 @@ async fn handle_work_message(
 }
 
 async fn check_cancelled(wq_redis: &QueueWorkerRedis, meta_key: &str) -> bool {
-    let mut conn = wq_redis.lock().await;
+    let mut conn = wq_redis.clone();
     let raw: Option<String> = conn.get(meta_key).await.unwrap_or(None);
     raw.as_deref()
         .and_then(|s| serde_json::from_str::<QueueWorkerRunMeta>(s).ok())
@@ -628,7 +628,7 @@ async fn process_failed_outcome(
             stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&retry_meta) {
-            let mut conn = wq_redis.lock().await;
+            let mut conn = wq_redis.clone();
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
         publish_qw_event(
@@ -660,10 +660,10 @@ async fn process_failed_outcome(
 }
 
 async fn release_exec_lock(wq_redis: &QueueWorkerRedis, lock_key: &str) {
-    let mut conn = wq_redis.lock().await;
+    let mut conn = wq_redis.clone();
     let _: () = redis::cmd("DEL")
         .arg(lock_key)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or(());
 }
@@ -689,7 +689,7 @@ async fn move_to_dead_letter(
         stage_runtime_id,
     };
     if let Ok(json) = serde_json::to_string(&dl_meta) {
-        let mut conn = wq_redis.lock().await;
+        let mut conn = wq_redis.clone();
         let _: Result<(), _> = conn.set(&meta_key, &json).await;
     }
     publish_qw_event(
@@ -742,11 +742,11 @@ async fn handle_batch_item(
     };
 
     let (new_len, should_dispatch_now) = {
-        let mut conn = wq_redis.lock().await;
+        let mut conn = wq_redis.clone();
         let new_len: i64 = redis::cmd("RPUSH")
             .arg(&batch_key)
             .arg(&item_json)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .unwrap_or(0);
         let should = new_len >= batch_cfg.size as i64;
@@ -798,18 +798,18 @@ async fn handle_batch_item(
 }
 
 async fn batch_pop_all(wq_redis: &QueueWorkerRedis, batch_key: &str) -> Vec<BatchItem> {
-    let mut conn = wq_redis.lock().await;
+    let mut conn = wq_redis.clone();
     let raw_items: Vec<String> = redis::cmd("LRANGE")
         .arg(batch_key)
         .arg(0i64)
         .arg(-1i64)
-        .query_async(&mut *conn)
+        .query_async(&mut conn)
         .await
         .unwrap_or_default();
     if !raw_items.is_empty() {
         let _: () = redis::cmd("DEL")
             .arg(batch_key)
-            .query_async(&mut *conn)
+            .query_async(&mut conn)
             .await
             .unwrap_or(());
     }
@@ -984,7 +984,7 @@ async fn batch_mark_processing(
             stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&meta) {
-            let mut conn = wq_redis.lock().await;
+            let mut conn = wq_redis.clone();
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
         publish_qw_event(
@@ -1020,7 +1020,7 @@ async fn batch_mark_retrying(
             stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&meta) {
-            let mut conn = wq_redis.lock().await;
+            let mut conn = wq_redis.clone();
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
         publish_qw_event(
@@ -1050,7 +1050,7 @@ async fn batch_complete(
         let result_key = format!("wq:{project_id}:{run_id}:result");
         let meta_key = format!("wq:{project_id}:{run_id}:meta");
         {
-            let mut conn = wq_redis.lock().await;
+            let mut conn = wq_redis.clone();
             let _: Result<(), _> = conn.set(&result_key, value_json).await;
         }
         let meta = QueueWorkerRunMeta {
@@ -1062,7 +1062,7 @@ async fn batch_complete(
             stage_runtime_id,
         };
         if let Ok(json) = serde_json::to_string(&meta) {
-            let mut conn = wq_redis.lock().await;
+            let mut conn = wq_redis.clone();
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
         let result_val: serde_json::Value = serde_json::from_str(value_json)

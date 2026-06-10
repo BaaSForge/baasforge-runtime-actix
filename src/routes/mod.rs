@@ -23,20 +23,20 @@ pub struct AppContext {
     pub settings: Settings,
     pub redis_conn: SharedRedisConn,
     /// Dedicated Redis connection for workflow state (step results, promises, timers).
-    pub wf_redis: Option<SharedRedis>,
+    pub wf_redis: SharedRedis,
     /// NATS client for workflow wake signals and lifecycle events.
     pub wf_nats_client: Option<async_nats::Client>,
     /// JetStream context for durable workflow wake timer publishes.
     pub wf_jetstream: Option<async_nats::jetstream::Context>,
     /// Dedicated Redis connection for queue worker state (run metadata, results, locks).
-    pub wq_redis: Option<SharedRedis>,
+    pub wq_redis: SharedRedis,
     /// NATS client for queue worker work queue (JetStream) and lifecycle events (Core).
     pub wq_nats_client: Option<async_nats::Client>,
     /// JetStream context for publishing queue worker work messages.
     pub wq_jetstream: Option<async_nats::jetstream::Context>,
 
     /// Dedicated Redis connection for actor state (snapshots, leases, alarms).
-    pub actor_redis: Option<ActorRedis>,
+    pub actor_redis: ActorRedis,
     /// NATS client for actor mailbox (JetStream) and lifecycle events (Core).
     pub actor_nats_client: Option<async_nats::Client>,
     /// JetStream context for publishing actor mailbox messages.
@@ -54,13 +54,13 @@ impl AppContext {
         pool: DbPool,
         settings: Settings,
         redis_conn: SharedRedisConn,
-        wf_redis: Option<SharedRedis>,
+        wf_redis: SharedRedis,
         wf_nats_client: Option<async_nats::Client>,
         wf_jetstream: Option<async_nats::jetstream::Context>,
-        wq_redis: Option<SharedRedis>,
+        wq_redis: SharedRedis,
         wq_nats_client: Option<async_nats::Client>,
         wq_jetstream: Option<async_nats::jetstream::Context>,
-        actor_redis: Option<ActorRedis>,
+        actor_redis: ActorRedis,
         actor_nats_client: Option<async_nats::Client>,
         actor_jetstream: Option<async_nats::jetstream::Context>,
         actor_pg: Option<ActorPgPool>,
@@ -106,27 +106,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     )
     .await
     .map_err(|e| -> Box<dyn Error> { e.into() })?;
-    let wf_redis: Option<SharedRedis> = if let Some(url) = &settings.wf_redis_url {
-        match redis::Client::open(url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    tracing::info!("[wf_redis] workflow Redis connected");
-                    Some(Arc::new(Mutex::new(conn)))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[wf_redis] connection failed, workflows disabled");
-                    None
-                }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "[wf_redis] client open failed, workflows disabled");
-                None
-            }
-        }
-    } else {
-        tracing::info!("[wf_redis] WF_REDIS_URL not set, workflows disabled");
-        None
-    };
+    let wf_redis = crate::database::connect_redis(&settings.wf_redis_url).await?;
+    tracing::info!("[wf_redis] workflow Redis connected");
 
     let wf_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
         match crate::configs::connect_nats(url).await {
@@ -147,27 +128,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     let wf_jetstream: Option<async_nats::jetstream::Context> =
         wf_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
 
-    let wq_redis: Option<SharedRedis> = if let Some(url) = &settings.wq_redis_url {
-        match redis::Client::open(url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    tracing::info!("[wq_redis] queue worker Redis connected");
-                    Some(Arc::new(Mutex::new(conn)))
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[wq_redis] connection failed, queue workers disabled");
-                    None
-                }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "[wq_redis] client open failed, queue workers disabled");
-                None
-            }
-        }
-    } else {
-        tracing::info!("[wq_redis] WQ_REDIS_URL not set, queue workers disabled");
-        None
-    };
+    let wq_redis = crate::database::connect_redis(&settings.wq_redis_url).await?;
+    tracing::info!("[wq_redis] queue worker Redis connected");
 
     let wq_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wq_nats_url {
         match crate::configs::connect_nats(url).await {
@@ -188,27 +150,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     let wq_jetstream: Option<async_nats::jetstream::Context> =
         wq_nats_client.as_ref().map(|c| async_nats::jetstream::new(c.clone()));
 
-    let actor_redis: Option<ActorRedis> = if let Some(url) = &settings.actor_redis_url {
-        match redis::Client::open(url.as_str()) {
-            Ok(client) => match client.get_multiplexed_async_connection().await {
-                Ok(conn) => {
-                    tracing::info!("[actor_redis] actor Redis connected");
-                    Some(conn)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[actor_redis] connection failed, actors disabled");
-                    None
-                }
-            },
-            Err(e) => {
-                tracing::warn!(error = %e, "[actor_redis] client open failed, actors disabled");
-                None
-            }
-        }
-    } else {
-        tracing::info!("[actor_redis] ACTOR_REDIS_URL not set; actor Redis disabled");
-        None
-    };
+    let actor_redis = crate::database::connect_redis(&settings.actor_redis_url).await?;
+    tracing::info!("[actor_redis] actor Redis connected");
 
     let actor_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.actor_nats_url {
         match crate::configs::connect_nats(url).await {
@@ -247,8 +190,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     // by the separate worker binaries).
     let mut test_mode_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     if settings.test_mode {
-        if let (Some(wr), Some(nc)) = (&wf_redis, &wf_nats_client) {
-            let wr = wr.clone();
+        if let Some(nc) = &wf_nats_client {
+            let wr = wf_redis.clone();
             let nc = nc.clone();
             let p = pool.clone();
             let rc = redis_conn.clone();
@@ -295,8 +238,8 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             }));
         }
 
-        if let (Some(wr), Some(nc)) = (&wq_redis, &wq_nats_client) {
-            let wr = wr.clone();
+        if let Some(nc) = &wq_nats_client {
+            let wr = wq_redis.clone();
             let nc = nc.clone();
             let p = pool.clone();
             let rc = redis_conn.clone();
@@ -334,13 +277,14 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             }));
         }
 
-        if let Some(ar) = &actor_redis {
-            let ar = ar.clone();
+        {
+            let ar = actor_redis.clone();
             let actor_js = actor_jetstream.clone();
             let actor_nc = actor_nats_client.clone();
             let p = pool.clone();
             let rc = redis_conn.clone();
             let wf_redis_for_actor = wf_redis.clone();
+            let wq_redis_for_actor = wq_redis.clone();
             let wf_nats_for_actor = wf_nats_client.clone();
             let wf_js_for_actor = wf_jetstream.clone();
             let stream_name = settings
@@ -359,7 +303,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 if let Err(e) =
                     crate::services::actor_worker::runner::run_actor_consumer(
                         ar, actor_js, actor_nc, p, rc,
-                        wf_redis_for_actor, wf_nats_for_actor, wf_js_for_actor,
+                        wf_redis_for_actor, wq_redis_for_actor, wf_nats_for_actor, wf_js_for_actor,
                         &stream_name, &consumer_name, actor_pg_consumer, locks,
                         actor_idle_sweep,
                     )
@@ -369,26 +313,32 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 }
             }));
 
-            let ar2 = actor_redis.as_ref().unwrap().clone();
+            let ar2 = actor_redis.clone();
             let actor_nc2 = actor_nats_client.clone();
             let actor_js2 = actor_jetstream.clone();
             let p2 = pool.clone();
             let rc2 = redis_conn.clone();
             let locks2 = actor_locks.clone();
             let actor_pg_alarm = actor_pg.clone();
+            let wf_redis_alarm = wf_redis.clone();
+            let wq_redis_alarm = wq_redis.clone();
+            let wf_nats_alarm = wf_nats_client.clone();
+            let wf_js_alarm = wf_jetstream.clone();
+            let wq_nats_alarm = wq_nats_client.clone();
+            let wq_js_alarm = wq_jetstream.clone();
             tracing::info!("[test_mode] starting inline actor alarm sweeper");
             test_mode_tasks.push(tokio::spawn(async move {
                 use std::sync::Arc;
                 let comm = Arc::new(crate::libs::unit_js::modules::sdk::SdkCommCtx {
                     pool: p2,
                     redis_conn: rc2,
-                    wf_redis: None,
-                    wf_nats: None,
-                    wf_js: None,
-                    wq_redis: None,
-                    wq_nats: None,
-                    wq_js: None,
-                    actor_redis: Some(ar2),
+                    wf_redis: wf_redis_alarm,
+                    wf_nats: wf_nats_alarm,
+                    wf_js: wf_js_alarm,
+                    wq_redis: wq_redis_alarm,
+                    wq_nats: wq_nats_alarm,
+                    wq_js: wq_js_alarm,
+                    actor_redis: ar2,
                     actor_nats: actor_nc2,
                     actor_js: actor_js2,
                     actor_pg: actor_pg_alarm,

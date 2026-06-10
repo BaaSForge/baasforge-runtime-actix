@@ -12,13 +12,6 @@ use actix_web::{web, HttpRequest, HttpResponse};
 use serde_json::json;
 use uuid::Uuid;
 
-fn require_wq_redis(ctx: &AppContext) -> Result<QueueWorkerRedis, HttpResponse> {
-    ctx.wq_redis.clone().ok_or_else(|| {
-        HttpResponse::ServiceUnavailable()
-            .json(api_error("queue_worker redis not available", json!({})))
-    })
-}
-
 struct ParsedQueueWorkerTail {
     context_slug: String,
     module_slug: String,
@@ -127,10 +120,7 @@ async fn queue_worker_post_inner(
         }
     };
 
-    let wq_redis = match require_wq_redis(&ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let wq_redis = ctx.wq_redis.clone();
 
     let unit_path =
         build_queue_worker_unit_path(&parsed.context_slug, &parsed.module_slug, &parsed.worker_name_slug);
@@ -259,10 +249,7 @@ async fn queue_worker_get_inner(
         }
     };
 
-    let wq_redis = match require_wq_redis(&ctx) {
-        Ok(r) => r,
-        Err(resp) => return resp,
-    };
+    let wq_redis = ctx.wq_redis.clone();
 
     let run_id = match parsed.run_id {
         Some(r) => r,

@@ -18,6 +18,7 @@ use crate::services::actor_worker::manager::{ActorRunInput, run_actor_with_lock}
 use crate::services::project_release::{
     load_live_release_id_scoped, load_production_runtime_id_for_project,
 };
+use crate::services::queue_worker_engine::QueueWorkerRedis;
 use crate::services::workflow_engine::SharedRedis as WfRedis;
 use uuid::Uuid;
 
@@ -27,7 +28,8 @@ pub async fn run_actor_consumer(
     actor_nats: Option<async_nats::Client>,
     pool: DbPool,
     redis_conn: crate::database::SharedRedisConn,
-    wf_redis: Option<WfRedis>,
+    wf_redis: WfRedis,
+    wq_redis: QueueWorkerRedis,
     wf_nats: Option<async_nats::Client>,
     wf_js: Option<jetstream::Context>,
     stream_name: &str,
@@ -80,13 +82,13 @@ pub async fn run_actor_consumer(
     let idle_comm = Arc::new(SdkCommCtx {
         pool: pool.clone(),
         redis_conn: redis_conn.clone(),
-        wf_redis: None,
-        wf_nats: None,
-        wf_js: None,
-        wq_redis: None,
+        wf_redis: wf_redis.clone(),
+        wf_nats: wf_nats.clone(),
+        wf_js: wf_js.clone(),
+        wq_redis: wq_redis.clone(),
         wq_nats: None,
         wq_js: None,
-        actor_redis: Some(actor_redis.clone()),
+        actor_redis: actor_redis.clone(),
         actor_nats: actor_nats.clone(),
         actor_js: actor_js_for_comm.clone(),
         actor_pg: actor_pg.clone(),
@@ -113,6 +115,7 @@ pub async fn run_actor_consumer(
                 let pool = pool.clone();
                 let redis_conn = redis_conn.clone();
                 let wf_redis = wf_redis.clone();
+                let wq_redis = wq_redis.clone();
                 let wf_nats = wf_nats.clone();
                 let wf_js = wf_js.clone();
                 let locks = locks.clone();
@@ -121,7 +124,7 @@ pub async fn run_actor_consumer(
                 tokio::spawn(async move {
                     handle_actor_message(
                         msg, actor_redis, actor_js, actor_nats, pool, redis_conn,
-                        wf_redis, wf_nats, wf_js, actor_pg, locks,
+                        wf_redis, wq_redis, wf_nats, wf_js, actor_pg, locks,
                     )
                     .await;
                 });
@@ -143,7 +146,8 @@ async fn handle_actor_message(
     actor_nats: Option<async_nats::Client>,
     pool: DbPool,
     redis_conn: crate::database::SharedRedisConn,
-    wf_redis: Option<WfRedis>,
+    wf_redis: WfRedis,
+    wq_redis: QueueWorkerRedis,
     wf_nats: Option<async_nats::Client>,
     wf_js: Option<async_nats::jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
@@ -322,13 +326,13 @@ async fn handle_actor_message(
     let comm = Arc::new(SdkCommCtx {
         pool,
         redis_conn,
-        wf_redis: None,
-        wf_nats: None,
-        wf_js: None,
-        wq_redis: None,
+        wf_redis: wf_redis.clone(),
+        wf_nats: wf_nats.clone(),
+        wf_js: wf_js.clone(),
+        wq_redis: wq_redis.clone(),
         wq_nats: None,
         wq_js: None,
-        actor_redis: Some(actor_redis.clone()),
+        actor_redis: actor_redis.clone(),
         actor_nats: actor_nats.clone(),
         actor_js,
         actor_pg,
@@ -349,29 +353,25 @@ async fn handle_actor_message(
         let parts: Vec<&str> = reply_subject.split('.').collect();
         if parts.len() == 5 && parts[0] == "wf" && parts[1] == "promise" {
             let (pid, iid, pname) = (parts[2], parts[3], parts[4]);
-            if let Some(ref wr) = wf_redis {
-                match &result {
-                    Ok(out) => {
-                        let value_json = serde_json::to_string(&out.result)
-                            .unwrap_or_else(|_| "null".into());
-                        if let Err(e) = crate::services::workflow_engine::resolve_promise(
-                            wr, &wf_nats, &wf_js, pid, iid, pname, &value_json,
-                        )
-                        .await
-                        {
-                            warn!(error = %e, "[actor_consumer] resolve_promise failed; not acking for redelivery");
-                            return;
-                        }
-                    }
-                    Err(err) => {
-                        crate::services::workflow_engine::reject_caller_promise(
-                            wr, &wf_nats, &wf_js, pid, iid, pname, err,
-                        )
-                        .await;
+            match &result {
+                Ok(out) => {
+                    let value_json = serde_json::to_string(&out.result)
+                        .unwrap_or_else(|_| "null".into());
+                    if let Err(e) = crate::services::workflow_engine::resolve_promise(
+                        &wf_redis, &wf_nats, &wf_js, pid, iid, pname, &value_json,
+                    )
+                    .await
+                    {
+                        warn!(error = %e, "[actor_consumer] resolve_promise failed; not acking for redelivery");
+                        return;
                     }
                 }
-            } else {
-                warn!("[actor_consumer] actor reply requested but wf_redis not configured; dropping");
+                Err(err) => {
+                    crate::services::workflow_engine::reject_caller_promise(
+                        &wf_redis, &wf_nats, &wf_js, pid, iid, pname, err,
+                    )
+                    .await;
+                }
             }
         }
     }

@@ -109,7 +109,7 @@ pub async fn invalidate_env_cache(
         return Ok(());
     };
     let cache_key = redis_key_env(project_id, runtime_id, key.trim());
-    let mut conn = rc.lock().await;
+    let mut conn = rc.clone();
     let _: () = conn.del(&cache_key).await?;
     Ok(())
 }

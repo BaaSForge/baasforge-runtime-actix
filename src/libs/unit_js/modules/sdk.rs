@@ -14,7 +14,7 @@ use crate::models::actor_store::ActorPgPool;
 use crate::services::actor_engine::ActorRedis;
 use uuid::Uuid;
 
-pub type SharedRedis = Arc<Mutex<redis::aio::MultiplexedConnection>>;
+pub type SharedRedis = crate::database::RedisConn;
 pub type SdkActorLocks =
     Arc<Mutex<HashMap<(String, String, String, Option<Uuid>), Arc<Mutex<()>>>>>;
 
@@ -27,9 +27,9 @@ pub type SdkActorLocks =
 pub struct SdkCommCtx {
     pub pool: DbPool,
     pub redis_conn: SharedRedisConn,
-    pub wf_redis: Option<SharedRedis>,
-    pub wq_redis: Option<SharedRedis>,
-    pub actor_redis: Option<ActorRedis>,
+    pub wf_redis: SharedRedis,
+    pub wq_redis: SharedRedis,
+    pub actor_redis: ActorRedis,
     pub wf_nats: Option<async_nats::Client>,
     pub wf_js: Option<jetstream::Context>,
     pub wq_nats: Option<async_nats::Client>,
@@ -104,7 +104,7 @@ where
 // ---------------------------------------------------------------------------
 
 pub struct WorkflowHostCtx {
-    pub(in crate::libs::unit_js) redis: Arc<Mutex<redis::aio::MultiplexedConnection>>,
+    pub(in crate::libs::unit_js) redis: SharedRedis,
     pub(in crate::libs::unit_js) nats: Option<async_nats::Client>,
     pub(in crate::libs::unit_js) project_id: String,
     pub(in crate::libs::unit_js) instance_id: String,
@@ -389,8 +389,8 @@ fn host_persist_step(ctx: Ctx<'_>, name: String, result_json: String, _opts_json
         block_async(async {
             let key = redis_key(&hctx.project_id, &hctx.instance_id, &format!("step:{name}"));
             let value = serde_json::json!({ "status": "completed", "result": result_json }).to_string();
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut *conn).await
+            let mut conn = hctx.redis.clone();
+            redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET step failed: {e}"))
         })
     })
@@ -402,8 +402,8 @@ fn host_persist_step_error(ctx: Ctx<'_>, name: String, error_msg: String, is_ter
         block_async(async {
             let key = redis_key(&hctx.project_id, &hctx.instance_id, &format!("step:{name}"));
             let value = serde_json::json!({ "status": "failed", "error": error_msg, "terminal": is_terminal }).to_string();
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut *conn).await
+            let mut conn = hctx.redis.clone();
+            redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET step error failed: {e}"))
         })
     })
@@ -415,8 +415,8 @@ fn host_persist_sleep(ctx: Ctx<'_>, name: String, _duration_ms: f64) -> rquickjs
         block_async(async {
             let key = redis_key(&hctx.project_id, &hctx.instance_id, &format!("sleep:{name}"));
             let value = serde_json::json!({ "elapsed": true }).to_string();
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut *conn).await
+            let mut conn = hctx.redis.clone();
+            redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET sleep failed: {e}"))
         })
     })
@@ -427,8 +427,8 @@ fn host_persist_state(ctx: Ctx<'_>, key: String, value_json: String) -> rquickjs
     with_host_ctx(|hctx| {
         block_async(async {
             let rkey = redis_key(&hctx.project_id, &hctx.instance_id, &format!("state:{key}"));
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("SET").arg(&rkey).arg(&value_json).query_async::<()>(&mut *conn).await
+            let mut conn = hctx.redis.clone();
+            redis::cmd("SET").arg(&rkey).arg(&value_json).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET state failed: {e}"))
         })
     })
@@ -439,8 +439,8 @@ fn host_read_state<'js>(ctx: Ctx<'js>, key: String) -> rquickjs::Result<Value<'j
     let res: Result<Option<String>, String> = with_host_ctx(|hctx| {
         block_async(async {
             let rkey = redis_key(&hctx.project_id, &hctx.instance_id, &format!("state:{key}"));
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("GET").arg(&rkey).query_async::<Option<String>>(&mut *conn).await
+            let mut conn = hctx.redis.clone();
+            redis::cmd("GET").arg(&rkey).query_async::<Option<String>>(&mut conn).await
                 .map_err(|e| format!("redis GET state failed: {e}"))
         })
     });
@@ -458,8 +458,8 @@ fn host_resolve_promise(ctx: Ctx<'_>, name: String, value_json: String) -> rquic
         block_async(async {
             let rkey = redis_key(&project_id, &instance_id, &format!("promise:{name}"));
             let value = serde_json::json!({ "status": "resolved", "value": value_json }).to_string();
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("SET").arg(&rkey).arg(&value).query_async::<()>(&mut *conn).await
+            let mut conn = hctx.redis.clone();
+            redis::cmd("SET").arg(&rkey).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET promise failed: {e}"))?;
             if let Some(nats) = &hctx.nats {
                 let subject = format!("wf.{project_id}.{instance_id}.wake");
@@ -483,8 +483,8 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
         block_async(async {
             let rkey = redis_key(&project_id, &instance_id, &format!("promise:{name}"));
             let value = serde_json::json!({ "status": "rejected", "error": error }).to_string();
-            let mut conn = hctx.redis.lock().await;
-            redis::cmd("SET").arg(&rkey).arg(&value).query_async::<()>(&mut *conn).await
+            let mut conn = hctx.redis.clone();
+            redis::cmd("SET").arg(&rkey).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET promise reject failed: {e}"))?;
             if let Some(nats) = &hctx.nats {
                 let subject = format!("wf.{project_id}.{instance_id}.wake");
@@ -541,8 +541,8 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
             }
             let meta = meta_val.to_string();
             {
-                let mut conn = hctx.redis.lock().await;
-                redis::cmd("SET").arg(&meta_key).arg(&meta).query_async::<()>(&mut *conn).await
+                let mut conn = hctx.redis.clone();
+                redis::cmd("SET").arg(&meta_key).arg(&meta).query_async::<()>(&mut conn).await
                     .map_err(|e| format!("sdk.callWorkflow: redis SET meta failed: {e}"))?;
             }
             if let Some(nats) = &hctx.nats {
@@ -691,9 +691,6 @@ fn host_call_actor_sync(
     record_sdk_input(&span, &input);
     let res: Result<String, String> = with_comm_ctx(|comm| {
         sdk_record_release_and_runtime_ids(&span, comm.as_ref());
-        if comm.actor_redis.is_none() {
-            return Err("sdk.callActor: actor Redis not configured".to_string());
-        }
         let comm_clone = comm.clone();
         let timeout = std::time::Duration::from_millis(timeout_ms as u64);
 
@@ -794,8 +791,7 @@ fn host_enqueue_worker(
     });
     record_sdk_input(&span, &input);
     let res: Result<String, String> = with_comm_ctx(|comm| {
-        let wq_redis = comm.wq_redis.clone()
-            .ok_or_else(|| "sdk.enqueueWorker: queue-worker Redis not configured".to_string())?;
+        let wq_redis = comm.wq_redis.clone();
         let wq_nats = comm.wq_nats.clone();
         let wq_js = comm.wq_js.clone();
         let project_id = comm.project_id.clone();
@@ -846,8 +842,7 @@ fn host_call_workflow_sync(
     });
     record_sdk_input(&span, &input);
     let res: Result<String, String> = with_comm_ctx(|comm| {
-        let wf_redis = comm.wf_redis.clone()
-            .ok_or_else(|| "sdk.callWorkflow: workflow Redis not configured".to_string())?;
+        let wf_redis = comm.wf_redis.clone();
         let wf_nats = comm.wf_nats.clone()
             .ok_or_else(|| "sdk.callWorkflow: NATS not configured (required for completion events)".to_string())?;
         let wf_js = comm.wf_js.clone();
@@ -946,8 +941,7 @@ fn host_start_workflow_fire_forget(
     });
     record_sdk_input(&span, &input);
     let res: Result<String, String> = with_comm_ctx(|comm| {
-        let wf_redis = comm.wf_redis.clone()
-            .ok_or_else(|| "sdk.callWorkflow: workflow Redis not configured".to_string())?;
+        let wf_redis = comm.wf_redis.clone();
         let wf_nats = comm.wf_nats.clone();
         let wf_js = comm.wf_js.clone();
         let pool = comm.pool.clone();
@@ -1079,8 +1073,7 @@ fn host_call_workflow_handler_sync(
     });
     record_sdk_input(&span, &input);
     let res: Result<String, String> = with_comm_ctx(|comm| {
-        let wf_redis = comm.wf_redis.clone()
-            .ok_or_else(|| "sdk.callWorkflowHandler: workflow Redis not configured".to_string())?;
+        let wf_redis = comm.wf_redis.clone();
         let wf_nats = comm.wf_nats.clone();
         let wf_js = comm.wf_js.clone();
         let pool = comm.pool.clone();
