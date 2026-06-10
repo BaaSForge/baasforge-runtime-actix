@@ -245,6 +245,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
 
     // In test mode, run the JetStream consumers in-process (normally handled
     // by the separate worker binaries).
+    let mut test_mode_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     if settings.test_mode {
         if let (Some(wr), Some(nc)) = (&wf_redis, &wf_nats_client) {
             let wr = wr.clone();
@@ -270,7 +271,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let wq_nats_wake = wq_nats_client.clone();
             let wq_js_wake = wq_jetstream.clone();
             let actor_pg_wake = actor_pg.clone();
-            tokio::spawn(async move {
+            test_mode_tasks.push(tokio::spawn(async move {
                 if let Err(e) = crate::services::workflow_worker::runner::run_wake_consumer(
                     wr,
                     nc,
@@ -291,7 +292,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 {
                     tracing::error!(error = %e, "[test_mode] wake consumer exited with error");
                 }
-            });
+            }));
         }
 
         if let (Some(wr), Some(nc)) = (&wq_redis, &wq_nats_client) {
@@ -309,7 +310,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let stream_name = crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM.to_string();
             let consumer_name = crate::services::queue_worker_engine::WQ_NATS_WORK_CONSUMER.to_string();
             tracing::info!("[test_mode] starting inline JetStream queue_worker work consumer");
-            tokio::spawn(async move {
+            test_mode_tasks.push(tokio::spawn(async move {
                 if let Err(e) =
                     crate::services::queue_worker_worker::runner::run_work_consumer(
                         wr,
@@ -330,7 +331,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 {
                     tracing::error!(error = %e, "[test_mode] queue_worker work consumer exited with error");
                 }
-            });
+            }));
         }
 
         if let Some(ar) = &actor_redis {
@@ -354,7 +355,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let actor_pg_consumer = actor_pg.clone();
             let actor_idle_sweep = std::time::Duration::from_secs(settings.actor_idle_sweep_secs.max(1));
             tracing::info!("[test_mode] starting inline actor mailbox consumer");
-            tokio::spawn(async move {
+            test_mode_tasks.push(tokio::spawn(async move {
                 if let Err(e) =
                     crate::services::actor_worker::runner::run_actor_consumer(
                         ar, actor_js, actor_nc, p, rc,
@@ -366,7 +367,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 {
                     tracing::error!(error = %e, "[test_mode] actor consumer exited with error");
                 }
-            });
+            }));
 
             let ar2 = actor_redis.as_ref().unwrap().clone();
             let actor_nc2 = actor_nats_client.clone();
@@ -376,7 +377,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let locks2 = actor_locks.clone();
             let actor_pg_alarm = actor_pg.clone();
             tracing::info!("[test_mode] starting inline actor alarm sweeper");
-            tokio::spawn(async move {
+            test_mode_tasks.push(tokio::spawn(async move {
                 use std::sync::Arc;
                 let comm = Arc::new(crate::libs::unit_js::modules::sdk::SdkCommCtx {
                     pool: p2,
@@ -401,7 +402,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     sdk_trigger_base_path: String::new(),
                 });
                 crate::services::actor_worker::alarms::run_alarm_sweeper(comm).await;
-            });
+            }));
         }
 
         if let Err(e) =
@@ -599,6 +600,10 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     .await?;
 
     crate::shutdown_telemetry();
+
+    for task in test_mode_tasks {
+        task.abort();
+    }
 
     if let Some(td) = test_mode_teardown {
         td.run().await;

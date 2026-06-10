@@ -28,7 +28,7 @@ fn api_unit_seed_metadata(module_slug: &str, unit_name_slug: &str) -> Option<ser
     if unit_name_slug == "text-body-echo" {
         return Some(json!({ "method": "POST" }));
     }
-    if module_slug == "api-tests" && unit_name_slug == "index" {
+    if module_slug == "runtime" || (module_slug == "api-tests" && unit_name_slug == "index") {
         return Some(json!({ "method": "GET", "timeout_seconds": 120 }));
     }
     if module_slug == "actor-tests" && unit_name_slug == "index" {
