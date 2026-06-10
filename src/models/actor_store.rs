@@ -1,11 +1,11 @@
 use crate::actor_schema::{actor_alarms, actor_snapshots};
+use crate::database::{block_on_db_tokio, pg_pool_builder, BlockingDbError};
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
 use diesel::upsert::excluded;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Duration;
 use uuid::Uuid;
 
 pub type ActorPgPool = Arc<Pool<ConnectionManager<PgConnection>>>;
@@ -17,14 +17,21 @@ pub fn actor_snapshot_stage_key(stage_runtime_id: Option<Uuid>) -> Uuid {
     }
 }
 
-pub fn build_actor_pg_pool(database_url: &str, pool_size: u32, timeout_secs: u64) -> ActorPgPool {
+pub fn build_actor_pg_pool(
+    database_url: &str,
+    pool_size: u32,
+    timeout_secs: u64,
+    idle_timeout_secs: u64,
+) -> ActorPgPool {
     let manager = ConnectionManager::<PgConnection>::new(database_url);
-    let pool = Pool::builder()
-        .max_size(pool_size)
-        .connection_timeout(Duration::from_secs(timeout_secs))
+    let pool = pg_pool_builder(pool_size, timeout_secs, idle_timeout_secs)
         .build(manager)
         .expect("actor PG pool build failed");
     Arc::new(pool)
+}
+
+fn db_err(e: BlockingDbError) -> String {
+    e.to_string()
 }
 
 #[derive(Insertable)]
@@ -59,15 +66,13 @@ pub async fn upsert_snapshot(
     state: &Value,
     version: i64,
 ) -> Result<(), String> {
-    let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
     let stage_key = actor_snapshot_stage_key(stage_runtime_id);
     let state = state.clone();
     let now = Utc::now();
-    tokio::task::spawn_blocking(move || {
-        let mut conn = pool.get().map_err(|e| e.to_string())?;
+    block_on_db_tokio(pool.as_ref(), move |conn| {
         let row = NewSnapshot {
             project_id,
             unit_path,
@@ -91,12 +96,11 @@ pub async fn upsert_snapshot(
                 actor_snapshots::version.eq(excluded(actor_snapshots::version)),
                 actor_snapshots::updated_at.eq(excluded(actor_snapshots::updated_at)),
             ))
-            .execute(&mut conn)
-            .map_err(|e| e.to_string())?;
+            .execute(conn)?;
         Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(db_err)
 }
 
 pub async fn load_snapshot(
@@ -106,25 +110,22 @@ pub async fn load_snapshot(
     actor_id: &str,
     stage_runtime_id: Option<Uuid>,
 ) -> Result<Option<(Value, i64)>, String> {
-    let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
     let stage_key = actor_snapshot_stage_key(stage_runtime_id);
-    tokio::task::spawn_blocking(move || {
-        let mut conn = pool.get().map_err(|e| e.to_string())?;
+    block_on_db_tokio(pool.as_ref(), move |conn| {
         actor_snapshots::table
             .filter(actor_snapshots::project_id.eq(project_id))
             .filter(actor_snapshots::unit_path.eq(&unit_path))
             .filter(actor_snapshots::actor_id.eq(&actor_id))
             .filter(actor_snapshots::stage_runtime_id.eq(stage_key))
             .select((actor_snapshots::state, actor_snapshots::version))
-            .first::<(Value, i64)>(&mut conn)
+            .first::<(Value, i64)>(conn)
             .optional()
-            .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(db_err)
 }
 
 pub async fn delete_snapshot(
@@ -134,13 +135,11 @@ pub async fn delete_snapshot(
     actor_id: &str,
     stage_runtime_id: Option<Uuid>,
 ) -> Result<(), String> {
-    let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
     let stage_key = actor_snapshot_stage_key(stage_runtime_id);
-    tokio::task::spawn_blocking(move || {
-        let mut conn = pool.get().map_err(|e| e.to_string())?;
+    block_on_db_tokio(pool.as_ref(), move |conn| {
         diesel::delete(
             actor_snapshots::table
                 .filter(actor_snapshots::project_id.eq(project_id))
@@ -148,12 +147,11 @@ pub async fn delete_snapshot(
                 .filter(actor_snapshots::actor_id.eq(&actor_id))
                 .filter(actor_snapshots::stage_runtime_id.eq(stage_key)),
         )
-        .execute(&mut conn)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .execute(conn)?;
+        Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(db_err)
 }
 
 pub async fn upsert_alarm(
@@ -164,7 +162,6 @@ pub async fn upsert_alarm(
     alarm_name: &str,
     fire_at_ms: i64,
 ) -> Result<(), String> {
-    let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
@@ -172,8 +169,7 @@ pub async fn upsert_alarm(
     let fire_at = DateTime::from_timestamp_millis(fire_at_ms)
         .ok_or_else(|| "invalid fire_at_ms".to_string())?;
     let now = Utc::now();
-    tokio::task::spawn_blocking(move || {
-        let mut conn = pool.get().map_err(|e| e.to_string())?;
+    block_on_db_tokio(pool.as_ref(), move |conn| {
         let row = NewAlarm { project_id, unit_path, actor_id, alarm_name, fire_at, created_at: now };
         diesel::insert_into(actor_alarms::table)
             .values(&row)
@@ -185,12 +181,11 @@ pub async fn upsert_alarm(
             ))
             .do_update()
             .set(actor_alarms::fire_at.eq(excluded(actor_alarms::fire_at)))
-            .execute(&mut conn)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+            .execute(conn)?;
+        Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(db_err)
 }
 
 pub async fn delete_alarm(
@@ -200,13 +195,11 @@ pub async fn delete_alarm(
     actor_id: &str,
     alarm_name: &str,
 ) -> Result<(), String> {
-    let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
     let alarm_name = alarm_name.to_string();
-    tokio::task::spawn_blocking(move || {
-        let mut conn = pool.get().map_err(|e| e.to_string())?;
+    block_on_db_tokio(pool.as_ref(), move |conn| {
         diesel::delete(
             actor_alarms::table
                 .filter(actor_alarms::project_id.eq(project_id))
@@ -214,12 +207,11 @@ pub async fn delete_alarm(
                 .filter(actor_alarms::actor_id.eq(&actor_id))
                 .filter(actor_alarms::alarm_name.eq(&alarm_name)),
         )
-        .execute(&mut conn)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .execute(conn)?;
+        Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(db_err)
 }
 
 pub async fn delete_actor_alarms(
@@ -228,22 +220,19 @@ pub async fn delete_actor_alarms(
     unit_path: &str,
     actor_id: &str,
 ) -> Result<(), String> {
-    let pool = pool.clone();
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        let mut conn = pool.get().map_err(|e| e.to_string())?;
+    block_on_db_tokio(pool.as_ref(), move |conn| {
         diesel::delete(
             actor_alarms::table
                 .filter(actor_alarms::project_id.eq(project_id))
                 .filter(actor_alarms::unit_path.eq(&unit_path))
                 .filter(actor_alarms::actor_id.eq(&actor_id)),
         )
-        .execute(&mut conn)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .execute(conn)?;
+        Ok(())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(db_err)
 }

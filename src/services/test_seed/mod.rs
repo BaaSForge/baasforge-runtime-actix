@@ -675,16 +675,8 @@ pub async fn clear_test_actor_redis(actor: &Option<ActorRedis>) -> Result<(), re
     Ok(())
 }
 
-pub fn teardown_actor_test_pg(settings: &Settings) {
-    let Some(ref url) = settings.actor_database_url else {
-        return;
-    };
-    let pool = crate::models::actor_store::build_actor_pg_pool(
-        url,
-        1,
-        settings.actor_database_connection_timeout_secs.max(1),
-    );
-    let Ok(mut conn) = pool.get() else {
+pub fn teardown_actor_test_pg(actor_pg: &crate::models::actor_store::ActorPgPool) {
+    let Ok(mut conn) = actor_pg.get() else {
         tracing::warn!("test_seed: cannot get actor DB connection for teardown");
         return;
     };
@@ -701,6 +693,7 @@ pub struct TestModeTeardown {
     pub pool: DbPool,
     pub settings: Settings,
     pub redis_conn: SharedRedisConn,
+    pub actor_pg: Option<crate::models::actor_store::ActorPgPool>,
     pub wf_redis: Option<SharedRedis>,
     pub wq_redis: Option<SharedRedis>,
     pub actor_redis: Option<ActorRedis>,
@@ -715,6 +708,7 @@ impl TestModeTeardown {
             &self.pool,
             &self.settings,
             &self.redis_conn,
+            &self.actor_pg,
             &self.wf_redis,
             &self.wq_redis,
             &self.actor_redis,
@@ -751,6 +745,7 @@ pub async fn teardown_test_mode_persistence(
     pool: &DbPool,
     settings: &Settings,
     redis_conn: &SharedRedisConn,
+    actor_pg: &Option<crate::models::actor_store::ActorPgPool>,
     wf_redis: &Option<SharedRedis>,
     wq_redis: &Option<SharedRedis>,
     actor_redis: &Option<ActorRedis>,
@@ -794,7 +789,9 @@ pub async fn teardown_test_mode_persistence(
         );
     }
 
-    teardown_actor_test_pg(settings);
+    if let Some(actor_pg) = actor_pg {
+        teardown_actor_test_pg(actor_pg);
+    }
     teardown_test_entities(pool);
 }
 

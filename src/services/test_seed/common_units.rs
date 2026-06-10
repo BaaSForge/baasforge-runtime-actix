@@ -3,7 +3,7 @@
 //! - `lib/**` → `unit_type: common` (injected shared code, no trigger)
 //! - other `**/*.js` (except companions) → `unit_type: api` harness endpoints
 
-use super::{RuntimeTarget, UnitSpec};
+use super::UnitSpec;
 use crate::libs::unit_slug::normalize_filename_stem_to_slug;
 use serde_json::json;
 use std::path::Path;

@@ -98,6 +98,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         settings.pg_database_url.clone(),
         settings.database_pool_size,
         settings.database_connection_timeout_secs,
+        settings.database_pool_idle_timeout_secs,
     );
     let redis_conn = crate::database::connect_shared_redis_cache(
         settings.redis_cache_enabled,
@@ -233,6 +234,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             url,
             settings.actor_database_pool_size.max(1),
             settings.actor_database_connection_timeout_secs.max(1),
+            settings.actor_database_pool_idle_timeout_secs,
         )
     });
     if actor_pg.is_some() {
@@ -420,6 +422,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             pool: pool.clone(),
             settings: settings.clone(),
             redis_conn: redis_conn.clone(),
+            actor_pg: actor_pg.clone(),
             wf_redis: wf_redis.clone(),
             wq_redis: wq_redis.clone(),
             actor_redis: actor_redis.clone(),

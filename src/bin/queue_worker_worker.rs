@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         settings.pg_database_url.clone(),
         settings.database_pool_size,
         settings.database_connection_timeout_secs,
+        settings.database_pool_idle_timeout_secs,
     );
 
     let redis_conn = baal_runtime_actix::database::connect_shared_redis_cache(
@@ -116,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             url,
             settings.actor_database_pool_size.max(1),
             settings.actor_database_connection_timeout_secs.max(1),
+            settings.actor_database_pool_idle_timeout_secs,
         )
     });
 

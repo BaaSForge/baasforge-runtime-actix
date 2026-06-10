@@ -17,7 +17,7 @@ use crate::libs::unit_js::queue_worker_runner::{
 };
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::{
-    live_release_and_runtime_ids_for_scope, load_live_release_id_scoped, load_unit_for_path_scoped,
+    live_release_and_runtime_ids_for_scope, load_unit_for_path_scoped,
 };
 use crate::services::queue_worker_engine::{
     QueueWorkerRunMeta, QueueWorkerRedis, WQ_NATS_WORK_SUBJECT_PER_PROJECT,
@@ -261,7 +261,7 @@ async fn handle_work_message(
     )
     .await;
 
-    let mut source = match unit_result {
+    let source = match unit_result {
         Ok(Some(unit)) => match unit.compiled_code.as_deref().filter(|s| !s.trim().is_empty()) {
             Some(s) => s.to_string(),
             None => {

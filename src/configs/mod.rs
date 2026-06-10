@@ -35,6 +35,7 @@ pub struct Settings {
     /// Per-process pool size. Total DB connections = (API_replicas + worker_replicas) × this. Keep under PostgreSQL max_connections.
     pub database_pool_size: u32,
     pub database_connection_timeout_secs: u64,
+    pub database_pool_idle_timeout_secs: u64,
     /// Max Tokio blocking threads for `web::block` (API unit JS + sync SDK). Set via `API_WORKER_MAX_BLOCKING_THREADS`.
     pub api_worker_max_blocking_threads: usize,
     pub redis_url: String,
@@ -89,6 +90,7 @@ pub struct Settings {
     pub actor_database_url: Option<String>,
     pub actor_database_pool_size: u32,
     pub actor_database_connection_timeout_secs: u64,
+    pub actor_database_pool_idle_timeout_secs: u64,
     pub actor_redis_url: Option<String>,
     pub actor_nats_url: Option<String>,
     pub actor_nats_jetstream_stream: Option<String>,
@@ -124,6 +126,10 @@ impl Settings {
             .expect("DATABASE_CONNECTION_TIMEOUT_SECS must be set")
             .parse()
             .expect("DATABASE_CONNECTION_TIMEOUT_SECS must be a valid u64");
+        let database_pool_idle_timeout_secs: u64 = env::var("DATABASE_POOL_IDLE_TIMEOUT_SECS")
+            .expect("DATABASE_POOL_IDLE_TIMEOUT_SECS must be set")
+            .parse()
+            .expect("DATABASE_POOL_IDLE_TIMEOUT_SECS must be a valid u64");
         let api_worker_max_blocking_threads: usize = env::var("API_WORKER_MAX_BLOCKING_THREADS")
             .expect("API_WORKER_MAX_BLOCKING_THREADS must be set")
             .parse()
@@ -257,6 +263,10 @@ impl Settings {
                 .ok()
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(5);
+        let actor_database_pool_idle_timeout_secs: u64 = env::var("ACTOR_DATABASE_POOL_IDLE_TIMEOUT_SECS")
+            .expect("ACTOR_DATABASE_POOL_IDLE_TIMEOUT_SECS must be set")
+            .parse()
+            .expect("ACTOR_DATABASE_POOL_IDLE_TIMEOUT_SECS must be a valid u64");
         let actor_redis_url = env::var("ACTOR_REDIS_URL")
             .ok()
             .map(|s| s.trim().to_string())
@@ -297,6 +307,7 @@ impl Settings {
             pg_database_url,
             database_pool_size,
             database_connection_timeout_secs,
+            database_pool_idle_timeout_secs,
             api_worker_max_blocking_threads,
             redis_url,
             redis_cache_enabled,
@@ -320,6 +331,7 @@ impl Settings {
             actor_database_url,
             actor_database_pool_size,
             actor_database_connection_timeout_secs,
+            actor_database_pool_idle_timeout_secs,
             actor_redis_url,
             actor_nats_url,
             actor_nats_jetstream_stream,

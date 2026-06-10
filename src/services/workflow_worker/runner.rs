@@ -7,7 +7,7 @@ use crate::services::actor_engine::ActorRedis;
 use crate::models::actor_store::{build_actor_pg_pool, ActorPgPool};
 use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::{
-    live_release_and_runtime_ids_for_scope, load_live_release_id_scoped, load_unit_for_path_scoped,
+    live_release_and_runtime_ids_for_scope, load_unit_for_path_scoped,
 };
 use crate::services::workflow_engine;
 use futures::StreamExt;
@@ -43,6 +43,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         settings.pg_database_url.clone(),
         settings.database_pool_size,
         settings.database_connection_timeout_secs,
+        settings.database_pool_idle_timeout_secs,
     );
 
     let wf_redis: Option<Arc<Mutex<redis::aio::MultiplexedConnection>>> =
@@ -133,6 +134,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             url,
             settings.actor_database_pool_size.max(1),
             settings.actor_database_connection_timeout_secs.max(1),
+            settings.actor_database_pool_idle_timeout_secs,
         )
     });
 

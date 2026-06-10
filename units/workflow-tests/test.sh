@@ -90,7 +90,7 @@ SERVER_PID=$!
 
 echo "==> Waiting for server to be ready…"
 for _ in $(seq 1 60); do
-  if curl -sf "http://127.0.0.1:${PORT}/api/v1/trigger/${TEST_PROJECT_ID}/test/wf/test" >/dev/null 2>&1; then
+  if curl -s -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null; then
     break
   fi
   sleep 0.5

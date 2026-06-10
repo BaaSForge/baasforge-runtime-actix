@@ -2,8 +2,9 @@
 //! Total PostgreSQL connections ≤ (API_replicas + worker_replicas) × max_size. Set max_size
 //! so this stays under PostgreSQL `max_connections` (or put PgBouncer in front of Postgres).
 //!
-//! All DB access from async handlers/middlewares must go through `block_on_db` so blocking
-//! r2d2/Diesel I/O does not block the actix worker thread (which causes 408 timeouts).
+//! All DB access from async handlers must go through `block_on_db`; workers use
+//! `block_on_db_tokio`. Never call `pool.get()` in handlers/async code — connections live
+//! only inside the closure and must not be held across `.await`.
 
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
@@ -103,13 +104,31 @@ pub async fn connect_shared_redis_cache(
     Ok(Some(Arc::new(Mutex::new(conn))))
 }
 
-pub fn establish_pool(database_url: String, max_size: u32, connection_timeout_secs: u64) -> DbPool {
+pub fn pg_pool_builder(
+    max_size: u32,
+    connection_timeout_secs: u64,
+    idle_timeout_secs: u64,
+) -> r2d2::Builder<ConnectionManager<PgConnection>> {
+    let mut builder = Pool::builder()
+        .max_size(max_size)
+        .min_idle(Some(0))
+        .connection_timeout(Duration::from_secs(connection_timeout_secs))
+        .test_on_check_out(true);
+    if idle_timeout_secs > 0 {
+        builder = builder.idle_timeout(Some(Duration::from_secs(idle_timeout_secs)));
+    }
+    builder
+}
+
+pub fn establish_pool(
+    database_url: String,
+    max_size: u32,
+    connection_timeout_secs: u64,
+    idle_timeout_secs: u64,
+) -> DbPool {
     let manager = ConnectionManager::<PgConnection>::new(&database_url);
 
-    let pool = Pool::builder()
-        .max_size(max_size)
-        .connection_timeout(Duration::from_secs(connection_timeout_secs))
-        .test_on_check_out(true)
+    let pool = pg_pool_builder(max_size, connection_timeout_secs, idle_timeout_secs)
         .build(manager)
         .expect("Failed to create database pool");
 
