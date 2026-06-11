@@ -335,29 +335,9 @@ impl Settings {
     }
 }
 
-/// Connect to NATS, extracting user/pass from the URL if present.
-/// `async_nats::connect` does NOT parse userinfo from URLs, so we must
-/// extract credentials ourselves and use `ConnectOptions`.
+/// Connect to NATS with resilient background reconnect (`async_nats` ConnectOptions).
 pub async fn connect_nats(url: &str) -> Result<async_nats::Client, async_nats::ConnectError> {
-    if let Ok(parsed) = url::Url::parse(url) {
-        let user = parsed.username();
-        let pass = parsed.password().unwrap_or("");
-        if !user.is_empty() {
-            let bare = format!(
-                "{}://{}:{}",
-                parsed.scheme(),
-                parsed.host_str().unwrap_or("localhost"),
-                parsed.port().unwrap_or(4222),
-            );
-            return async_nats::ConnectOptions::with_user_and_password(
-                user.to_string(),
-                pass.to_string(),
-            )
-            .connect(&bare)
-            .await;
-        }
-    }
-    async_nats::connect(url).await
+    crate::nats::connect_nats(url).await
 }
 
 fn require_non_empty_env(key: &str) -> Result<String, Box<dyn std::error::Error>> {

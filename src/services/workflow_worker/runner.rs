@@ -50,16 +50,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("[wf_redis] workflow Redis connected");
 
     let nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
-        match crate::configs::connect_nats(url).await {
-            Ok(client) => {
-                info!("[nats_wf] connected for workflow wake consumer");
-                Some(client)
-            }
-            Err(e) => {
-                warn!(error = %e, "[nats_wf] connection failed, workflow wake disabled");
-                None
-            }
-        }
+        let client = crate::configs::connect_nats(url).await?;
+        info!("[nats_wf] NATS client ready for workflow wake consumer");
+        Some(client)
     } else {
         info!("[nats_wf] WF_NATS_URL not set, workflow wake disabled");
         None
@@ -198,38 +191,72 @@ pub async fn run_wake_consumer(
     wq_js: Option<jetstream::Context>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
+    let wake_subjects = vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()];
+    let mut backoff_attempt = 0usize;
 
-    js.create_or_update_stream(async_nats::jetstream::stream::Config {
-        name: stream_name.to_string(),
-        subjects: vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()],
-        ..Default::default()
-    })
-    .await?;
+    loop {
+        if let Err(e) = js
+            .create_or_update_stream(async_nats::jetstream::stream::Config {
+                name: stream_name.to_string(),
+                subjects: wake_subjects.clone(),
+                ..Default::default()
+            })
+            .await
+        {
+            error!(error = %e, "[workflow_wake] stream setup failed; retrying");
+            crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+            continue;
+        }
 
-    let stream = js.get_stream(stream_name).await?;
+        let stream = match js.get_stream(stream_name).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "[workflow_wake] get_stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
 
-    let consumer: async_nats::jetstream::consumer::Consumer<async_nats::jetstream::consumer::pull::Config> = stream
-        .create_consumer(
-            async_nats::jetstream::consumer::pull::Config {
+        let consumer: async_nats::jetstream::consumer::Consumer<
+            async_nats::jetstream::consumer::pull::Config,
+        > = match stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
                 durable_name: Some(consumer_name.to_string()),
-                filter_subjects: vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()],
+                filter_subjects: wake_subjects.clone(),
                 ack_wait: std::time::Duration::from_secs(300),
                 max_ack_pending: WAKE_CONSUMER_MAX_ACK_PENDING,
                 ..Default::default()
-            },
-        )
-        .await?;
+            })
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "[workflow_wake] create_consumer failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
 
-    info!(
-        stream = %stream_name,
-        consumer = %consumer_name,
-        "[workflow_wake] JetStream pull consumer ready (wake + start)"
-    );
+        info!(
+            stream = %stream_name,
+            consumer = %consumer_name,
+            "[workflow_wake] JetStream pull consumer reconnecting (wake + start)"
+        );
 
-    let mut messages = consumer.messages().await?;
+        let mut messages = match consumer.messages().await {
+            Ok(m) => {
+                backoff_attempt = 0;
+                m
+            }
+            Err(e) => {
+                error!(error = %e, "[workflow_wake] messages stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
 
-    while let Some(result) = messages.next().await {
-        match result {
+        while let Some(result) = messages.next().await {
+            match result {
             Ok(msg) => {
                 let subject = msg.subject.to_string();
 
@@ -359,13 +386,15 @@ pub async fn run_wake_consumer(
                 });
             }
             Err(e) => {
-                error!(error = %e, "[workflow_wake] consumer stream error; stopping");
-                return Err(format!("JetStream workflow wake pull stream error: {e}").into());
+                error!(error = %e, "[workflow_wake] consumer stream error; reconnecting");
+                break;
+            }
             }
         }
-    }
 
-    Ok(())
+        warn!("[workflow_wake] pull stream ended; reconnecting");
+        crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+    }
 }
 
 async fn finalize_wake_message(

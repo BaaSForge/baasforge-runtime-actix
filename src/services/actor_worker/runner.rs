@@ -48,36 +48,8 @@ pub async fn run_actor_consumer(
         .map(|s| s.to_string())
         .collect();
 
-    js.create_or_update_stream(async_nats::jetstream::stream::Config {
-        name: stream_name.to_string(),
-        subjects,
-        ..Default::default()
-    })
-    .await?;
-
-    let stream = js.get_stream(stream_name).await?;
-
     let filter_subject = "actor.*.*.*.*.msg".to_string();
-    let consumer: async_nats::jetstream::consumer::Consumer<
-        async_nats::jetstream::consumer::pull::Config,
-    > = stream
-        .create_consumer(async_nats::jetstream::consumer::pull::Config {
-            durable_name: Some(consumer_name.to_string()),
-            filter_subjects: vec![filter_subject],
-            ack_wait: std::time::Duration::from_secs(300),
-            ..Default::default()
-        })
-        .await?;
-
-    info!(
-        stream = %stream_name,
-        consumer = %consumer_name,
-        "[actor_consumer] JetStream pull consumer ready"
-    );
-
-    let mut messages = consumer.messages().await?;
-
-    let actor_js_for_comm = Some(js);
+    let actor_js_for_comm = Some(js.clone());
 
     let idle_comm = Arc::new(SdkCommCtx {
         pool: pool.clone(),
@@ -106,37 +78,100 @@ pub async fn run_actor_consumer(
         run_actor_idle_sweep(idle_comm, idle_interval).await;
     });
 
-    while let Some(result) = messages.next().await {
-        match result {
-            Ok(msg) => {
-                let actor_redis = actor_redis.clone();
-                let actor_nats = actor_nats.clone();
-                let actor_js = actor_js_for_comm.clone();
-                let pool = pool.clone();
-                let redis_conn = redis_conn.clone();
-                let wf_redis = wf_redis.clone();
-                let wq_redis = wq_redis.clone();
-                let wf_nats = wf_nats.clone();
-                let wf_js = wf_js.clone();
-                let locks = locks.clone();
+    let mut backoff_attempt = 0usize;
+    loop {
+        if let Err(e) = js
+            .create_or_update_stream(async_nats::jetstream::stream::Config {
+                name: stream_name.to_string(),
+                subjects: subjects.clone(),
+                ..Default::default()
+            })
+            .await
+        {
+            error!(error = %e, "[actor_consumer] stream setup failed; retrying");
+            crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+            continue;
+        }
 
-                let actor_pg = actor_pg.clone();
-                tokio::spawn(async move {
-                    handle_actor_message(
-                        msg, actor_redis, actor_js, actor_nats, pool, redis_conn,
-                        wf_redis, wq_redis, wf_nats, wf_js, actor_pg, locks,
-                    )
-                    .await;
-                });
+        let stream = match js.get_stream(stream_name).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "[actor_consumer] get_stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        info!(
+            stream = %stream_name,
+            consumer = %consumer_name,
+            "[actor_consumer] JetStream pull consumer reconnecting"
+        );
+
+        let consumer: async_nats::jetstream::consumer::Consumer<
+            async_nats::jetstream::consumer::pull::Config,
+        > = match stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some(consumer_name.to_string()),
+                filter_subjects: vec![filter_subject.clone()],
+                ack_wait: std::time::Duration::from_secs(300),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "[actor_consumer] create_consumer failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        let mut messages = match consumer.messages().await {
+            Ok(m) => {
+                backoff_attempt = 0;
+                m
             }
             Err(e) => {
-                error!(error = %e, "[actor_consumer] consumer stream error; stopping");
-                return Err(format!("JetStream actor mailbox pull stream error: {e}").into());
+                error!(error = %e, "[actor_consumer] messages stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        while let Some(result) = messages.next().await {
+            match result {
+                Ok(msg) => {
+                    let actor_redis = actor_redis.clone();
+                    let actor_nats = actor_nats.clone();
+                    let actor_js = actor_js_for_comm.clone();
+                    let pool = pool.clone();
+                    let redis_conn = redis_conn.clone();
+                    let wf_redis = wf_redis.clone();
+                    let wq_redis = wq_redis.clone();
+                    let wf_nats = wf_nats.clone();
+                    let wf_js = wf_js.clone();
+                    let locks = locks.clone();
+
+                    let actor_pg = actor_pg.clone();
+                    tokio::spawn(async move {
+                        handle_actor_message(
+                            msg, actor_redis, actor_js, actor_nats, pool, redis_conn,
+                            wf_redis, wq_redis, wf_nats, wf_js, actor_pg, locks,
+                        )
+                        .await;
+                    });
+                }
+                Err(e) => {
+                    error!(error = %e, "[actor_consumer] consumer stream error; reconnecting");
+                    break;
+                }
             }
         }
-    }
 
-    Ok(())
+        warn!("[actor_consumer] pull stream ended; reconnecting");
+        crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+    }
 }
 
 async fn handle_actor_message(

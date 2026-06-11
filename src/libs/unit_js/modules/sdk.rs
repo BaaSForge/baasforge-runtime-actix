@@ -456,6 +456,11 @@ fn host_resolve_promise(ctx: Ctx<'_>, name: String, value_json: String) -> rquic
         let project_id = hctx.project_id.clone();
         let instance_id = hctx.instance_id.clone();
         block_async(async {
+            if hctx.nats.is_some() {
+                crate::nats::ensure_publish_available(&hctx.nats, &None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             let rkey = redis_key(&project_id, &instance_id, &format!("promise:{name}"));
             let value = serde_json::json!({ "status": "resolved", "value": value_json }).to_string();
             let mut conn = hctx.redis.clone();
@@ -467,8 +472,9 @@ fn host_resolve_promise(ctx: Ctx<'_>, name: String, value_json: String) -> rquic
                 if let Some(obj) = wake.as_object_mut() {
                     crate::telemetry::inject_traceparent_json_field(obj);
                 }
-                nats.publish(subject, bytes::Bytes::from(wake.to_string())).await
-                    .map_err(|e| format!("nats publish wake failed: {e}"))?;
+                crate::nats::publish_core(nats, subject, bytes::Bytes::from(wake.to_string()))
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
             Ok(())
         })
@@ -481,6 +487,11 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
         let project_id = hctx.project_id.clone();
         let instance_id = hctx.instance_id.clone();
         block_async(async {
+            if hctx.nats.is_some() {
+                crate::nats::ensure_publish_available(&hctx.nats, &None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             let rkey = redis_key(&project_id, &instance_id, &format!("promise:{name}"));
             let value = serde_json::json!({ "status": "rejected", "error": error }).to_string();
             let mut conn = hctx.redis.clone();
@@ -493,8 +504,9 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
                     crate::telemetry::inject_traceparent_json_field(obj);
                 }
                 let payload = wake.to_string();
-                nats.publish(subject, bytes::Bytes::from(payload)).await
-                    .map_err(|e| format!("nats publish wake failed: {e}"))?;
+                crate::nats::publish_core(nats, subject, bytes::Bytes::from(payload))
+                    .await
+                    .map_err(|e| e.to_string())?;
             }
             Ok(())
         })
@@ -526,6 +538,11 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
             }
 
             let callee_instance_id = crate::libs::ids::new_uuid().to_string();
+            if hctx.nats.is_some() {
+                crate::nats::ensure_publish_available(&hctx.nats, &None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             let meta_key = redis_key(&project_id, &callee_instance_id, "meta");
             let mut meta_val = serde_json::json!({
                 "name": unit_path,
@@ -556,7 +573,8 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
                     crate::telemetry::inject_traceparent_json_field(obj);
                 }
                 let start_payload = start_val.to_string();
-                nats.publish(start_subject, bytes::Bytes::from(start_payload)).await
+                crate::nats::publish_core(nats, start_subject, bytes::Bytes::from(start_payload))
+                    .await
                     .map_err(|e| format!("sdk.callWorkflow: nats publish start failed: {e}"))?;
             }
             Ok(())
@@ -1175,6 +1193,10 @@ fn host_start_actor_call(
             let span_run = span.clone();
             block_async(
                 async move {
+                    crate::nats::ensure_publish_available(&None, &Some(actor_js.clone()))
+                        .await
+                        .map_err(|e| e.to_string())?;
+
                     publish_actor_message(
                         &actor_js,
                         &project_id,

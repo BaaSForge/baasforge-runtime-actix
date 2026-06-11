@@ -98,8 +98,6 @@ async fn handle_release_deploy_event(redis: &SharedRedisConn, payload: &[u8]) {
     );
 }
 
-/// Runs the JetStream durable pull consumer until the connection ends. Intended for the `runtime_cache_listener`
-/// binary (or a dedicated task); do not drop the returned future immediately or the listener will stop.
 pub async fn run_release_deploy_listener(
     redis: SharedRedisConn,
     nats_url: String,
@@ -109,52 +107,82 @@ pub async fn run_release_deploy_listener(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("[nats] connecting to NATS for release deploy events (JetStream)");
     let client = crate::configs::connect_nats(&nats_url).await?;
-    tracing::info!("[nats] connected to NATS");
+    tracing::info!("[nats] NATS client ready for release deploy events");
 
     let js = jetstream::new(client);
+    let mut backoff_attempt = 0usize;
 
-    let stream = js
-        .get_or_create_stream(stream::Config {
-            name: jetstream_stream.clone(),
-            subjects: vec![subject.clone()],
-            ..Default::default()
-        })
-        .await?;
-
-    tracing::info!(
-        stream = %jetstream_stream,
-        consumer = %consumer_name,
-        %subject,
-        "[nats] JetStream stream ready; subscribing with durable pull consumer"
-    );
-
-    let consumer = stream
-        .get_or_create_consumer(
-            &consumer_name,
-            pull::Config {
-                durable_name: Some(consumer_name.clone()),
-                filter_subject: subject.clone(),
+    loop {
+        let stream = match js
+            .get_or_create_stream(stream::Config {
+                name: jetstream_stream.clone(),
+                subjects: vec![subject.clone()],
                 ..Default::default()
-            },
-        )
-        .await?;
+            })
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "[nats] release stream setup failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
 
-    let mut messages = consumer.messages().await?;
+        tracing::info!(
+            stream = %jetstream_stream,
+            consumer = %consumer_name,
+            %subject,
+            "[nats] release deploy consumer reconnecting"
+        );
 
-    while let Some(result) = messages.next().await {
-        match result {
-            Ok(msg) => {
-                handle_release_deploy_event(&redis, &msg.payload).await;
-                if let Err(e) = msg.ack().await {
-                    tracing::error!(error = %e, "[nats] jetstream ack failed");
-                }
+        let consumer = match stream
+            .get_or_create_consumer(
+                &consumer_name,
+                pull::Config {
+                    durable_name: Some(consumer_name.clone()),
+                    filter_subject: subject.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "[nats] release consumer setup failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        let mut messages = match consumer.messages().await {
+            Ok(m) => {
+                backoff_attempt = 0;
+                m
             }
             Err(e) => {
-                tracing::error!(error = %e, "[nats] jetstream consumer stream error");
+                tracing::error!(error = %e, "[nats] release messages stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        while let Some(result) = messages.next().await {
+            match result {
+                Ok(msg) => {
+                    handle_release_deploy_event(&redis, &msg.payload).await;
+                    if let Err(e) = msg.ack().await {
+                        tracing::error!(error = %e, "[nats] jetstream ack failed");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "[nats] jetstream consumer stream error; reconnecting");
+                    break;
+                }
             }
         }
-    }
 
-    tracing::warn!(%subject, "[nats] release deploy JetStream consumer ended");
-    Ok(())
+        tracing::warn!(%subject, "[nats] release deploy consumer stream ended; reconnecting");
+        crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+    }
 }

@@ -81,51 +81,82 @@ pub async fn run_runtime_env_invalidate_listener(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("[nats] connecting for runtime env invalidate events (JetStream)");
     let client = crate::configs::connect_nats(&nats_url).await?;
+    tracing::info!("[nats] NATS client ready for runtime env invalidate events");
 
     let js = jetstream::new(client);
+    let mut backoff_attempt = 0usize;
 
-    let stream = js
-        .get_or_create_stream(stream::Config {
-            name: jetstream_stream.clone(),
-            subjects: vec![subject.clone()],
-            ..Default::default()
-        })
-        .await?;
-
-    tracing::info!(
-        stream = %jetstream_stream,
-        consumer = %consumer_name,
-        %subject,
-        "[nats] JetStream stream ready; runtime env invalidate consumer"
-    );
-
-    let consumer = stream
-        .get_or_create_consumer(
-            &consumer_name,
-            pull::Config {
-                durable_name: Some(consumer_name.clone()),
-                filter_subject: subject.clone(),
+    loop {
+        let stream = match js
+            .get_or_create_stream(stream::Config {
+                name: jetstream_stream.clone(),
+                subjects: vec![subject.clone()],
                 ..Default::default()
-            },
-        )
-        .await?;
+            })
+            .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "[nats] env stream setup failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
 
-    let mut messages = consumer.messages().await?;
+        tracing::info!(
+            stream = %jetstream_stream,
+            consumer = %consumer_name,
+            %subject,
+            "[nats] runtime env invalidate consumer reconnecting"
+        );
 
-    while let Some(result) = messages.next().await {
-        match result {
-            Ok(msg) => {
-                handle_runtime_env_invalidate_event(&redis, &msg.payload).await;
-                if let Err(e) = msg.ack().await {
-                    tracing::error!(error = %e, "[nats] jetstream ack failed");
-                }
+        let consumer = match stream
+            .get_or_create_consumer(
+                &consumer_name,
+                pull::Config {
+                    durable_name: Some(consumer_name.clone()),
+                    filter_subject: subject.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "[nats] env consumer setup failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        let mut messages = match consumer.messages().await {
+            Ok(m) => {
+                backoff_attempt = 0;
+                m
             }
             Err(e) => {
-                tracing::error!(error = %e, "[nats] jetstream consumer stream error");
+                tracing::error!(error = %e, "[nats] env messages stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        while let Some(result) = messages.next().await {
+            match result {
+                Ok(msg) => {
+                    handle_runtime_env_invalidate_event(&redis, &msg.payload).await;
+                    if let Err(e) = msg.ack().await {
+                        tracing::error!(error = %e, "[nats] jetstream ack failed");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "[nats] jetstream consumer stream error; reconnecting");
+                    break;
+                }
             }
         }
-    }
 
-    tracing::warn!(%subject, "[nats] runtime env invalidate consumer ended");
-    Ok(())
+        tracing::warn!(%subject, "[nats] runtime env invalidate consumer stream ended; reconnecting");
+        crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+    }
 }

@@ -142,9 +142,9 @@ pub async fn publish_actor_message(
         crate::telemetry::inject_traceparent_json_field(obj);
     }
     crate::rt_step!("actor.nats.publish.jetstream", subject = %subject, msg_id = %msg_id);
-    js.publish(subject.clone(), bytes::Bytes::from(msg_payload.to_string()))
+    crate::nats::publish_jetstream(js, subject.clone(), bytes::Bytes::from(msg_payload.to_string()))
         .await
-        .map_err(|e| format!("actor mailbox publish failed: {e}"))?;
+        .map_err(|e| e.to_string())?;
     crate::rt_exit_ok!("actor.nats.publish", subject = %subject, msg_id = %msg_id);
     Ok(msg_id)
 }

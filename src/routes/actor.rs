@@ -378,6 +378,12 @@ async fn actor_post_inner(
                         .json(api_error("actor NATS not configured", json!({})));
                 };
 
+                if let Err(e) = crate::nats::ensure_publish_available(&ctx.actor_nats_client, &Some(js.clone())).await {
+                    tracing::warn!(error = %e, "[actor_route] NATS unavailable before mailbox publish");
+                    return HttpResponse::ServiceUnavailable()
+                        .json(api_error(crate::nats::NATS_UNAVAILABLE_MSG, json!({})));
+                }
+
                 let stage_s = stage_runtime_id.map(|u| u.to_string());
                 match publish_actor_message(
                     js,
@@ -393,6 +399,11 @@ async fn actor_post_inner(
                 {
                     Ok(_) => HttpResponse::Ok().json(json!({ "delivered": true })),
                     Err(e) => {
+                        if crate::nats::is_nats_unavailable_error(&e) {
+                            tracing::warn!(error = %e, "[actor_route] mailbox publish failed (NATS unavailable)");
+                            return HttpResponse::ServiceUnavailable()
+                                .json(api_error(crate::nats::NATS_UNAVAILABLE_MSG, json!({})));
+                        }
                         tracing::error!(error = %e, "[actor_route] mailbox publish failed");
                         HttpResponse::InternalServerError()
                             .json(api_error(&e, json!({})))

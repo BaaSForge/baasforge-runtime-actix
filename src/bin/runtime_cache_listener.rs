@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let redis = redis_conn.clone();
         let nats_url = nats_url.clone();
         async move {
-            run_release_deploy_listener(
+            if let Err(e) = run_release_deploy_listener(
                 redis,
                 nats_url,
                 nats_subject,
@@ -54,6 +54,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 jetstream_consumer,
             )
             .await
+            {
+                tracing::error!(error = %e, "[runtime_cache_listener] release listener exited");
+            }
         }
     });
 
@@ -67,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let redis = redis_conn.clone();
             let nats_url = nats_url.clone();
             Some(tokio::spawn(async move {
-                run_runtime_env_invalidate_listener(
+                if let Err(e) = run_runtime_env_invalidate_listener(
                     redis,
                     nats_url,
                     env_subject,
@@ -75,6 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     env_consumer,
                 )
                 .await
+                {
+                    tracing::error!(error = %e, "[runtime_cache_listener] env listener exited");
+                }
             }))
         }
         _ => {
@@ -85,17 +91,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
-    match env_handle {
-        Some(env_h) => {
-            let (release_res, env_res) = tokio::join!(release_handle, env_h);
-            release_res??;
-            env_res??;
-        }
-        None => {
-            release_handle.await??;
-        }
+    tracing::info!("runtime_cache_listener running, press Ctrl+C to stop");
+    tokio::signal::ctrl_c().await?;
+    release_handle.abort();
+    if let Some(h) = env_handle {
+        h.abort();
     }
-
     shutdown_telemetry();
     Ok(())
 }

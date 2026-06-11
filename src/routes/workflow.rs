@@ -184,6 +184,11 @@ async fn do_start_workflow(
             "status": "running",
         })),
         Err(e) => {
+            if crate::nats::is_nats_unavailable_error(&e) {
+                tracing::warn!(error = %e, "workflow start: NATS unavailable");
+                return HttpResponse::ServiceUnavailable()
+                    .json(api_error(crate::nats::NATS_UNAVAILABLE_MSG, json!({})));
+            }
             tracing::error!(error = %e, "workflow start error");
             HttpResponse::InternalServerError().json(api_error(&e, json!({})))
         }
@@ -258,6 +263,10 @@ async fn do_call_handler(
                 HttpResponse::NotFound().json(api_error(&e, json!({})))
             } else if e.contains("Unknown shared handler") {
                 HttpResponse::BadRequest().json(api_error(&e, json!({})))
+            } else if crate::nats::is_nats_unavailable_error(&e) {
+                tracing::warn!(error = %e, "workflow handler call: NATS unavailable");
+                HttpResponse::ServiceUnavailable()
+                    .json(api_error(crate::nats::NATS_UNAVAILABLE_MSG, json!({})))
             } else {
                 tracing::error!(error = %e, "workflow handler call error");
                 HttpResponse::InternalServerError().json(api_error(&e, json!({})))

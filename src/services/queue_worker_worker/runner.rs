@@ -46,41 +46,73 @@ pub async fn run_work_consumer(
         .map(|s| s.to_string())
         .collect();
 
-    js.create_or_update_stream(async_nats::jetstream::stream::Config {
-        name: stream_name.to_string(),
-        subjects,
-        ..Default::default()
-    })
-    .await?;
-
-    let stream = js.get_stream(stream_name).await?;
-
     let filter_subject = format!("wq.*.{WQ_NATS_WORK_SUBJECT_PER_PROJECT}.work");
-    let consumer: async_nats::jetstream::consumer::Consumer<
-        async_nats::jetstream::consumer::pull::Config,
-    > = stream
-        .create_consumer(async_nats::jetstream::consumer::pull::Config {
-            durable_name: Some(consumer_name.to_string()),
-            filter_subjects: vec![filter_subject],
-            ack_wait: std::time::Duration::from_secs(300),
-            ..Default::default()
-        })
-        .await?;
-
-    info!(
-        stream = %stream_name,
-        consumer = %consumer_name,
-        "[queue_worker_consumer] JetStream pull consumer ready"
-    );
-
-    let mut messages = consumer.messages().await?;
-
     let wq_js = jetstream::new(nats.clone());
-
     let wf_js = wf_nats.as_ref().map(|n| jetstream::new(n.clone()));
+    let mut backoff_attempt = 0usize;
 
-    while let Some(result) = messages.next().await {
-        match result {
+    loop {
+        if let Err(e) = js
+            .create_or_update_stream(async_nats::jetstream::stream::Config {
+                name: stream_name.to_string(),
+                subjects: subjects.clone(),
+                ..Default::default()
+            })
+            .await
+        {
+            error!(error = %e, "[queue_worker_consumer] stream setup failed; retrying");
+            crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+            continue;
+        }
+
+        let stream = match js.get_stream(stream_name).await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "[queue_worker_consumer] get_stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        let consumer: async_nats::jetstream::consumer::Consumer<
+            async_nats::jetstream::consumer::pull::Config,
+        > = match stream
+            .create_consumer(async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some(consumer_name.to_string()),
+                filter_subjects: vec![filter_subject.clone()],
+                ack_wait: std::time::Duration::from_secs(300),
+                ..Default::default()
+            })
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                error!(error = %e, "[queue_worker_consumer] create_consumer failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        info!(
+            stream = %stream_name,
+            consumer = %consumer_name,
+            "[queue_worker_consumer] JetStream pull consumer reconnecting"
+        );
+
+        let mut messages = match consumer.messages().await {
+            Ok(m) => {
+                backoff_attempt = 0;
+                m
+            }
+            Err(e) => {
+                error!(error = %e, "[queue_worker_consumer] messages stream failed; retrying");
+                crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+                continue;
+            }
+        };
+
+        while let Some(result) = messages.next().await {
+            match result {
             Ok(msg) => {
                 let wq_redis = wq_redis.clone();
                 let nats = nats.clone();
@@ -117,13 +149,15 @@ pub async fn run_work_consumer(
                 });
             }
             Err(e) => {
-                error!(error = %e, "[queue_worker_consumer] consumer stream error; stopping");
-                return Err(format!("JetStream queue worker pull stream error: {e}").into());
+                error!(error = %e, "[queue_worker_consumer] consumer stream error; reconnecting");
+                break;
+            }
             }
         }
-    }
 
-    Ok(())
+        warn!("[queue_worker_consumer] pull stream ended; reconnecting");
+        crate::nats::sleep_consumer_backoff(&mut backoff_attempt).await;
+    }
 }
 
 async fn handle_work_message(

@@ -64,6 +64,14 @@ pub async fn enqueue_queue_worker_run(
         unit_path,
         stage_runtime_id = stage_runtime_id.map(|u| u.to_string()).unwrap_or_default()
     );
+
+    if crate::nats::client_for_publish(nats, js).is_none() {
+        return Err("NATS not configured: cannot enqueue queue worker run".to_string());
+    }
+    crate::nats::ensure_publish_available(nats, js)
+        .await
+        .map_err(|e| e.to_string())?;
+
     let run_id = crate::libs::ids::new_uuid().to_string();
     let enqueued_at = chrono::Utc::now().timestamp_millis();
 
@@ -105,15 +113,13 @@ pub async fn enqueue_queue_worker_run(
     let work_payload = work_val.to_string();
 
     if let Some(js_ctx) = js {
-        js_ctx
-            .publish(work_subject, bytes::Bytes::from(work_payload))
+        crate::nats::publish_jetstream(js_ctx, work_subject, bytes::Bytes::from(work_payload))
             .await
-            .map_err(|e| format!("WQ JetStream publish work failed: {e}"))?;
+            .map_err(|e| e.to_string())?;
     } else if let Some(nats_client) = nats {
-        nats_client
-            .publish(work_subject, bytes::Bytes::from(work_payload))
+        crate::nats::publish_core(nats_client, work_subject, bytes::Bytes::from(work_payload))
             .await
-            .map_err(|e| format!("WQ NATS publish work failed: {e}"))?;
+            .map_err(|e| e.to_string())?;
     } else {
         return Err("NATS not configured: cannot enqueue queue worker run".to_string());
     }

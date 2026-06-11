@@ -84,6 +84,38 @@ pub struct WorkflowMeta {
 /// Name-key resolution, optional resume, and Redis meta + `workflow.started` for a new instance.
 /// Returns the instance id callers must use for `drive_workflow` / handler RPC (may differ from
 /// `instance_id` when dedup returns an existing execution).
+fn wake_nats_configured(nats: &Option<async_nats::Client>, js: &Option<jetstream::Context>) -> bool {
+    crate::nats::client_for_publish(nats, js).is_some()
+}
+
+async fn ensure_wake_nats_available(
+    nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
+) -> Result<(), String> {
+    crate::nats::ensure_publish_available(nats, js)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn publish_wake_message(
+    nats: &Option<async_nats::Client>,
+    js: &Option<jetstream::Context>,
+    subject: String,
+    payload: String,
+) -> Result<(), String> {
+    if let Some(js_ctx) = js {
+        crate::nats::publish_jetstream(js_ctx, subject, bytes::Bytes::from(payload))
+            .await
+            .map_err(|e| e.to_string())
+    } else if let Some(nats_client) = nats {
+        crate::nats::publish_core(nats_client, subject, bytes::Bytes::from(payload))
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub async fn prepare_workflow_instance_for_start(
     redis: &SharedRedis,
     nats: &Option<async_nats::Client>,
@@ -102,6 +134,7 @@ pub async fn prepare_workflow_instance_for_start(
         instance_id,
         stage = comm.stage_runtime_id.is_some()
     );
+    ensure_wake_nats_available(nats, js).await?;
     let name_key = workflow_dedup_name_key(project_id, unit_path, comm.stage_runtime_id);
     {
         let mut conn = redis.clone();
@@ -343,6 +376,8 @@ pub async fn resolve_promise(
     promise_name: &str,
     value_json: &str,
 ) -> Result<(), String> {
+    ensure_wake_nats_available(nats, js).await?;
+
     let rkey = redis_key(project_id, instance_id, &format!("promise:{promise_name}"));
     let value = serde_json::json!({
         "status": "resolved",
@@ -373,17 +408,7 @@ pub async fn resolve_promise(
         crate::telemetry::inject_traceparent_json_field(obj);
     }
     let payload = wake.to_string();
-    if let Some(js_ctx) = js {
-        js_ctx
-            .publish(subject, bytes::Bytes::from(payload))
-            .await
-            .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
-    } else if let Some(nats_client) = nats {
-        nats_client
-            .publish(subject, bytes::Bytes::from(payload))
-            .await
-            .map_err(|e| format!("nats publish wake failed: {e}"))?;
-    }
+    publish_wake_message(nats, js, subject, payload).await?;
 
     Ok(())
 }
@@ -493,6 +518,17 @@ pub(crate) async fn reject_caller_promise(
     promise_name: &str,
     error: &str,
 ) {
+    if wake_nats_configured(nats, js)
+        && ensure_wake_nats_available(nats, js).await.is_err()
+    {
+        tracing::warn!(
+            caller_iid = %caller_instance_id,
+            promise = %promise_name,
+            "reject_caller_promise: NATS unavailable; skipping promise reject"
+        );
+        return;
+    }
+
     let rkey = redis_key(project_id, caller_instance_id, &format!("promise:{promise_name}"));
     let value = serde_json::json!({ "status": "rejected", "error": error }).to_string();
 
@@ -525,14 +561,8 @@ pub(crate) async fn reject_caller_promise(
         crate::telemetry::inject_traceparent_json_field(obj);
     }
     let payload = wake.to_string();
-    if let Some(js_ctx) = js {
-        if let Err(e) = js_ctx.publish(subject, bytes::Bytes::from(payload)).await {
-            tracing::warn!(error = %e, "reject_caller_promise: jetstream publish failed");
-        }
-    } else if let Some(nats_client) = nats {
-        if let Err(e) = nats_client.publish(subject, bytes::Bytes::from(payload)).await {
-            tracing::warn!(error = %e, "reject_caller_promise: nats publish failed");
-        }
+    if let Err(e) = publish_wake_message(nats, js, subject, payload).await {
+        tracing::warn!(error = %e, "reject_caller_promise: wake publish failed");
     }
 }
 
@@ -654,6 +684,8 @@ pub async fn launch_callee_workflow(
     if meta.status != "pending" {
         return Ok(());
     }
+
+    ensure_wake_nats_available(nats, js).await?;
 
     meta.status = "running".to_string();
     let updated_meta = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
@@ -855,6 +887,10 @@ async fn drive_workflow_on_runtime(
             name,
             config,
         } => {
+            if wake_nats_configured(nats, js) {
+                ensure_wake_nats_available(nats, js).await?;
+            }
+
             // --- Host-side step retry ---
             if suspension_type == "step_retry" {
                 let retry_key = redis_key(&pid, &iid, &format!("step_retry:{name}"));
@@ -893,7 +929,7 @@ async fn drive_workflow_on_runtime(
                     let _: () = conn.set(&suspended_key, &suspended_val).await.map_err(|e| e.to_string())?;
                     drop(conn);
 
-                    if let Some(js_ctx) = js {
+                    if js.is_some() || nats.is_some() {
                         let subject = format!("wf.{pid}.{iid}.wake");
                         let fire_at = chrono::Utc::now().timestamp_millis() + delay_ms as i64;
                         let payload = wake_jetstream_payload_in_trace_carrier(
@@ -904,10 +940,7 @@ async fn drive_workflow_on_runtime(
                             }),
                             &parent_ctx,
                         );
-                        js_ctx
-                            .publish(subject, bytes::Bytes::from(payload))
-                            .await
-                            .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
+                        publish_wake_message(nats, js, subject, payload).await?;
                     }
 
                     return Ok(serde_json::json!({
@@ -934,7 +967,7 @@ async fn drive_workflow_on_runtime(
                     drop(conn);
 
                     // Wake via JetStream so replay is durable even if the worker restarts
-                    if let Some(js_ctx) = js {
+                    if js.is_some() || nats.is_some() {
                         let subject = format!("wf.{pid}.{iid}.wake");
                         let payload = wake_jetstream_payload_in_trace_carrier(
                             serde_json::json!({
@@ -943,17 +976,7 @@ async fn drive_workflow_on_runtime(
                             }),
                             &parent_ctx,
                         );
-                        let _ = js_ctx.publish(subject, bytes::Bytes::from(payload)).await;
-                    } else if let Some(nats_client) = nats {
-                        let subject = format!("wf.{pid}.{iid}.wake");
-                        let payload = wake_jetstream_payload_in_trace_carrier(
-                            serde_json::json!({
-                            "reason": "step_retry_exhausted",
-                            "step": name,
-                            }),
-                            &parent_ctx,
-                        );
-                        let _ = nats_client.publish(subject, bytes::Bytes::from(payload)).await;
+                        publish_wake_message(nats, js, subject, payload).await?;
                     }
 
                     return Ok(serde_json::json!({
@@ -1005,7 +1028,7 @@ async fn drive_workflow_on_runtime(
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.0) as u64;
 
-                if let Some(js_ctx) = js {
+                if js.is_some() || nats.is_some() {
                     let subject = format!("wf.{pid}.{iid}.wake");
                     let fire_at = chrono::Utc::now().timestamp_millis() + duration_ms as i64;
                     let payload = wake_jetstream_payload_in_trace_carrier(
@@ -1016,10 +1039,7 @@ async fn drive_workflow_on_runtime(
                         }),
                         &parent_ctx,
                     );
-                    js_ctx
-                        .publish(subject, bytes::Bytes::from(payload))
-                        .await
-                        .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
+                    publish_wake_message(nats, js, subject, payload).await?;
                 }
             }
 
@@ -1027,7 +1047,7 @@ async fn drive_workflow_on_runtime(
             if suspension_type == "promise" {
                 if let Some(timeout_ms) = config.get("timeout").and_then(|v| v.as_f64()) {
                     if timeout_ms >= 0.0 {
-                        if let Some(js_ctx) = js {
+                        if js.is_some() || nats.is_some() {
                             let subject = format!("wf.{pid}.{iid}.wake");
                             let fire_at =
                                 chrono::Utc::now().timestamp_millis() + timeout_ms as i64;
@@ -1039,10 +1059,7 @@ async fn drive_workflow_on_runtime(
                                 }),
                                 &parent_ctx,
                             );
-                            js_ctx
-                                .publish(subject, bytes::Bytes::from(payload))
-                                .await
-                                .map_err(|e| format!("jetstream publish wake failed: {e}"))?;
+                            publish_wake_message(nats, js, subject, payload).await?;
                         }
                     }
                 }

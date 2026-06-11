@@ -178,6 +178,11 @@ async fn queue_worker_post_inner(
             {
                 Ok(result) => HttpResponse::Ok().json(result),
                 Err(e) => {
+                    if crate::nats::is_nats_unavailable_error(&e) {
+                        tracing::warn!(error = %e, "queue_worker enqueue: NATS unavailable");
+                        return HttpResponse::ServiceUnavailable()
+                            .json(api_error(crate::nats::NATS_UNAVAILABLE_MSG, json!({})));
+                    }
                     tracing::error!(error = %e, "queue_worker enqueue error");
                     HttpResponse::InternalServerError().json(api_error(&e, json!({})))
                 }

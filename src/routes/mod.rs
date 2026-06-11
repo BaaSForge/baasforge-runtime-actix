@@ -110,16 +110,11 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     tracing::info!("[wf_redis] workflow Redis connected");
 
     let wf_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wf_nats_url {
-        match crate::configs::connect_nats(url).await {
-            Ok(client) => {
-                tracing::info!("[nats_wf] connected for workflow signals");
-                Some(client)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "[nats_wf] connection failed, workflow timers disabled");
-                None
-            }
-        }
+        let client = crate::configs::connect_nats(url).await.map_err(|e| -> Box<dyn Error> {
+            format!("[nats_wf] connect failed (check WF_NATS_URL): {e}").into()
+        })?;
+        tracing::info!("[nats_wf] NATS client ready (background reconnect enabled)");
+        Some(client)
     } else {
         tracing::info!("[nats_wf] WF_NATS_URL not set, workflow timers disabled");
         None
@@ -132,16 +127,11 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     tracing::info!("[wq_redis] queue worker Redis connected");
 
     let wq_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.wq_nats_url {
-        match crate::configs::connect_nats(url).await {
-            Ok(client) => {
-                tracing::info!("[nats_wq] connected for queue worker signals");
-                Some(client)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "[nats_wq] connection failed, queue workers disabled");
-                None
-            }
-        }
+        let client = crate::configs::connect_nats(url).await.map_err(|e| -> Box<dyn Error> {
+            format!("[nats_wq] connect failed (check WQ_NATS_URL): {e}").into()
+        })?;
+        tracing::info!("[nats_wq] NATS client ready (background reconnect enabled)");
+        Some(client)
     } else {
         tracing::info!("[nats_wq] WQ_NATS_URL not set, queue workers disabled");
         None
@@ -154,16 +144,11 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
     tracing::info!("[actor_redis] actor Redis connected");
 
     let actor_nats_client: Option<async_nats::Client> = if let Some(url) = &settings.actor_nats_url {
-        match crate::configs::connect_nats(url).await {
-            Ok(client) => {
-                tracing::info!("[nats_actor] connected for actor mailbox");
-                Some(client)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "[nats_actor] connection failed, actor mailbox disabled");
-                None
-            }
-        }
+        let client = crate::configs::connect_nats(url).await.map_err(|e| -> Box<dyn Error> {
+            format!("[nats_actor] connect failed (check ACTOR_NATS_URL): {e}").into()
+        })?;
+        tracing::info!("[nats_actor] NATS client ready (background reconnect enabled)");
+        Some(client)
     } else {
         tracing::info!("[nats_actor] ACTOR_NATS_URL not set; actor NATS disabled");
         None
