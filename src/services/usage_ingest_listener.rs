@@ -11,6 +11,8 @@ use std::pin::Pin;
 use std::time::Duration;
 use uuid::Uuid;
 
+const DISABLED_FLUSH_DEADLINE: Duration = Duration::from_secs(60 * 60 * 24 * 365 * 30);
+
 use crate::database::{block_on_db_tokio, DbPool};
 use crate::schema::project_usage_entries;
 use crate::services::usage_publisher::UsageEntry;
@@ -132,7 +134,7 @@ pub async fn run_usage_ingest_listener(
         };
         let max_flush_duration = Duration::from_millis(config.db_max_flush_ms);
         let mut max_flush_deadline: Pin<Box<tokio::time::Sleep>> =
-            Box::pin(tokio::time::sleep(Duration::MAX));
+            Box::pin(tokio::time::sleep(DISABLED_FLUSH_DEADLINE));
 
         loop {
             tokio::select! {
@@ -155,7 +157,7 @@ pub async fn run_usage_ingest_listener(
                                         }
                                         max_flush_deadline
                                             .as_mut()
-                                            .reset(tokio::time::Instant::now() + Duration::MAX);
+                                            .reset(tokio::time::Instant::now() + DISABLED_FLUSH_DEADLINE);
                                     }
                                 }
                                 Err(e) => {
@@ -182,7 +184,7 @@ pub async fn run_usage_ingest_listener(
                     }
                     max_flush_deadline
                         .as_mut()
-                        .reset(tokio::time::Instant::now() + Duration::MAX);
+                        .reset(tokio::time::Instant::now() + DISABLED_FLUSH_DEADLINE);
                 }
             }
         }
@@ -199,13 +201,17 @@ async fn flush_buffer(
         return Ok(());
     }
 
-    let rows = std::mem::take(&mut buffer.rows);
+    let mut rows = std::mem::take(&mut buffer.rows);
     let messages = std::mem::take(&mut buffer.messages);
+    rows.sort_by_key(|r| r.id);
+    rows.dedup_by_key(|r| r.id);
     let count = rows.len();
 
     let insert_result = block_on_db_tokio(pool, move |conn| {
         diesel::insert_into(project_usage_entries::table)
             .values(&rows)
+            .on_conflict(project_usage_entries::id)
+            .do_nothing()
             .execute(conn)?;
         Ok(())
     })

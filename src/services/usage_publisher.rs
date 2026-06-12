@@ -58,10 +58,7 @@ impl UsageEntry {
 
     pub fn from_storage_delta(record: &StorageDeltaRecord) -> Option<Self> {
         let project_id = Uuid::parse_str(&record.project_id).ok()?;
-        let quantity = match record.op {
-            StorageDeltaOp::Incr => i64::try_from(record.bytes).unwrap_or(i64::MAX),
-            StorageDeltaOp::Decr => -(i64::try_from(record.bytes).unwrap_or(i64::MAX)),
-        };
+        let quantity = i64::try_from(record.bytes).unwrap_or(i64::MAX);
         let details = serde_json::json!({
             "store": record.store,
             "tier": record.tier,
