@@ -19,6 +19,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         e.to_string().into()
     })?;
 
+    baal_runtime_actix::configs::start_usage_publisher_if_enabled(&settings);
+
     let pool = establish_pool(
         settings.pg_database_url.clone(),
         settings.database_pool_size,

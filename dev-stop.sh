@@ -32,6 +32,10 @@ echo "==> Stopping release listener processes..."
 pkill -x runtime_cache_listener 2>/dev/null && echo "    pkill -x runtime_cache_listener" || true
 pkill -f 'run --bin runtime_cache_listener' 2>/dev/null && echo "    pkill -f 'run --bin runtime_cache_listener'" || true
 
+echo "==> Stopping usage ingest worker processes..."
+pkill -x usage_ingest_worker 2>/dev/null && echo "    pkill -x usage_ingest_worker" || true
+pkill -f 'run --bin usage_ingest_worker' 2>/dev/null && echo "    pkill -f 'run --bin usage_ingest_worker'" || true
+
 echo "==> Stopping cargo watch..."
 # dev.sh / dev-runtime-worker.sh use `cargo watch` (installed binary is often `cargo-watch`)
 pkill -f "cargo watch" 2>/dev/null && echo "    pkill -f \"cargo watch\"" || true

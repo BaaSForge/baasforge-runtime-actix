@@ -37,6 +37,8 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let settings = Settings::new()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
 
+    crate::configs::start_usage_publisher_if_enabled(&settings);
+
     let redis_conn = crate::database::connect_shared_redis_cache(
         settings.redis_cache_enabled,
         &settings.redis_url,

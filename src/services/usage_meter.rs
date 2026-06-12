@@ -1,5 +1,4 @@
-// TODO: persist UnitUsageRecord to DB (project_usage_events) in a follow-up plan.
-// TODO: persist StorageDeltaRecord to DB in a follow-up plan.
+use crate::services::usage_publisher;
 
 #[derive(Debug, Clone, Copy)]
 pub struct UsageMeterMemory {
@@ -87,6 +86,9 @@ pub fn log_storage_delta(record: StorageDeltaRecord) {
         resource_key = %record.resource_key,
         "storage delta"
     );
+    if let Some(entry) = usage_publisher::UsageEntry::from_storage_delta(&record) {
+        usage_publisher::enqueue(entry);
+    }
 }
 
 pub fn log_unit_usage(record: UnitUsageRecord) {
@@ -109,4 +111,7 @@ pub fn log_unit_usage(record: UnitUsageRecord) {
         attempt = record.attempt.unwrap_or(0),
         "unit usage"
     );
+    if let Some(entry) = usage_publisher::UsageEntry::from_unit_usage(&record) {
+        usage_publisher::enqueue(entry);
+    }
 }

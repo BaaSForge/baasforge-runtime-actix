@@ -134,6 +134,15 @@ jobs:
                 "expose_ports": false,
                 "cargo_features": "",
                 "build": $build_workers
+              },
+              {
+                "service": "usage-ingest-worker",
+                "dockerfile": "docker/Dockerfile.usage_ingest_worker",
+                "image": ($base + "-usage-ingest-worker:" + $tag),
+                "container_suffix": "-usage-ingest-worker",
+                "expose_ports": false,
+                "cargo_features": "",
+                "build": $build_workers
               }
             ]')
           echo "services=$SERVICES" >> "$GITHUB_OUTPUT"

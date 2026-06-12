@@ -100,6 +100,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
         settings.database_connection_timeout_secs,
         settings.database_pool_idle_timeout_secs,
     );
+    crate::configs::start_usage_publisher_if_enabled(&settings);
     let redis_conn = crate::database::connect_shared_redis_cache(
         settings.redis_cache_enabled,
         &settings.redis_url,
@@ -345,6 +346,17 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                 });
                 crate::services::actor_worker::alarms::run_alarm_sweeper(comm).await;
             }));
+        }
+
+        if let Some(handle) =
+            crate::configs::spawn_usage_ingest_listener_if_enabled(&settings, pool.clone())
+        {
+            tracing::info!("[test_mode] starting inline usage ingest listener");
+            test_mode_tasks.push(handle);
+        } else if settings.usage_ingest_enabled {
+            tracing::warn!(
+                "[test_mode] usage ingest config incomplete; usage rows will not persist to DB"
+            );
         }
 
         if let Err(e) =

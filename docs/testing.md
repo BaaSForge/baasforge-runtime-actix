@@ -45,13 +45,14 @@ If you add a test that needs another unit type, **copy the minimal unit source i
 
 ## How consumers run during tests
 
-In `TEST_MODE`, the HTTP server **spawns all three consumers in-process**:
+In `TEST_MODE`, the HTTP server **spawns all consumers in-process**:
 
 - Workflow wake consumer (`workflow_worker`)
 - Queue worker work consumer (`queue_worker_worker`)
 - Actor mailbox consumer (`actor_worker`)
+- Usage ingest listener (`usage_ingest_worker`) when `USAGE_INGEST_ENABLED=true`
 
-No separate worker binaries are needed when running tests.
+No separate worker binaries are needed when running tests. Usage from test runs is persisted to `project_usage_entries` via the inline ingest listener (no dedicated test assertions).
 
 ## Stage A / stage B variants of the same unit (test seed)
 

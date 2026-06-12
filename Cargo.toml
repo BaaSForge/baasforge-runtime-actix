@@ -22,6 +22,10 @@ path = "src/bin/queue_worker_worker.rs"
 name = "actor_worker"
 path = "src/bin/actor_worker.rs"
 
+[[bin]]
+name = "usage_ingest_worker"
+path = "src/bin/usage_ingest_worker.rs"
+
 [dependencies]
 # Web Framework & Core
 actix = "0.13.5"

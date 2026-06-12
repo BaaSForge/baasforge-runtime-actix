@@ -104,6 +104,17 @@ pub struct Settings {
     // -- Usage metering (compute_gb_ms memory assumptions) --
     pub usage_meter: UsageMeterMemory,
 
+    /// When true, hot-path usage logs are enqueued for JetStream batch publish.
+    pub usage_ingest_enabled: bool,
+    pub usage_publish_batch_size: usize,
+    pub usage_publish_flush_ms: u64,
+    pub usage_publish_channel_capacity: usize,
+    pub nats_jetstream_stream_usage: Option<String>,
+    pub nats_subject_usage_batch: Option<String>,
+    pub nats_jetstream_consumer_usage: Option<String>,
+    pub usage_db_batch_size: usize,
+    pub usage_db_max_flush_ms: u64,
+
     pub otel_exporter_otlp_endpoint: Option<String>,
 }
 
@@ -292,6 +303,63 @@ impl Settings {
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(30);
 
+        let usage_ingest_enabled = match env::var("USAGE_INGEST_ENABLED") {
+            Ok(s) => parse_env_bool(&s).map_err(|e| -> Box<dyn std::error::Error> { e.into() })?,
+            Err(_) => false,
+        };
+
+        let usage_publish_batch_size: usize = env::var("USAGE_PUBLISH_BATCH_SIZE")
+            .expect("USAGE_PUBLISH_BATCH_SIZE must be set")
+            .parse()
+            .expect("USAGE_PUBLISH_BATCH_SIZE must be a valid usize");
+        let usage_publish_flush_ms: u64 = env::var("USAGE_PUBLISH_FLUSH_MS")
+            .expect("USAGE_PUBLISH_FLUSH_MS must be set")
+            .parse()
+            .expect("USAGE_PUBLISH_FLUSH_MS must be a valid u64");
+        let usage_publish_channel_capacity: usize = env::var("USAGE_PUBLISH_CHANNEL_CAPACITY")
+            .expect("USAGE_PUBLISH_CHANNEL_CAPACITY must be set")
+            .parse()
+            .expect("USAGE_PUBLISH_CHANNEL_CAPACITY must be a valid usize");
+
+        let nats_jetstream_stream_usage = env::var("NATS_JETSTREAM_STREAM_USAGE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let nats_subject_usage_batch = env::var("NATS_SUBJECT_USAGE_BATCH")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let nats_jetstream_consumer_usage = env::var("NATS_JETSTREAM_CONSUMER_USAGE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let usage_db_batch_size: usize = env::var("USAGE_DB_BATCH_SIZE")
+            .expect("USAGE_DB_BATCH_SIZE must be set")
+            .parse()
+            .expect("USAGE_DB_BATCH_SIZE must be a valid usize");
+        let usage_db_max_flush_ms: u64 = env::var("USAGE_DB_MAX_FLUSH_MS")
+            .expect("USAGE_DB_MAX_FLUSH_MS must be set")
+            .parse()
+            .expect("USAGE_DB_MAX_FLUSH_MS must be a valid u64");
+
+        if usage_ingest_enabled {
+            match (
+                &nats_url,
+                &nats_jetstream_stream_usage,
+                &nats_subject_usage_batch,
+                &nats_jetstream_consumer_usage,
+            ) {
+                (Some(_), Some(_), Some(_), Some(_)) => {}
+                _ => {
+                    return Err(
+                        "USAGE_INGEST_ENABLED=true requires NATS_URL, NATS_JETSTREAM_STREAM_USAGE, NATS_SUBJECT_USAGE_BATCH, and NATS_JETSTREAM_CONSUMER_USAGE"
+                            .into(),
+                    );
+                }
+            }
+        }
+
         let usage_meter = UsageMeterMemory {
             api: env::var("USAGE_METER_MEMORY_MB_API")
                 .expect("USAGE_METER_MEMORY_MB_API must be set")
@@ -355,9 +423,85 @@ impl Settings {
             actor_idle_sweep_secs,
             actor_pg_flush_interval_secs,
             usage_meter,
+            usage_ingest_enabled,
+            usage_publish_batch_size,
+            usage_publish_flush_ms,
+            usage_publish_channel_capacity,
+            nats_jetstream_stream_usage,
+            nats_subject_usage_batch,
+            nats_jetstream_consumer_usage,
+            usage_db_batch_size,
+            usage_db_max_flush_ms,
             otel_exporter_otlp_endpoint,
         })
     }
+}
+
+pub fn usage_ingest_config(
+    settings: &Settings,
+) -> Option<crate::services::usage_ingest_listener::UsageIngestConfig> {
+    Some(crate::services::usage_ingest_listener::UsageIngestConfig {
+        nats_url: settings.nats_url.clone()?,
+        stream_name: settings.nats_jetstream_stream_usage.clone()?,
+        subject: settings.nats_subject_usage_batch.clone()?,
+        consumer_name: settings.nats_jetstream_consumer_usage.clone()?,
+        db_batch_size: settings.usage_db_batch_size,
+        db_max_flush_ms: settings.usage_db_max_flush_ms,
+    })
+}
+
+pub fn start_usage_publisher_if_enabled(settings: &Settings) {
+    if !settings.usage_ingest_enabled {
+        tracing::info!("[usage_publisher] USAGE_INGEST_ENABLED=false; publisher disabled");
+        return;
+    }
+    let Some(nats_url) = settings.nats_url.clone() else {
+        tracing::warn!("[usage_publisher] NATS_URL not set; publisher disabled");
+        return;
+    };
+    let (Some(stream_name), Some(subject)) = (
+        settings.nats_jetstream_stream_usage.clone(),
+        settings.nats_subject_usage_batch.clone(),
+    ) else {
+        tracing::warn!("[usage_publisher] usage JetStream config incomplete; publisher disabled");
+        return;
+    };
+    crate::services::usage_publisher::start_usage_publisher(
+        crate::services::usage_publisher::UsagePublisherConfig {
+            nats_url,
+            stream_name,
+            subject,
+            batch_size: settings.usage_publish_batch_size,
+            flush_ms: settings.usage_publish_flush_ms,
+            channel_capacity: settings.usage_publish_channel_capacity,
+        },
+    );
+    tracing::info!("[usage_publisher] background flusher started");
+}
+
+pub fn spawn_usage_ingest_listener(
+    pool: crate::database::DbPool,
+    config: crate::services::usage_ingest_listener::UsageIngestConfig,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(e) =
+            crate::services::usage_ingest_listener::run_usage_ingest_listener(pool, config).await
+        {
+            tracing::error!(error = %e, "[usage_ingest] listener exited");
+        }
+    })
+}
+
+pub fn spawn_usage_ingest_listener_if_enabled(
+    settings: &Settings,
+    pool: crate::database::DbPool,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !settings.usage_ingest_enabled {
+        return None;
+    }
+    let config = usage_ingest_config(settings)?;
+    tracing::info!("[usage_ingest] starting listener");
+    Some(spawn_usage_ingest_listener(pool, config))
 }
 
 /// Connect to NATS with resilient background reconnect (`async_nats` ConnectOptions).
