@@ -10,6 +10,10 @@ use crate::models::projects::ProjectUnitType;
 use crate::services::project_release::{
     live_release_and_runtime_ids_for_scope, load_unit_for_path_scoped,
 };
+use crate::services::storage_meter::{
+    meter_nats_decr, meter_redis_del, meter_redis_set, meter_wf_redis_set_with_old,
+    redis_key_usage_bytes, STORE_NATS_WF, STORE_WF_REDIS, TIER_ACTIVE,
+};
 use crate::services::workflow_engine;
 use futures::StreamExt;
 use opentelemetry::trace::FutureExt;
@@ -267,6 +271,9 @@ pub async fn run_wake_consumer(
                 let parts: Vec<&str> = subject.split('.').collect();
                 if parts.len() != 4 {
                     warn!(subject = %subject, "[workflow_wake] unexpected subject format");
+                    if let Some(project_id) = parts.get(1) {
+                        meter_nats_decr(project_id, STORE_NATS_WF, &subject, msg.payload.as_ref());
+                    }
                     let _ = msg.ack().await;
                     continue;
                 }
@@ -420,6 +427,10 @@ async fn finalize_wake_message(
             }
         }
         Ok(WakeProcessOutcome::Processed) | Err(_) => {
+            let subject = msg.subject.to_string();
+            if let Some(project_id) = subject.split('.').nth(1) {
+                meter_nats_decr(project_id, STORE_NATS_WF, &subject, msg.payload.as_ref());
+            }
             if let Err(e) = msg.ack().await {
                 error!(error = %e, "[workflow_wake] ack failed");
             }
@@ -556,7 +567,8 @@ async fn handle_start(
     let lock_key = format!("wf:{project_id}:{instance_id}:exec_lock");
     let acquired: bool = {
         let mut conn = wf_redis.clone();
-        redis::cmd("SET")
+        let old_lock_bytes = redis_key_usage_bytes(&mut conn, &lock_key).await;
+        let acquired: bool = redis::cmd("SET")
             .arg(&lock_key)
             .arg("1")
             .arg("NX")
@@ -564,7 +576,11 @@ async fn handle_start(
             .arg(300u64)
             .query_async(&mut conn)
             .await
-            .map_err(|e| format!("exec_lock acquire: {e}"))?
+            .map_err(|e| format!("exec_lock acquire: {e}"))?;
+        if acquired {
+            meter_wf_redis_set_with_old(&mut conn, &project_id, &lock_key, old_lock_bytes, "1").await;
+        }
+        acquired
     };
     if !acquired {
         return Ok(WakeProcessOutcome::ExecLockHeld);
@@ -609,6 +625,7 @@ async fn handle_start(
 
     {
         let mut conn = wf_redis.clone();
+        meter_redis_del(&mut conn, &project_id, STORE_WF_REDIS, TIER_ACTIVE, &lock_key).await;
         let _: () = redis::cmd("DEL")
             .arg(&lock_key)
             .query_async(&mut conn)
@@ -744,6 +761,7 @@ async fn handle_wake(
         let sleep_key = format!("wf:{project_id}:{instance_id}:sleep:{sleep_name}");
         let sleep_val = serde_json::json!({"elapsed": true}).to_string();
         let mut conn = wf_redis.clone();
+        meter_redis_set(&mut conn, &project_id, STORE_WF_REDIS, TIER_ACTIVE, &sleep_key, &sleep_val).await;
         redis::cmd("SET")
             .arg(&sleep_key)
             .arg(&sleep_val)
@@ -764,6 +782,15 @@ async fn handle_wake(
             let promise_key = format!("wf:{project_id}:{instance_id}:promise:{promise_name}");
             let timed_out_val = serde_json::json!({"status": "timed_out"}).to_string();
             let mut conn = wf_redis.clone();
+            meter_redis_set(
+                &mut conn,
+                &project_id,
+                STORE_WF_REDIS,
+                TIER_ACTIVE,
+                &promise_key,
+                &timed_out_val,
+            )
+            .await;
             redis::cmd("SET")
                 .arg(&promise_key)
                 .arg(&timed_out_val)
@@ -822,7 +849,8 @@ async fn handle_wake(
     let lock_key = format!("wf:{project_id}:{instance_id}:exec_lock");
     let acquired: bool = {
         let mut conn = wf_redis.clone();
-        redis::cmd("SET")
+        let old_lock_bytes = redis_key_usage_bytes(&mut conn, &lock_key).await;
+        let acquired: bool = redis::cmd("SET")
             .arg(&lock_key)
             .arg("1")
             .arg("NX")
@@ -830,7 +858,11 @@ async fn handle_wake(
             .arg(300u64)
             .query_async(&mut conn)
             .await
-            .map_err(|e| format!("exec_lock acquire: {e}"))?
+            .map_err(|e| format!("exec_lock acquire: {e}"))?;
+        if acquired {
+            meter_wf_redis_set_with_old(&mut conn, &project_id, &lock_key, old_lock_bytes, "1").await;
+        }
+        acquired
     };
     if !acquired {
         return Ok(WakeProcessOutcome::ExecLockHeld);
@@ -873,6 +905,7 @@ async fn handle_wake(
 
     {
         let mut conn = wf_redis.clone();
+        meter_redis_del(&mut conn, &project_id, STORE_WF_REDIS, TIER_ACTIVE, &lock_key).await;
         let _: () = redis::cmd("DEL")
             .arg(&lock_key)
             .query_async(&mut conn)

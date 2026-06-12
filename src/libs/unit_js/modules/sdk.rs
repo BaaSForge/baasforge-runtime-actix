@@ -12,6 +12,9 @@ use tokio::sync::Mutex;
 use crate::database::{DbPool, SharedRedisConn};
 use crate::models::actor_store::ActorPgPool;
 use crate::services::actor_engine::ActorRedis;
+use crate::services::storage_meter::{
+    meter_nats_incr, meter_redis_set, STORE_NATS_WF, STORE_WF_REDIS, TIER_ACTIVE,
+};
 use crate::services::usage_meter::UsageMeterMemory;
 use uuid::Uuid;
 
@@ -392,6 +395,7 @@ fn host_persist_step(ctx: Ctx<'_>, name: String, result_json: String, _opts_json
             let key = redis_key(&hctx.project_id, &hctx.instance_id, &format!("step:{name}"));
             let value = serde_json::json!({ "status": "completed", "result": result_json }).to_string();
             let mut conn = hctx.redis.clone();
+            meter_redis_set(&mut conn, &hctx.project_id, STORE_WF_REDIS, TIER_ACTIVE, &key, &value).await;
             redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET step failed: {e}"))
         })
@@ -405,6 +409,7 @@ fn host_persist_step_error(ctx: Ctx<'_>, name: String, error_msg: String, is_ter
             let key = redis_key(&hctx.project_id, &hctx.instance_id, &format!("step:{name}"));
             let value = serde_json::json!({ "status": "failed", "error": error_msg, "terminal": is_terminal }).to_string();
             let mut conn = hctx.redis.clone();
+            meter_redis_set(&mut conn, &hctx.project_id, STORE_WF_REDIS, TIER_ACTIVE, &key, &value).await;
             redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET step error failed: {e}"))
         })
@@ -418,6 +423,7 @@ fn host_persist_sleep(ctx: Ctx<'_>, name: String, _duration_ms: f64) -> rquickjs
             let key = redis_key(&hctx.project_id, &hctx.instance_id, &format!("sleep:{name}"));
             let value = serde_json::json!({ "elapsed": true }).to_string();
             let mut conn = hctx.redis.clone();
+            meter_redis_set(&mut conn, &hctx.project_id, STORE_WF_REDIS, TIER_ACTIVE, &key, &value).await;
             redis::cmd("SET").arg(&key).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET sleep failed: {e}"))
         })
@@ -430,6 +436,7 @@ fn host_persist_state(ctx: Ctx<'_>, key: String, value_json: String) -> rquickjs
         block_async(async {
             let rkey = redis_key(&hctx.project_id, &hctx.instance_id, &format!("state:{key}"));
             let mut conn = hctx.redis.clone();
+            meter_redis_set(&mut conn, &hctx.project_id, STORE_WF_REDIS, TIER_ACTIVE, &rkey, &value_json).await;
             redis::cmd("SET").arg(&rkey).arg(&value_json).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET state failed: {e}"))
         })
@@ -466,6 +473,7 @@ fn host_resolve_promise(ctx: Ctx<'_>, name: String, value_json: String) -> rquic
             let rkey = redis_key(&project_id, &instance_id, &format!("promise:{name}"));
             let value = serde_json::json!({ "status": "resolved", "value": value_json }).to_string();
             let mut conn = hctx.redis.clone();
+            meter_redis_set(&mut conn, &project_id, STORE_WF_REDIS, TIER_ACTIVE, &rkey, &value).await;
             redis::cmd("SET").arg(&rkey).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET promise failed: {e}"))?;
             if let Some(nats) = &hctx.nats {
@@ -474,7 +482,9 @@ fn host_resolve_promise(ctx: Ctx<'_>, name: String, value_json: String) -> rquic
                 if let Some(obj) = wake.as_object_mut() {
                     crate::telemetry::inject_traceparent_json_field(obj);
                 }
-                crate::nats::publish_core(nats, subject, bytes::Bytes::from(wake.to_string()))
+                let payload = wake.to_string();
+                meter_nats_incr(&project_id, STORE_NATS_WF, &subject, payload.as_bytes());
+                crate::nats::publish_core(nats, subject, bytes::Bytes::from(payload))
                     .await
                     .map_err(|e| e.to_string())?;
             }
@@ -497,6 +507,7 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
             let rkey = redis_key(&project_id, &instance_id, &format!("promise:{name}"));
             let value = serde_json::json!({ "status": "rejected", "error": error }).to_string();
             let mut conn = hctx.redis.clone();
+            meter_redis_set(&mut conn, &project_id, STORE_WF_REDIS, TIER_ACTIVE, &rkey, &value).await;
             redis::cmd("SET").arg(&rkey).arg(&value).query_async::<()>(&mut conn).await
                 .map_err(|e| format!("redis SET promise reject failed: {e}"))?;
             if let Some(nats) = &hctx.nats {
@@ -506,6 +517,7 @@ fn host_reject_promise(ctx: Ctx<'_>, name: String, error: String) -> rquickjs::R
                     crate::telemetry::inject_traceparent_json_field(obj);
                 }
                 let payload = wake.to_string();
+                meter_nats_incr(&project_id, STORE_NATS_WF, &subject, payload.as_bytes());
                 crate::nats::publish_core(nats, subject, bytes::Bytes::from(payload))
                     .await
                     .map_err(|e| e.to_string())?;
@@ -561,6 +573,7 @@ fn host_start_call(ctx: Ctx<'_>, unit_path: String, data_json: String, promise_n
             let meta = meta_val.to_string();
             {
                 let mut conn = hctx.redis.clone();
+                meter_redis_set(&mut conn, &project_id, STORE_WF_REDIS, TIER_ACTIVE, &meta_key, &meta).await;
                 redis::cmd("SET").arg(&meta_key).arg(&meta).query_async::<()>(&mut conn).await
                     .map_err(|e| format!("sdk.callWorkflow: redis SET meta failed: {e}"))?;
             }

@@ -9,6 +9,7 @@ use crate::database::{BlockingDbError, DbPool, SharedRedisConn};
 use crate::models::runtime_env::{ProjectRuntimeEncryptionKeyRow, ProjectRuntimeEnvVarRow};
 use crate::schema::{project_runtime_encryption_keys, project_runtime_env_vars};
 use crate::services::project_runtime_cache::{redis_get_json, redis_set_json};
+use crate::services::storage_meter::{meter_redis_del, meter_redis_set, STORE_RUNTIME_ENV_REDIS, TIER_ACTIVE};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
@@ -71,6 +72,24 @@ pub fn get_secure_env_blocking(
     }
 
     let plaintext = load_plaintext_sync(pool, project_id, runtime_id, key)?;
+    if let Some(rc) = redis {
+        let pid = project_id.to_string();
+        let key_for_meter = cache_key.clone();
+        let value = plaintext.clone();
+        block_on_redis(async move {
+            let mut conn = rc.clone();
+            meter_redis_set(
+                &mut conn,
+                &pid,
+                STORE_RUNTIME_ENV_REDIS,
+                TIER_ACTIVE,
+                &key_for_meter,
+                &value,
+            )
+            .await;
+            Ok(())
+        })?;
+    }
     block_on_redis(redis_set_json(redis, &cache_key, &plaintext))?;
     if redis.is_some() {
         tracing::debug!(%cache_key, "runtime env cache set");
@@ -110,6 +129,14 @@ pub async fn invalidate_env_cache(
     };
     let cache_key = redis_key_env(project_id, runtime_id, key.trim());
     let mut conn = rc.clone();
+    meter_redis_del(
+        &mut conn,
+        &project_id.to_string(),
+        STORE_RUNTIME_ENV_REDIS,
+        TIER_ACTIVE,
+        &cache_key,
+    )
+    .await;
     let _: () = conn.del(&cache_key).await?;
     Ok(())
 }

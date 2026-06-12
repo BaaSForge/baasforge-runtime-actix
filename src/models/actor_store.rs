@@ -1,4 +1,6 @@
 use crate::actor_schema::{actor_alarms, actor_snapshots};
+use crate::services::storage_meter::{actor_pg_row_bytes, meter_actor_pg_delta, STORE_ACTOR_PG, TIER_RETAINED};
+use crate::services::usage_meter::{log_storage_delta, StorageDeltaOp, StorageDeltaRecord};
 use crate::database::{block_on_db_tokio, pg_pool_builder, BlockingDbError};
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
@@ -66,12 +68,27 @@ pub async fn upsert_snapshot(
     state: &Value,
     version: i64,
 ) -> Result<(), String> {
+    let old_bytes = load_snapshot(pool, project_id, unit_path, actor_id, stage_runtime_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|(old_state, _)| {
+            let old_json = old_state.to_string();
+            actor_pg_row_bytes(project_id, unit_path, actor_id, &old_json)
+        })
+        .unwrap_or(0);
+    let new_json = state.to_string();
+    let new_bytes = actor_pg_row_bytes(project_id, unit_path, actor_id, &new_json);
+
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
     let stage_key = actor_snapshot_stage_key(stage_runtime_id);
     let state = state.clone();
     let now = Utc::now();
+    let pid_str = project_id.to_string();
+    let unit_path_log = unit_path.clone();
+    let actor_id_log = actor_id.clone();
     block_on_db_tokio(pool.as_ref(), move |conn| {
         let row = NewSnapshot {
             project_id,
@@ -100,7 +117,9 @@ pub async fn upsert_snapshot(
         Ok(())
     })
     .await
-    .map_err(db_err)
+    .map_err(db_err)?;
+    meter_actor_pg_delta(&pid_str, &unit_path_log, &actor_id_log, old_bytes, new_bytes);
+    Ok(())
 }
 
 pub async fn load_snapshot(
@@ -135,10 +154,22 @@ pub async fn delete_snapshot(
     actor_id: &str,
     stage_runtime_id: Option<Uuid>,
 ) -> Result<(), String> {
+    let old_bytes = load_snapshot(pool, project_id, unit_path, actor_id, stage_runtime_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|(old_state, _)| {
+            let old_json = old_state.to_string();
+            actor_pg_row_bytes(project_id, unit_path, actor_id, &old_json)
+        })
+        .unwrap_or(0);
+
     let project_id: Uuid = project_id.parse().map_err(|e: uuid::Error| e.to_string())?;
     let unit_path = unit_path.to_string();
     let actor_id = actor_id.to_string();
     let stage_key = actor_snapshot_stage_key(stage_runtime_id);
+    let pid_str = project_id.to_string();
+    let resource_key = format!("{pid_str}/{unit_path}/{actor_id}");
     block_on_db_tokio(pool.as_ref(), move |conn| {
         diesel::delete(
             actor_snapshots::table
@@ -151,7 +182,18 @@ pub async fn delete_snapshot(
         Ok(())
     })
     .await
-    .map_err(db_err)
+    .map_err(db_err)?;
+    if old_bytes > 0 {
+        log_storage_delta(StorageDeltaRecord {
+            project_id: pid_str,
+            store: STORE_ACTOR_PG,
+            tier: TIER_RETAINED,
+            op: StorageDeltaOp::Decr,
+            bytes: old_bytes,
+            resource_key,
+        });
+    }
+    Ok(())
 }
 
 pub async fn upsert_alarm(

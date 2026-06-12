@@ -25,6 +25,8 @@ source "$SCRIPT_DIR/../test-server-lib.sh"
 PORT="${TEST_PORT:-3334}"
 OUTPUT_FILE="$SCRIPT_DIR/.output.log"
 TEST_TIMEOUT="${TEST_TIMEOUT:-300}"
+WORKFLOW_TEST_RUNNER_CONCURRENCY="${WORKFLOW_TEST_RUNNER_CONCURRENCY:-8}"
+export WORKFLOW_TEST_RUNNER_CONCURRENCY
 TERMINAL_LOG="$SCRIPT_DIR/test.terminal.log"
 : > "$TERMINAL_LOG"
 exec > >(tee -a "$TERMINAL_LOG") 2>&1
@@ -109,7 +111,7 @@ echo ""
 # ------------------------------------------------------------------
 # 3–4. QuickJS workflow suite + WebSocket tests (parallel jobs)
 # ------------------------------------------------------------------
-echo "==> Running workflow trigger + WebSocket tests in parallel (timeout ${TEST_TIMEOUT}s for curl)…"
+echo "==> Running workflow trigger + WebSocket tests in parallel (runner concurrency ${WORKFLOW_TEST_RUNNER_CONCURRENCY}, timeout ${TEST_TIMEOUT}s for curl)…"
 WF_OUTPUT="$SCRIPT_DIR/.wf-output.tmp.json"
 WS_OUTPUT="$SCRIPT_DIR/.ws-output.tmp.json"
 curl -s --max-time "$TEST_TIMEOUT" "$BASE_URL" >"$WF_OUTPUT" &

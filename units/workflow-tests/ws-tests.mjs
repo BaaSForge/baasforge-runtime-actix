@@ -76,6 +76,32 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const DEFAULT_TEST_RUNNER_CONCURRENCY = 8;
+
+function workflowTestRunnerConcurrency() {
+  const raw = process.env.WORKFLOW_TEST_RUNNER_CONCURRENCY;
+  if (raw == null || raw === "") return DEFAULT_TEST_RUNNER_CONCURRENCY;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_TEST_RUNNER_CONCURRENCY;
+  return n;
+}
+
+async function mapPool(items, concurrency, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
+  await Promise.all(
+    Array.from({ length: items.length ? workers : 0 }, async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i], i);
+      }
+    }),
+  );
+  return out;
+}
+
 /** Start a workflow instance; throws on failure. */
 async function epStart(slug, input = {}) {
   const resp = await httpPost(`${WF_BASE}/${slug}`, input);
@@ -686,10 +712,15 @@ const STAGE_WS_TESTS = [
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const [prodResults, stageResults] = await Promise.all([
-    Promise.all(TESTS.map((test) => runTest(test, "endpoint_ws"))),
-    Promise.all(STAGE_WS_TESTS.map((test) => runTest(test, "endpoint_ws_stage"))),
-  ]);
+  const tasks = [
+    ...TESTS.map((test) => ({ test, category: "endpoint_ws" })),
+    ...STAGE_WS_TESTS.map((test) => ({ test, category: "endpoint_ws_stage" })),
+  ];
+  const runResults = await mapPool(tasks, workflowTestRunnerConcurrency(), ({ test, category }) =>
+    runTest(test, category),
+  );
+  const prodResults = runResults.slice(0, TESTS.length);
+  const stageResults = runResults.slice(TESTS.length);
 
   for (let i = 0; i < TESTS.length; i++) {
     const result = prodResults[i];

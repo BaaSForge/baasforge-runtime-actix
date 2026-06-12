@@ -19,6 +19,27 @@ use crate::services::project_release::{
     load_live_release_id_scoped, load_production_runtime_id_for_project,
 };
 use crate::services::queue_worker_engine::QueueWorkerRedis;
+use crate::services::storage_meter::{meter_nats_decr, STORE_NATS_ACTOR};
+
+fn actor_mail_project_id(subject: &str) -> Option<String> {
+    subject.split('.').nth(1).map(str::to_string)
+}
+
+async fn ack_actor_mail(msg: &async_nats::jetstream::Message, project_id: Option<&str>) {
+    let pid = project_id
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| actor_mail_project_id(msg.subject.as_str()));
+    if let Some(pid) = pid {
+        meter_nats_decr(
+            &pid,
+            STORE_NATS_ACTOR,
+            msg.subject.as_str(),
+            msg.payload.as_ref(),
+        );
+    }
+    let _ = msg.ack().await;
+}
 use crate::services::usage_meter::UsageMeterMemory;
 use crate::services::workflow_engine::SharedRedis as WfRedis;
 use uuid::Uuid;
@@ -198,7 +219,7 @@ async fn handle_actor_message(
     let Some(payload) = payload else {
         crate::rt_exit_err!("actor.consumer.handle_message", error = "invalid_payload");
         warn!("[actor_consumer] invalid payload, acking");
-        let _ = msg.ack().await;
+        ack_actor_mail(&msg, None).await;
         return;
     };
 
@@ -337,7 +358,7 @@ async fn handle_actor_message(
         (project_id, unit_path, actor_id, handler)
     else {
         warn!("[actor_consumer] missing required fields, acking");
-        let _ = msg.ack().await;
+        ack_actor_mail(&msg, None).await;
         return;
     };
 
@@ -418,7 +439,7 @@ async fn handle_actor_message(
     }
 
     crate::rt_exit_ok!("actor.consumer.handle_message", subject = %msg.subject);
-    let _ = msg.ack().await;
+    ack_actor_mail(&msg, Some(&project_id)).await;
     })
     .instrument(dispatch_span_run)
     .with_context(consumer_cx)

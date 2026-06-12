@@ -10,6 +10,11 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
+use crate::services::storage_meter::{
+    meter_nats_incr, meter_redis_del, meter_redis_set, meter_wf_instance_active_to_retained,
+    meter_wf_redis_set_with_old, redis_key_usage_bytes, wf_billing_track_key, STORE_NATS_WF,
+    STORE_WF_REDIS, TIER_ACTIVE, TIER_RETAINED,
+};
 use crate::services::usage_meter::{self, UnitUsageRecord};
 use crate::libs::unit_js::workflow_runner::{
     run_workflow_handler, WorkflowExecutionContext, WorkflowExecutionResult,
@@ -105,6 +110,9 @@ async fn publish_wake_message(
     subject: String,
     payload: String,
 ) -> Result<(), String> {
+    if let Some(project_id) = subject.split('.').nth(1) {
+        meter_nats_incr(project_id, STORE_NATS_WF, &subject, payload.as_bytes());
+    }
     if let Some(js_ctx) = js {
         crate::nats::publish_jetstream(js_ctx, subject, bytes::Bytes::from(payload))
             .await
@@ -140,6 +148,7 @@ pub async fn prepare_workflow_instance_for_start(
     let name_key = workflow_dedup_name_key(project_id, unit_path, comm.stage_runtime_id);
     {
         let mut conn = redis.clone();
+        let old_name_bytes = redis_key_usage_bytes(&mut conn, &name_key).await;
         let claimed: bool = redis::cmd("SET")
             .arg(&name_key)
             .arg(instance_id)
@@ -148,6 +157,17 @@ pub async fn prepare_workflow_instance_for_start(
             .await
             .map_err(|e| e.to_string())?;
 
+        if claimed {
+            meter_wf_redis_set_with_old(
+                &mut conn,
+                project_id,
+                &name_key,
+                old_name_bytes,
+                instance_id,
+            )
+            .await;
+            wf_billing_track_key(&mut conn, project_id, instance_id, &name_key, instance_id).await;
+        }
         if !claimed {
             let existing_iid: Option<String> = conn.get(&name_key).await.map_err(|e| e.to_string())?;
             if let Some(eid) = existing_iid {
@@ -170,6 +190,16 @@ pub async fn prepare_workflow_instance_for_start(
                         }
                     }
                 }
+                meter_redis_set(
+                    &mut conn,
+                    project_id,
+                    STORE_WF_REDIS,
+                    TIER_ACTIVE,
+                    &name_key,
+                    instance_id,
+                )
+                .await;
+                wf_billing_track_key(&mut conn, project_id, instance_id, &name_key, instance_id).await;
                 let _: () =
                     conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
             }
@@ -191,6 +221,15 @@ pub async fn prepare_workflow_instance_for_start(
 
     {
         let mut conn = redis.clone();
+        meter_redis_set(
+            &mut conn,
+            project_id,
+            STORE_WF_REDIS,
+            TIER_ACTIVE,
+            &meta_key,
+            &meta_json,
+        )
+        .await;
         let _: () = conn.set(&meta_key, &meta_json).await.map_err(|e| e.to_string())?;
     }
 
@@ -316,7 +355,10 @@ pub async fn cancel_workflow(
     match transition_status(&mut conn, &meta_key, &["running", "suspended"], "cancelled").await? {
         StatusTransition::NotFound => Err("workflow instance not found".to_string()),
         StatusTransition::Rejected { current } => Err(format!("workflow already {current}")),
-        StatusTransition::Done(_) => Ok(()),
+        StatusTransition::Done(_) => {
+            meter_wf_instance_active_to_retained(&mut conn, project_id, instance_id).await;
+            Ok(())
+        }
     }
 }
 
@@ -399,6 +441,15 @@ pub async fn resolve_promise(
 
     let set_ok: bool = {
         let mut conn = redis.clone();
+        meter_redis_set(
+            &mut conn,
+            project_id,
+            STORE_WF_REDIS,
+            TIER_ACTIVE,
+            &rkey,
+            &value,
+        )
+        .await;
         redis::cmd("SET")
             .arg(&rkey)
             .arg(&value)
@@ -546,6 +597,15 @@ pub(crate) async fn reject_caller_promise(
 
     let set_ok: bool = {
         let mut conn = redis.clone();
+        meter_redis_set(
+            &mut conn,
+            project_id,
+            STORE_WF_REDIS,
+            TIER_ACTIVE,
+            &rkey,
+            &value,
+        )
+        .await;
         match redis::cmd("SET")
             .arg(&rkey)
             .arg(&value)
@@ -704,7 +764,26 @@ pub async fn launch_callee_workflow(
     let name_key = workflow_dedup_name_key(project_id, unit_path, meta.stage_runtime_id);
     {
         let mut conn = redis.clone();
+        meter_redis_set(
+            &mut conn,
+            project_id,
+            STORE_WF_REDIS,
+            TIER_ACTIVE,
+            &meta_key,
+            &updated_meta,
+        )
+        .await;
         let _: () = conn.set(&meta_key, &updated_meta).await.map_err(|e| e.to_string())?;
+        meter_redis_set(
+            &mut conn,
+            project_id,
+            STORE_WF_REDIS,
+            TIER_ACTIVE,
+            &name_key,
+            instance_id,
+        )
+        .await;
+        wf_billing_track_key(&mut conn, project_id, instance_id, &name_key, instance_id).await;
         let _: () = conn.set(&name_key, instance_id).await.map_err(|e| e.to_string())?;
     }
 
@@ -886,6 +965,16 @@ async fn drive_workflow_on_runtime(
             let (unit_path, caller_iid, caller_promise) =
                 match transition_status(&mut conn, &meta_key, &["running"], "completed").await? {
                     StatusTransition::Done(old_meta) => {
+                        meter_wf_instance_active_to_retained(&mut conn, &pid, &iid).await;
+                        meter_redis_set(
+                            &mut conn,
+                            &pid,
+                            STORE_WF_REDIS,
+                            TIER_RETAINED,
+                            &result_key,
+                            value.as_str(),
+                        )
+                        .await;
                         let _: () = conn
                             .set(&result_key, value.as_str())
                             .await
@@ -954,6 +1043,15 @@ async fn drive_workflow_on_runtime(
                     let delay_ms = (init_ms * factor.powi((attempt - 1) as i32)).min(max_ms) as u64;
 
                     let retry_val = serde_json::json!({ "attempt": attempt }).to_string();
+                    meter_redis_set(
+                        &mut conn,
+                        &pid,
+                        STORE_WF_REDIS,
+                        TIER_ACTIVE,
+                        &retry_key,
+                        &retry_val,
+                    )
+                    .await;
                     let _: () = conn.set(&retry_key, &retry_val).await.map_err(|e| e.to_string())?;
 
                     let meta_key = redis_key(&pid, &iid, "meta");
@@ -968,6 +1066,15 @@ async fn drive_workflow_on_runtime(
                         "maxAttempts": max_attempts,
                         "delayMs": delay_ms,
                     }).to_string();
+                    meter_redis_set(
+                        &mut conn,
+                        &pid,
+                        STORE_WF_REDIS,
+                        TIER_ACTIVE,
+                        &suspended_key,
+                        &suspended_val,
+                    )
+                    .await;
                     let _: () = conn.set(&suspended_key, &suspended_val).await.map_err(|e| e.to_string())?;
                     drop(conn);
 
@@ -1001,7 +1108,17 @@ async fn drive_workflow_on_runtime(
                         "error": error_msg,
                         "terminal": false,
                     }).to_string();
+                    meter_redis_set(
+                        &mut conn,
+                        &pid,
+                        STORE_WF_REDIS,
+                        TIER_ACTIVE,
+                        &step_key,
+                        &step_val,
+                    )
+                    .await;
                     let _: () = conn.set(&step_key, &step_val).await.map_err(|e| e.to_string())?;
+                    meter_redis_del(&mut conn, &pid, STORE_WF_REDIS, TIER_ACTIVE, &retry_key).await;
                     let _: () = conn.del(&retry_key).await.map_err(|e| e.to_string())?;
 
                     let meta_key = redis_key(&pid, &iid, "meta");
@@ -1039,6 +1156,15 @@ async fn drive_workflow_on_runtime(
             .to_string();
 
             let mut conn = redis.clone();
+            meter_redis_set(
+                &mut conn,
+                &pid,
+                STORE_WF_REDIS,
+                TIER_ACTIVE,
+                &suspended_key,
+                &suspended_val,
+            )
+            .await;
             let _: () = conn
                 .set(&suspended_key, &suspended_val)
                 .await
@@ -1122,7 +1248,17 @@ async fn drive_workflow_on_runtime(
             let (unit_path, caller_iid, caller_promise) =
                 match transition_status(&mut conn, &meta_key, &["running"], "failed").await? {
                     StatusTransition::Done(old_meta) => {
+                        meter_wf_instance_active_to_retained(&mut conn, &pid, &iid).await;
                         let error_result = serde_json::json!({ "error": error }).to_string();
+                        meter_redis_set(
+                            &mut conn,
+                            &pid,
+                            STORE_WF_REDIS,
+                            TIER_RETAINED,
+                            &result_key,
+                            &error_result,
+                        )
+                        .await;
                         let _: () = conn
                             .set(&result_key, &error_result)
                             .await

@@ -231,6 +231,36 @@ function applyCheck(output: any, check: CheckDef): string | null {
 // Workflow orchestrator
 // ---------------------------------------------------------------------------
 
+const DEFAULT_TEST_RUNNER_CONCURRENCY = 8;
+
+function workflowTestRunnerConcurrency(): number {
+  const raw = process.env["WORKFLOW_TEST_RUNNER_CONCURRENCY"];
+  if (raw == null || raw === "") return DEFAULT_TEST_RUNNER_CONCURRENCY;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_TEST_RUNNER_CONCURRENCY;
+  return n;
+}
+
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const workers = Math.min(Math.max(1, concurrency), Math.max(1, items.length));
+  await Promise.all(
+    Array.from({ length: items.length ? workers : 0 }, async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i]!, i);
+      }
+    }),
+  );
+  return out;
+}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -3161,16 +3191,23 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse) {
   const runOnly = (t: { name: string; category: string }) =>
     RUN_ONLY.length === 0 || RUN_ONLY.some((f) => f.name === t.name && f.category === t.category);
 
-  const results = await Promise.all([
-    ...allTests().filter(runOnly).map(async (test) => {
-      console.log(`  workflow: ${test.category}: ${test.name} …`);
-      return runTest(baseUrl, test);
-    }),
-    ...allEndpointTests().filter(runOnly).map(async (et) => {
-      console.log(`  workflow: ${et.category}: ${et.name} …`);
-      return runEndpointTest(baseUrl, et);
-    }),
-  ]);
+  type RunnerTask =
+    | { kind: "workflow"; test: TestDef }
+    | { kind: "endpoint"; test: EndpointTestDef };
+
+  const tasks: RunnerTask[] = [
+    ...allTests().filter(runOnly).map((test) => ({ kind: "workflow" as const, test })),
+    ...allEndpointTests().filter(runOnly).map((test) => ({ kind: "endpoint" as const, test })),
+  ];
+
+  const results = await mapPool(tasks, workflowTestRunnerConcurrency(), async (task) => {
+    if (task.kind === "workflow") {
+      console.log(`  workflow: ${task.test.category}: ${task.test.name} …`);
+      return runTest(baseUrl, task.test);
+    }
+    console.log(`  workflow: ${task.test.category}: ${task.test.name} …`);
+    return runEndpointTest(baseUrl, task.test);
+  });
 
   const report = buildReport(results);
   const body = JSON.stringify(report, null, 2);

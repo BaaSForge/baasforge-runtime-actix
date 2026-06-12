@@ -23,7 +23,23 @@ use crate::services::queue_worker_engine::{
     QueueWorkerRunMeta, QueueWorkerRedis, WQ_NATS_WORK_SUBJECT_PER_PROJECT,
     WQ_NATS_WORK_STREAM_SUBJECTS, publish_qw_event,
 };
+use crate::services::storage_meter::{
+    meter_nats_decr, meter_redis_del, meter_redis_decr_bytes, meter_redis_incr_bytes,
+    meter_redis_set, meter_redis_set_with_old, meter_wq_redis_set_for_status,
+    meter_wq_run_active_to_retained, redis_key_usage_bytes, redis_list_rpush_delta_bytes,
+    redis_list_stored_bytes, STORE_NATS_WQ, STORE_WQ_REDIS, TIER_ACTIVE,
+};
 use crate::services::usage_meter::{self, UnitUsageRecord, UsageMeterMemory};
+
+async fn ack_wq_work(msg: &async_nats::jetstream::Message, project_id: &str) {
+    meter_nats_decr(
+        project_id,
+        STORE_NATS_WQ,
+        msg.subject.as_str(),
+        msg.payload.as_ref(),
+    );
+    let _ = msg.ack().await;
+}
 
 pub async fn run_work_consumer(
     wq_redis: QueueWorkerRedis,
@@ -194,7 +210,7 @@ async fn handle_work_message(
 
     let Some(payload) = payload else {
         warn!("[queue_worker_consumer] invalid json payload, acking");
-        let _ = msg.ack().await;
+        ack_wq_work(&msg, &project_id).await;
         return;
     };
 
@@ -218,7 +234,7 @@ async fn handle_work_message(
 
     let (Some(run_id), Some(unit_path)) = (run_id, unit_path) else {
         warn!("[queue_worker_consumer] missing runId or unitPath in payload");
-        let _ = msg.ack().await;
+        ack_wq_work(&msg, &project_id).await;
         return;
     };
 
@@ -230,12 +246,12 @@ async fn handle_work_message(
     };
     let Some(raw) = meta_raw else {
         warn!(run_id = %run_id, "[queue_worker_consumer] run meta not found, acking");
-        let _ = msg.ack().await;
+        ack_wq_work(&msg, &project_id).await;
         return;
     };
     let Ok(meta) = serde_json::from_str::<QueueWorkerRunMeta>(&raw) else {
         warn!(run_id = %run_id, "[queue_worker_consumer] invalid run meta, acking");
-        let _ = msg.ack().await;
+        ack_wq_work(&msg, &project_id).await;
         return;
     };
 
@@ -244,7 +260,7 @@ async fn handle_work_message(
         || meta.status == "dead_letter"
     {
         info!(run_id = %run_id, status = %meta.status, "[queue_worker_consumer] run is terminal, acking");
-        let _ = msg.ack().await;
+        ack_wq_work(&msg, &project_id).await;
         return;
     }
 
@@ -261,7 +277,7 @@ async fn handle_work_message(
         Ok(u) => u,
         Err(e) => {
             error!(error = %e, "[queue_worker_consumer] invalid project_id");
-            let _ = msg.ack().await;
+            ack_wq_work(&msg, &project_id).await;
             return;
         }
     };
@@ -310,7 +326,7 @@ async fn handle_work_message(
                     &unit_path, "unit has no compiled code", wq_stage,
                 )
                 .await;
-                let _ = msg.ack().await;
+                ack_wq_work(&msg, &project_id).await;
                 return;
             }
         },
@@ -321,12 +337,12 @@ async fn handle_work_message(
                 &unit_path, "queue_worker unit not found", wq_stage,
             )
             .await;
-            let _ = msg.ack().await;
+            ack_wq_work(&msg, &project_id).await;
             return;
         }
         Err(e) => {
             error!(error = %e, run_id = %run_id, "[queue_worker_consumer] load unit error");
-            let _ = msg.ack().await;
+            ack_wq_work(&msg, &project_id).await;
             return;
         }
     };
@@ -355,12 +371,12 @@ async fn handle_work_message(
                 wq_stage,
             )
             .await;
-            let _ = msg.ack().await;
+            ack_wq_work(&msg, &project_id).await;
             return;
         }
         Err(crate::libs::unit_js::PrepareError::Load(e)) => {
             error!(run_id = %run_id, error = %e, "[queue_worker_consumer] common import resolution failed");
-            let _ = msg.ack().await;
+            ack_wq_work(&msg, &project_id).await;
             return;
         }
     };
@@ -369,7 +385,7 @@ async fn handle_work_message(
 
     if let Some(ref batch_cfg) = worker_meta.batch {
         let batch_cfg = batch_cfg.clone();
-        let _ = msg.ack().await;
+        ack_wq_work(&msg, &project_id).await;
         let batch_comm = Arc::new(SdkCommCtx {
             pool: pool.clone(),
             redis_conn: redis_conn.clone(),
@@ -404,7 +420,8 @@ async fn handle_work_message(
     let lock_key = format!("wq:{project_id}:{run_id}:exec_lock");
     let acquired: bool = {
         let mut conn = wq_redis.clone();
-        redis::cmd("SET")
+        let old_lock_bytes = redis_key_usage_bytes(&mut conn, &lock_key).await;
+        let acquired: bool = redis::cmd("SET")
             .arg(&lock_key)
             .arg("1")
             .arg("NX")
@@ -412,11 +429,28 @@ async fn handle_work_message(
             .arg(300u64)
             .query_async(&mut conn)
             .await
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if acquired {
+            meter_redis_set_with_old(
+                &project_id,
+                STORE_WQ_REDIS,
+                TIER_ACTIVE,
+                &lock_key,
+                old_lock_bytes,
+                "1",
+            );
+        }
+        acquired
     };
     if !acquired {
         info!(run_id = %run_id, "[queue_worker_consumer] exec_lock held, acking");
-        let _ = msg.ack().await;
+        ack_wq_work(&msg, &project_id).await;
+        return;
+    }
+
+    if should_skip_run_processing(&wq_redis, &meta_key).await {
+        release_exec_lock(&wq_redis, &lock_key).await;
+        ack_wq_work(&msg, &project_id).await;
         return;
     }
 
@@ -431,6 +465,7 @@ async fn handle_work_message(
         };
         if let Ok(json) = serde_json::to_string(&updated) {
             let mut conn = wq_redis.clone();
+            meter_wq_redis_set_for_status(&mut conn, &project_id, &meta_key, &json, "processing").await;
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
     }
@@ -533,6 +568,7 @@ async fn handle_work_message(
                     };
                     if let Ok(json) = serde_json::to_string(&retry_meta) {
                         let mut conn = wq_redis.clone();
+                        meter_wq_redis_set_for_status(&mut conn, &project_id, &meta_key, &json, "retrying").await;
                         let _: Result<(), _> = conn.set(&meta_key, &json).await;
                     }
                     publish_qw_event(
@@ -551,7 +587,7 @@ async fn handle_work_message(
                         &unit_path, "execution timed out", wq_stage,
                     ).await;
                     release_exec_lock(&wq_redis, &lock_key).await;
-                    let _ = msg.ack().await;
+                    ack_wq_work(&msg, &project_id).await;
                 }
                 return;
             }
@@ -565,7 +601,7 @@ async fn handle_work_message(
             let was_cancelled = check_cancelled(&wq_redis, &meta_key).await;
             if was_cancelled {
                 release_exec_lock(&wq_redis, &lock_key).await;
-                let _ = msg.ack().await;
+                ack_wq_work(&msg, &project_id).await;
                 return;
             }
             match result.outcome {
@@ -573,6 +609,15 @@ async fn handle_work_message(
                     let result_key = format!("wq:{project_id}:{run_id}:result");
                     {
                         let mut conn = wq_redis.clone();
+                        meter_redis_set(
+                            &mut conn,
+                            &project_id,
+                            STORE_WQ_REDIS,
+                            TIER_ACTIVE,
+                            &result_key,
+                            &value_json,
+                        )
+                        .await;
                         let _: Result<(), _> = conn.set(&result_key, &value_json).await;
                     }
                     let completed_meta = QueueWorkerRunMeta {
@@ -585,7 +630,17 @@ async fn handle_work_message(
                     };
                     if let Ok(json) = serde_json::to_string(&completed_meta) {
                         let mut conn = wq_redis.clone();
+                        meter_redis_set(
+                            &mut conn,
+                            &project_id,
+                            STORE_WQ_REDIS,
+                            TIER_ACTIVE,
+                            &meta_key,
+                            &json,
+                        )
+                        .await;
                         let _: Result<(), _> = conn.set(&meta_key, &json).await;
+                        meter_wq_run_active_to_retained(&mut conn, &project_id, &run_id).await;
                     }
                     let result_val: serde_json::Value = serde_json::from_str(&value_json)
                         .unwrap_or(serde_json::json!(value_json));
@@ -599,7 +654,7 @@ async fn handle_work_message(
                     )
                     .await;
                     release_exec_lock(&wq_redis, &lock_key).await;
-                    let _ = msg.ack().await;
+                    ack_wq_work(&msg, &project_id).await;
                 }
                 QueueWorkerRunOutcome::Failed(error_msg) => {
                     process_failed_outcome(
@@ -617,7 +672,7 @@ async fn handle_work_message(
                     )
                     .await;
                     release_exec_lock(&wq_redis, &lock_key).await;
-                    let _ = msg.ack().await;
+                    ack_wq_work(&msg, &project_id).await;
                 }
             }
         }
@@ -629,7 +684,7 @@ async fn handle_work_message(
             )
             .await;
             release_exec_lock(&wq_redis, &lock_key).await;
-            let _ = msg.ack().await;
+            ack_wq_work(&msg, &project_id).await;
         }
     }
     })
@@ -637,6 +692,15 @@ async fn handle_work_message(
     .await
     })
     .await;
+}
+
+async fn should_skip_run_processing(wq_redis: &QueueWorkerRedis, meta_key: &str) -> bool {
+    let mut conn = wq_redis.clone();
+    let raw: Option<String> = conn.get(meta_key).await.unwrap_or(None);
+    match raw.as_deref().and_then(|s| serde_json::from_str::<QueueWorkerRunMeta>(s).ok()) {
+        None => true,
+        Some(m) => matches!(m.status.as_str(), "cancelled" | "completed" | "dead_letter"),
+    }
 }
 
 async fn check_cancelled(wq_redis: &QueueWorkerRedis, meta_key: &str) -> bool {
@@ -686,6 +750,7 @@ async fn process_failed_outcome(
         };
         if let Ok(json) = serde_json::to_string(&retry_meta) {
             let mut conn = wq_redis.clone();
+            meter_wq_redis_set_for_status(&mut conn, project_id, &meta_key, &json, "retrying").await;
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
         publish_qw_event(
@@ -711,13 +776,23 @@ async fn process_failed_outcome(
         move_to_dead_letter(wq_redis, nats, project_id, run_id, attempt, enqueued_at, unit_path, error_msg, stage_runtime_id).await;
         release_exec_lock(wq_redis, lock_key).await;
         if let Some(m) = msg {
+            meter_nats_decr(
+                project_id,
+                STORE_NATS_WQ,
+                m.subject.as_str(),
+                m.payload.as_ref(),
+            );
             let _ = m.ack().await;
         }
     }
 }
 
 async fn release_exec_lock(wq_redis: &QueueWorkerRedis, lock_key: &str) {
+    let project_id = lock_key.split(':').nth(1).unwrap_or("");
     let mut conn = wq_redis.clone();
+    if !project_id.is_empty() {
+        meter_redis_del(&mut conn, project_id, STORE_WQ_REDIS, TIER_ACTIVE, lock_key).await;
+    }
     let _: () = redis::cmd("DEL")
         .arg(lock_key)
         .query_async(&mut conn)
@@ -747,7 +822,17 @@ async fn move_to_dead_letter(
     };
     if let Ok(json) = serde_json::to_string(&dl_meta) {
         let mut conn = wq_redis.clone();
+        meter_redis_set(
+            &mut conn,
+            project_id,
+            STORE_WQ_REDIS,
+            TIER_ACTIVE,
+            &meta_key,
+            &json,
+        )
+        .await;
         let _: Result<(), _> = conn.set(&meta_key, &json).await;
+        meter_wq_run_active_to_retained(&mut conn, project_id, run_id).await;
     }
     publish_qw_event(
         nats,
@@ -806,6 +891,14 @@ async fn handle_batch_item(
             .query_async(&mut conn)
             .await
             .unwrap_or(0);
+        let incr_bytes = redis_list_rpush_delta_bytes(&batch_key, &item_json, new_len);
+        meter_redis_incr_bytes(
+            &project_id,
+            STORE_WQ_REDIS,
+            TIER_ACTIVE,
+            &batch_key,
+            incr_bytes,
+        );
         let should = new_len >= batch_cfg.size as i64;
         (new_len, should)
     };
@@ -864,6 +957,11 @@ async fn batch_pop_all(wq_redis: &QueueWorkerRedis, batch_key: &str) -> Vec<Batc
         .await
         .unwrap_or_default();
     if !raw_items.is_empty() {
+        let project_id = batch_key.split(':').nth(1).unwrap_or("");
+        if !project_id.is_empty() {
+            let bytes = redis_list_stored_bytes(batch_key, &raw_items);
+            meter_redis_decr_bytes(project_id, STORE_WQ_REDIS, TIER_ACTIVE, batch_key, bytes);
+        }
         let _: () = redis::cmd("DEL")
             .arg(batch_key)
             .query_async(&mut conn)
@@ -1032,6 +1130,9 @@ async fn batch_mark_processing(
 ) {
     for run_id in run_ids {
         let meta_key = format!("wq:{project_id}:{run_id}:meta");
+        if should_skip_run_processing(wq_redis, &meta_key).await {
+            continue;
+        }
         let meta = QueueWorkerRunMeta {
             status: "processing".to_string(),
             attempt,
@@ -1042,6 +1143,7 @@ async fn batch_mark_processing(
         };
         if let Ok(json) = serde_json::to_string(&meta) {
             let mut conn = wq_redis.clone();
+            meter_wq_redis_set_for_status(&mut conn, project_id, &meta_key, &json, "processing").await;
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
         publish_qw_event(
@@ -1078,6 +1180,7 @@ async fn batch_mark_retrying(
         };
         if let Ok(json) = serde_json::to_string(&meta) {
             let mut conn = wq_redis.clone();
+            meter_wq_redis_set_for_status(&mut conn, project_id, &meta_key, &json, "retrying").await;
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
         }
         publish_qw_event(
@@ -1108,6 +1211,15 @@ async fn batch_complete(
         let meta_key = format!("wq:{project_id}:{run_id}:meta");
         {
             let mut conn = wq_redis.clone();
+            meter_redis_set(
+                &mut conn,
+                project_id,
+                STORE_WQ_REDIS,
+                TIER_ACTIVE,
+                &result_key,
+                value_json,
+            )
+            .await;
             let _: Result<(), _> = conn.set(&result_key, value_json).await;
         }
         let meta = QueueWorkerRunMeta {
@@ -1120,7 +1232,17 @@ async fn batch_complete(
         };
         if let Ok(json) = serde_json::to_string(&meta) {
             let mut conn = wq_redis.clone();
+            meter_redis_set(
+                &mut conn,
+                project_id,
+                STORE_WQ_REDIS,
+                TIER_ACTIVE,
+                &meta_key,
+                &json,
+            )
+            .await;
             let _: Result<(), _> = conn.set(&meta_key, &json).await;
+            meter_wq_run_active_to_retained(&mut conn, project_id, run_id).await;
         }
         let result_val: serde_json::Value = serde_json::from_str(value_json)
             .unwrap_or(serde_json::json!(value_json));

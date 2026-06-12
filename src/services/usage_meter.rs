@@ -1,4 +1,5 @@
 // TODO: persist UnitUsageRecord to DB (project_usage_events) in a follow-up plan.
+// TODO: persist StorageDeltaRecord to DB in a follow-up plan.
 
 #[derive(Debug, Clone, Copy)]
 pub struct UsageMeterMemory {
@@ -53,6 +54,39 @@ mod tests {
         assert_eq!(UnitUsageRecord::compute_gb_ms(501, 256), 126);
         assert_eq!(UnitUsageRecord::compute_gb_ms(3, 512), 2);
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageDeltaOp {
+    Incr,
+    Decr,
+}
+
+#[derive(Debug, Clone)]
+pub struct StorageDeltaRecord {
+    pub project_id: String,
+    pub store: &'static str,
+    pub tier: &'static str,
+    pub op: StorageDeltaOp,
+    pub bytes: u64,
+    pub resource_key: String,
+}
+
+pub fn log_storage_delta(record: StorageDeltaRecord) {
+    let op = match record.op {
+        StorageDeltaOp::Incr => "incr",
+        StorageDeltaOp::Decr => "decr",
+    };
+    tracing::info!(
+        target: "baal.usage.storage_delta",
+        project_id = %record.project_id,
+        store = %record.store,
+        tier = %record.tier,
+        op = op,
+        bytes = record.bytes,
+        resource_key = %record.resource_key,
+        "storage delta"
+    );
 }
 
 pub fn log_unit_usage(record: UnitUsageRecord) {

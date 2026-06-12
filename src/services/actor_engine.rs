@@ -1,3 +1,7 @@
+use crate::services::storage_meter::{
+    meter_nats_incr, meter_redis_del, meter_redis_set, STORE_ACTOR_REDIS, STORE_NATS_ACTOR,
+    TIER_ACTIVE,
+};
 use async_nats::jetstream::{self, stream};
 use redis::AsyncCommands;
 use serde_json::Value;
@@ -142,7 +146,14 @@ pub async fn publish_actor_message(
         crate::telemetry::inject_traceparent_json_field(obj);
     }
     crate::rt_step!("actor.nats.publish.jetstream", subject = %subject, msg_id = %msg_id);
-    crate::nats::publish_jetstream(js, subject.clone(), bytes::Bytes::from(msg_payload.to_string()))
+    let payload_str = msg_payload.to_string();
+    meter_nats_incr(
+        project_id,
+        STORE_NATS_ACTOR,
+        &subject,
+        payload_str.as_bytes(),
+    );
+    crate::nats::publish_jetstream(js, subject.clone(), bytes::Bytes::from(payload_str))
         .await
         .map_err(|e| e.to_string())?;
     crate::rt_exit_ok!("actor.nats.publish", subject = %subject, msg_id = %msg_id);
@@ -309,6 +320,33 @@ pub async fn commit_state(
     let state_json = serde_json::to_string(new_state).map_err(|e| e.to_string())?;
     let now_ms = chrono::Utc::now().timestamp_millis().to_string();
     let mut conn = redis.clone();
+    meter_redis_set(
+        &mut conn,
+        project_id,
+        STORE_ACTOR_REDIS,
+        TIER_ACTIVE,
+        &state_key,
+        &state_json,
+    )
+    .await;
+    meter_redis_set(
+        &mut conn,
+        project_id,
+        STORE_ACTOR_REDIS,
+        TIER_ACTIVE,
+        &version_key,
+        &new_version.to_string(),
+    )
+    .await;
+    meter_redis_set(
+        &mut conn,
+        project_id,
+        STORE_ACTOR_REDIS,
+        TIER_ACTIVE,
+        &last_access_key,
+        &now_ms,
+    )
+    .await;
     let result: i64 = redis::Script::new(COMMIT_STATE_LUA)
         .key(&state_key)
         .key(&version_key)
@@ -335,6 +373,7 @@ pub async fn evict_actor_hot_cache_keep_alarms(
         .collect();
     let mut conn = redis.clone();
     for key in &keys {
+        meter_redis_del(&mut conn, project_id, STORE_ACTOR_REDIS, TIER_ACTIVE, key).await;
         let _: () = redis::cmd("DEL")
             .arg(key)
             .query_async(&mut conn)
@@ -357,12 +396,21 @@ pub async fn delete_actor_state(
     let alarms_key = actor_key(project_id, stage_runtime_id, unit_path, actor_id, "alarms");
     let mut conn = redis.clone();
     for key in &keys {
+        meter_redis_del(&mut conn, project_id, STORE_ACTOR_REDIS, TIER_ACTIVE, key).await;
         let _: () = redis::cmd("DEL")
             .arg(key)
             .query_async(&mut conn)
             .await
             .unwrap_or(());
     }
+    meter_redis_del(
+        &mut conn,
+        project_id,
+        STORE_ACTOR_REDIS,
+        TIER_ACTIVE,
+        &alarms_key,
+    )
+    .await;
     let _: () = redis::cmd("DEL")
         .arg(&alarms_key)
         .query_async(&mut conn)

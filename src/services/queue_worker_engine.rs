@@ -1,3 +1,7 @@
+use crate::services::storage_meter::{
+    meter_nats_incr, meter_redis_set, meter_wq_run_active_to_retained, STORE_NATS_WQ, STORE_WQ_REDIS,
+    TIER_ACTIVE, wq_meta_tier,
+};
 use async_nats::jetstream;
 use async_nats::jetstream::stream;
 use redis::AsyncCommands;
@@ -88,6 +92,15 @@ pub async fn enqueue_queue_worker_run(
 
     {
         let mut conn = redis.clone();
+        meter_redis_set(
+            &mut conn,
+            project_id,
+            STORE_WQ_REDIS,
+            TIER_ACTIVE,
+            &meta_key,
+            &meta_json,
+        )
+        .await;
         let _: () = conn.set(&meta_key, &meta_json).await.map_err(|e| e.to_string())?;
     }
 
@@ -112,6 +125,12 @@ pub async fn enqueue_queue_worker_run(
     }
     let work_payload = work_val.to_string();
 
+    meter_nats_incr(
+        project_id,
+        STORE_NATS_WQ,
+        &work_subject,
+        work_payload.as_bytes(),
+    );
     if let Some(js_ctx) = js {
         crate::nats::publish_jetstream(js_ctx, work_subject, bytes::Bytes::from(work_payload))
             .await
@@ -219,7 +238,17 @@ pub async fn cancel_queue_worker_run(
 
     meta.status = "cancelled".to_string();
     let updated = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+    meter_redis_set(
+        &mut conn,
+        project_id,
+        STORE_WQ_REDIS,
+        TIER_ACTIVE,
+        &meta_key,
+        &updated,
+    )
+    .await;
     let _: () = conn.set(&meta_key, &updated).await.map_err(|e| e.to_string())?;
+    meter_wq_run_active_to_retained(&mut conn, project_id, run_id).await;
     drop(conn);
 
     publish_qw_event(
@@ -290,6 +319,15 @@ pub fn set_queue_worker_run_meta_sync<'a>(
     let meta_key = wq_redis_key(project_id, run_id, "meta");
     async move {
         let json = serde_json::to_string(&meta).map_err(|e| e.to_string())?;
+        meter_redis_set(
+            conn,
+            project_id,
+            STORE_WQ_REDIS,
+            wq_meta_tier(status),
+            &meta_key,
+            &json,
+        )
+        .await;
         let _: () = conn.set(&meta_key, &json).await.map_err(|e| e.to_string())?;
         Ok(())
     }
