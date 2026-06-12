@@ -112,12 +112,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         resolved_runtime_id: None,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter: settings.usage_meter,
     });
     tokio::spawn(async move {
         run_alarm_sweeper(alarm_comm).await;
     });
 
     let actor_idle_sweep = std::time::Duration::from_secs(settings.actor_idle_sweep_secs.max(1));
+    let usage_meter = settings.usage_meter;
     tokio::spawn(async move {
         if let Err(e) = baal_runtime_actix::services::actor_worker::runner::run_actor_consumer(
             actor_redis,
@@ -134,6 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             actor_pg,
             locks,
             actor_idle_sweep,
+            usage_meter,
         )
         .await
         {

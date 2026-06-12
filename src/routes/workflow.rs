@@ -164,6 +164,7 @@ async fn do_start_workflow(
         resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter: ctx.settings.usage_meter,
     });
 
     match workflow_engine::start_workflow(
@@ -238,6 +239,7 @@ async fn do_call_handler(
         resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter: ctx.settings.usage_meter,
     });
 
     match workflow_engine::call_handler(

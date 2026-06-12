@@ -381,6 +381,7 @@ async fn invoke_api_unit(
         resolved_runtime_id,
         sdk_public_host,
         sdk_trigger_base_path,
+        usage_meter: ctx.settings.usage_meter,
     });
     let code = match unit_js::prepare_source_for_comm(&code, &comm).await {
         Ok(s) => s,

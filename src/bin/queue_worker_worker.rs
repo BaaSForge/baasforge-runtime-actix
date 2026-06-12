@@ -89,6 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let stream_name = WQ_NATS_WORK_STREAM.to_string();
     let consumer_name = WQ_NATS_WORK_CONSUMER.to_string();
 
+    let usage_meter = settings.usage_meter;
     tokio::spawn(async move {
         if let Err(e) = baal_runtime_actix::services::queue_worker_worker::runner::run_work_consumer(
             wq_redis,
@@ -104,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             actor_js,
             actor_pg,
             actor_locks,
+            usage_meter,
         )
         .await
         {

@@ -1,5 +1,6 @@
 use async_nats::jetstream;
 use crate::configs::Settings;
+use crate::services::usage_meter::UsageMeterMemory;
 use crate::database::establish_pool;
 use crate::{init_tracing, shutdown_telemetry};
 use crate::libs::unit_js::modules::sdk::{SdkActorLocks, SdkCommCtx, SharedRedis};
@@ -138,6 +139,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let wq_redis = wq_redis.clone();
         let wq_nats = wq_nats.clone();
         let wq_js = wq_js.clone();
+        let usage_meter = settings.usage_meter;
 
         info!("[workflow_wake] starting JetStream pull consumer for wf.*.*.wake");
 
@@ -157,6 +159,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 wq_redis,
                 wq_nats,
                 wq_js,
+                usage_meter,
             )
             .await
             {
@@ -189,6 +192,7 @@ pub async fn run_wake_consumer(
     wq_redis: SharedRedis,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
+    usage_meter: UsageMeterMemory,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
     let wake_subjects = vec!["wf.*.*.wake".to_string(), "wf.*.*.start".to_string()];
@@ -305,6 +309,7 @@ pub async fn run_wake_consumer(
                 let wq_redis = wq_redis.clone();
                 let wq_nats = wq_nats.clone();
                 let wq_js = wq_js.clone();
+                let usage_meter = usage_meter;
 
                 tokio::spawn(async move {
                     let heartbeat_msg = msg.clone();
@@ -341,6 +346,7 @@ pub async fn run_wake_consumer(
                             wq_redis,
                             wq_nats,
                             wq_js,
+                            usage_meter,
                         )
                         .await
                         .map_err(|e| {
@@ -369,6 +375,7 @@ pub async fn run_wake_consumer(
                             wq_redis,
                             wq_nats,
                             wq_js,
+                            usage_meter,
                         )
                         .await
                         .map_err(|e| {
@@ -436,6 +443,7 @@ async fn handle_start(
     wq_redis: SharedRedis,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
+    usage_meter: UsageMeterMemory,
 ) -> Result<WakeProcessOutcome, String> {
     let trace_payload = _payload.cloned();
 
@@ -453,6 +461,7 @@ async fn handle_start(
     let wq_redis = wq_redis.clone();
     let wq_nats = wq_nats.clone();
     let wq_js = wq_js.clone();
+    let usage_meter = usage_meter;
 
     (async move {
     let meta_key = format!("wf:{project_id}:{instance_id}:meta");
@@ -582,6 +591,7 @@ async fn handle_start(
         resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter,
     });
 
     let result = workflow_engine::launch_callee_workflow(
@@ -630,6 +640,7 @@ async fn handle_wake(
     wq_redis: SharedRedis,
     wq_nats: Option<async_nats::Client>,
     wq_js: Option<jetstream::Context>,
+    usage_meter: UsageMeterMemory,
 ) -> Result<WakeProcessOutcome, String> {
     let wake_payload = payload.cloned();
 
@@ -647,6 +658,7 @@ async fn handle_wake(
     let wq_redis = wq_redis.clone();
     let wq_nats = wq_nats.clone();
     let wq_js = wq_js.clone();
+    let usage_meter = usage_meter;
 
     (async move {
     crate::rt_enter!("wf.consumer.handle_wake", project_id = %project_id, instance_id = %instance_id);
@@ -845,6 +857,7 @@ async fn handle_wake(
         resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter,
     });
 
     let result = workflow_engine::resume_workflow(

@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use crate::database::{DbPool, SharedRedisConn};
 use crate::models::actor_store::ActorPgPool;
 use crate::services::actor_engine::ActorRedis;
+use crate::services::usage_meter::UsageMeterMemory;
 use uuid::Uuid;
 
 pub type SharedRedis = crate::database::RedisConn;
@@ -46,6 +47,7 @@ pub struct SdkCommCtx {
     pub resolved_runtime_id: Option<Uuid>,
     pub sdk_public_host: String,
     pub sdk_trigger_base_path: String,
+    pub usage_meter: UsageMeterMemory,
 }
 
 impl SdkCommCtx {
@@ -1046,6 +1048,7 @@ fn host_start_workflow_fire_forget(
                             &source_bg,
                             None,
                             None,
+                            "wf_sdk",
                             comm_bg,
                         )
                         .await

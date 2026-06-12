@@ -23,6 +23,7 @@ use crate::services::queue_worker_engine::{
     QueueWorkerRunMeta, QueueWorkerRedis, WQ_NATS_WORK_SUBJECT_PER_PROJECT,
     WQ_NATS_WORK_STREAM_SUBJECTS, publish_qw_event,
 };
+use crate::services::usage_meter::{self, UnitUsageRecord, UsageMeterMemory};
 
 pub async fn run_work_consumer(
     wq_redis: QueueWorkerRedis,
@@ -38,6 +39,7 @@ pub async fn run_work_consumer(
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
+    usage_meter: UsageMeterMemory,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let js = jetstream::new(nats.clone());
 
@@ -127,6 +129,7 @@ pub async fn run_work_consumer(
                 let actor_js = actor_js.clone();
                 let actor_pg = actor_pg.clone();
                 let actor_locks = actor_locks.clone();
+                let usage_meter = usage_meter;
 
                 tokio::spawn(async move {
                     handle_work_message(
@@ -144,6 +147,7 @@ pub async fn run_work_consumer(
                         actor_js,
                         actor_pg,
                         actor_locks,
+                        usage_meter,
                     )
                     .await;
                 });
@@ -175,6 +179,7 @@ async fn handle_work_message(
     actor_js: Option<jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
     actor_locks: SdkActorLocks,
+    usage_meter: UsageMeterMemory,
 ) {
     let subject = msg.subject.to_string();
     let parts: Vec<&str> = subject.split('.').collect();
@@ -386,6 +391,7 @@ async fn handle_work_message(
             resolved_runtime_id,
             sdk_public_host: "localhost".to_string(),
             sdk_trigger_base_path: String::new(),
+            usage_meter,
         });
         handle_batch_item(
             wq_redis, nats_opt, project_id, unit_path,
@@ -469,6 +475,7 @@ async fn handle_work_message(
         resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter,
     });
 
     let rid = wq_stage.map(|u| u.to_string());
@@ -485,6 +492,7 @@ async fn handle_work_message(
         rid.as_deref(),
     );
     drop(parent_ctx.attach());
+    let memory_mb = usage_meter.queue_worker;
     let run_future = run_worker_handler_on_blocking_pool(&source, &run_ctx, comm);
 
     let run_result = if let Some(timeout_ms) = timeout_ms {
@@ -497,6 +505,21 @@ async fn handle_work_message(
             Ok(result) => result,
             Err(_elapsed) => {
                 warn!(run_id = %run_id, timeout_ms = timeout_ms, "[queue_worker_consumer] execution timed out");
+                usage_meter::log_unit_usage(UnitUsageRecord {
+                    project_id: project_id.clone(),
+                    unit_type: "queue_worker",
+                    unit_path: unit_path.clone(),
+                    trigger: "wq_work",
+                    duration_ms: timeout_ms,
+                    memory_mb,
+                    actions: 1,
+                    outcome: "timeout",
+                    instance_id: None,
+                    run_id: Some(run_id.clone()),
+                    actor_id: None,
+                    handler: None,
+                    attempt: Some(attempt),
+                });
                 let max_attempts = worker_meta.max_attempts.unwrap_or(3);
                 if attempt < max_attempts {
                     let next_attempt = attempt + 1;

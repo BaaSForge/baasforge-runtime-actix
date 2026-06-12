@@ -1,5 +1,8 @@
 use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use std::sync::Arc;
+use std::time::Instant;
+
+use crate::services::usage_meter::{self, UnitUsageRecord};
 
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
@@ -22,6 +25,13 @@ pub async fn run_unit_handler(
         trigger_path = %snapshot.trigger_path,
         body_bytes = snapshot.body_text.len()
     );
+    let started = Instant::now();
+    let project_id = comm.as_ref().map(|c| c.project_id.clone()).unwrap_or_default();
+    let project_id_for_js = project_id.clone();
+    let unit_path_str = unit_path.unwrap_or("").to_string();
+    let memory_mb = comm.as_ref().map(|c| c.usage_meter.api).unwrap_or(0);
+
+    let execution = async {
     let unit_entry_dir = unit_path
         .and_then(|p| p.rsplit_once('/').map(|(dir, _)| dir.to_string()));
     let baal = validate_and_prepare_loader(source, unit_entry_dir).map_err(|e| e.to_string())?;
@@ -53,7 +63,6 @@ pub async fn run_unit_handler(
         .find(|(k, _)| k.eq_ignore_ascii_case("host"))
         .map(|(_, v)| v.clone())
         .unwrap_or_else(|| "localhost".to_string());
-    let project_id = comm.as_ref().map(|c| c.project_id.clone()).unwrap_or_default();
     let trigger_path = snapshot.trigger_path.clone();
     let snapshot_json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
 
@@ -76,7 +85,7 @@ pub async fn run_unit_handler(
                 .set("__selfHost", self_host.as_str())
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
             ctx.globals()
-                .set("__baal_project_id", project_id.as_str())
+                .set("__baal_project_id", project_id_for_js.as_str())
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
             ctx.eval::<(), _>(format!("globalThis.__snap = {};", snapshot_json))
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
@@ -121,6 +130,26 @@ pub async fn run_unit_handler(
         body_bytes = result.body.len()
     );
     Ok(result)
+    }
+    .await;
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    usage_meter::log_unit_usage(UnitUsageRecord {
+        project_id,
+        unit_type: "api",
+        unit_path: unit_path_str,
+        trigger: "http",
+        duration_ms,
+        memory_mb,
+        actions: 1,
+        outcome: if execution.is_ok() { "ok" } else { "error" },
+        instance_id: None,
+        run_id: None,
+        actor_id: None,
+        handler: None,
+        attempt: None,
+    });
+    execution
 }
 
 pub async fn import_entry_module_for_meta(

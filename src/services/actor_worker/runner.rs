@@ -19,6 +19,7 @@ use crate::services::project_release::{
     load_live_release_id_scoped, load_production_runtime_id_for_project,
 };
 use crate::services::queue_worker_engine::QueueWorkerRedis;
+use crate::services::usage_meter::UsageMeterMemory;
 use crate::services::workflow_engine::SharedRedis as WfRedis;
 use uuid::Uuid;
 
@@ -37,6 +38,7 @@ pub async fn run_actor_consumer(
     actor_pg: Option<ActorPgPool>,
     locks: ActorLocks,
     idle_sweep_interval: Duration,
+    usage_meter: UsageMeterMemory,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let Some(js) = actor_js else {
         info!("[actor_consumer] no JetStream context; mailbox consumer exiting");
@@ -72,6 +74,7 @@ pub async fn run_actor_consumer(
         resolved_runtime_id: None,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter,
     });
     let idle_interval = idle_sweep_interval.max(Duration::from_secs(1));
     tokio::spawn(async move {
@@ -154,10 +157,11 @@ pub async fn run_actor_consumer(
                     let locks = locks.clone();
 
                     let actor_pg = actor_pg.clone();
+                    let usage_meter = usage_meter;
                     tokio::spawn(async move {
                         handle_actor_message(
                             msg, actor_redis, actor_js, actor_nats, pool, redis_conn,
-                            wf_redis, wq_redis, wf_nats, wf_js, actor_pg, locks,
+                            wf_redis, wq_redis, wf_nats, wf_js, actor_pg, locks, usage_meter,
                         )
                         .await;
                     });
@@ -187,6 +191,7 @@ async fn handle_actor_message(
     wf_js: Option<async_nats::jetstream::Context>,
     actor_pg: Option<ActorPgPool>,
     locks: ActorLocks,
+    usage_meter: UsageMeterMemory,
 ) {
     crate::rt_enter!("actor.consumer.handle_message", subject = %msg.subject);
     let payload: Option<serde_json::Value> = serde_json::from_slice(&msg.payload).ok();
@@ -379,6 +384,7 @@ async fn handle_actor_message(
         resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter,
     });
 
     let result = run_actor_with_lock(input, comm, None).await;

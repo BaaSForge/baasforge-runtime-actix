@@ -4,6 +4,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::Instant;
+
+use crate::services::usage_meter::{self, UnitUsageRecord};
 
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
@@ -37,6 +40,14 @@ impl ActorKind {
             ActorKind::Handler => "handler",
             ActorKind::Alarm => "alarm",
             ActorKind::DeadLetter => "dead_letter",
+        }
+    }
+
+    fn usage_trigger(&self) -> &'static str {
+        match self {
+            ActorKind::Handler => "actor_handler",
+            ActorKind::Alarm => "actor_alarm",
+            ActorKind::DeadLetter => "actor_dead_letter",
         }
     }
 }
@@ -81,21 +92,51 @@ pub async fn run_actor_handler(
         kind = %ctx_json.kind.as_str(),
         timeout_ms = timeout_ms.unwrap_or(0)
     );
+    let started = Instant::now();
+    let project_id = comm.project_id.clone();
+    let unit_path = comm.source_unit_path.clone();
+    let actor_id = ctx_json.actor_id.clone();
+    let handler = ctx_json.handler.clone();
+    let attempt = ctx_json.attempt;
+    let trigger = ctx_json.kind.usage_trigger();
+    let memory_mb = comm.usage_meter.actor;
     let source = source.to_string();
     let ctx_json = ctx_json.clone();
     let fut = run_actor_handler_on_blocking_pool(&source, &ctx_json, comm, state_limit_bytes);
-    let out = if let Some(ms) = timeout_ms {
-        tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
-            .await
-            .map_err(|_| "actor timeout expired".to_string())?
+    let timed_out = if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(std::time::Duration::from_millis(ms), fut).await {
+            Ok(result) => result,
+            Err(_) => Err("actor timeout expired".to_string()),
+        }
     } else {
         fut.await
     };
-    match &out {
+    let outcome = match &timed_out {
+        Ok(_) => "ok",
+        Err(e) if e == "actor timeout expired" => "timeout",
+        Err(_) => "error",
+    };
+    let duration_ms = started.elapsed().as_millis() as u64;
+    usage_meter::log_unit_usage(UnitUsageRecord {
+        project_id,
+        unit_type: "actor",
+        unit_path,
+        trigger,
+        duration_ms,
+        memory_mb,
+        actions: 1,
+        outcome,
+        instance_id: None,
+        run_id: None,
+        actor_id: Some(actor_id),
+        handler: Some(handler),
+        attempt: Some(attempt),
+    });
+    match &timed_out {
         Ok(_) => crate::rt_exit_ok!("js.actor.run_actor_handler", actor_id = %ctx_json.actor_id),
         Err(e) => crate::rt_exit_err!("js.actor.run_actor_handler", actor_id = %ctx_json.actor_id, error = %e),
     }
-    out
+    timed_out
 }
 
 pub async fn run_actor_handler_on_blocking_pool(

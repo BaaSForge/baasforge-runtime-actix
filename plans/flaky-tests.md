@@ -1,9 +1,18 @@
 XXX
 {
-          "name": "endpoint_cancel: cancel-queued-run",
-          "pass": false,
-          "error": "status never confirmed as cancelled"
-        },
+  "name": "endpoint_cancel: cancel-queued-run",
+  "pass": false,
+  "error": "status never confirmed as cancelled"
+},
+
+
+
+{
+  "name": "endpoint_stage: sdk-same-unit-path-multi-sdk-wf-caller-triple",
+  "pass": false,
+  "error": "workflow failed while waiting for 'completed': {\"meta\":{\"callerInstanceId\":null,\"callerPromiseName\":null,\"callerTriggered\":false,\"createdAt\":\"2026-06-12T10:15:12.118259+00:00\",\"input\":\"{\\\"actorId\\\":\\\"multi-sdk-mqarswdsyy0snkyp\\\",\\\"marker\\\":\\\"mp\\\"}\",\"name\":\"test.wf.workflow.sdk-http-same-path-multi-sdk-wf-caller\",\"status\":\"failed\",\"suspended\":{\"config\":{\"timeout\":300000},\"name\":\"sdk_call_0\",\"type\":\"promise\"}},\"result\":{\"error\":\"broken pipe\"}}"
+},
+
 
 
 

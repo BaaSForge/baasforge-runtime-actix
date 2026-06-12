@@ -1,5 +1,8 @@
 use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use std::sync::Arc;
+use std::time::Instant;
+
+use crate::services::usage_meter::{self, UnitUsageRecord};
 
 use super::error::log_js_failure;
 use super::module_loader::validate_and_prepare_loader;
@@ -134,6 +137,14 @@ pub async fn run_worker_handler(
         run_id = %run_ctx.run_id,
         attempt = run_ctx.attempt
     );
+    let started = Instant::now();
+    let project_id = comm.project_id.clone();
+    let unit_path = comm.source_unit_path.clone();
+    let run_id = run_ctx.run_id.clone();
+    let attempt = run_ctx.attempt;
+    let memory_mb = comm.usage_meter.queue_worker;
+
+    let execution = async {
     let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
@@ -216,6 +227,34 @@ pub async fn run_worker_handler(
         outcome = ?std::mem::discriminant(&result.outcome)
     );
     Ok(result)
+    }
+    .await;
+
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let outcome = match &execution {
+        Ok(r) => match r.outcome {
+            QueueWorkerRunOutcome::Completed(_) => "ok",
+            QueueWorkerRunOutcome::Failed(_) => "retry",
+            QueueWorkerRunOutcome::TerminalError(_) => "failed",
+        },
+        Err(_) => "error",
+    };
+    usage_meter::log_unit_usage(UnitUsageRecord {
+        project_id,
+        unit_type: "queue_worker",
+        unit_path,
+        trigger: "wq_work",
+        duration_ms,
+        memory_mb,
+        actions: 1,
+        outcome,
+        instance_id: None,
+        run_id: Some(run_id),
+        actor_id: None,
+        handler: None,
+        attempt: Some(attempt),
+    });
+    execution
 }
 
 fn build_qw_ctx_json(run_ctx: &QueueWorkerRunContext) -> String {

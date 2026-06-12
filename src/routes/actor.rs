@@ -194,6 +194,7 @@ async fn invoke_actor_handler_http(
         resolved_runtime_id,
         sdk_public_host: "localhost".to_string(),
         sdk_trigger_base_path: String::new(),
+        usage_meter: ctx.settings.usage_meter,
     });
     let precomputed_scope_trace_ids = match Uuid::parse_str(&project_id_str) {
         Ok(pid) => {

@@ -5,10 +5,12 @@ use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 use crate::libs::unit_js::modules::sdk::SdkCommCtx;
+use crate::services::usage_meter::{self, UnitUsageRecord};
 use crate::libs::unit_js::workflow_runner::{
     run_workflow_handler, WorkflowExecutionContext, WorkflowExecutionResult,
 };
@@ -223,7 +225,7 @@ pub async fn start_workflow(
     let effective_id =
         prepare_workflow_instance_for_start(redis, nats, js, project_id, unit_path, instance_id, input_json, source, comm.clone()).await?;
     if effective_id == instance_id {
-        let _ = drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, comm).await;
+        let _ = drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, "wf_start", comm).await;
     }
     Ok(effective_id)
 }
@@ -246,7 +248,7 @@ pub async fn resume_workflow(
             _ => return Ok(()),
         }
     };
-    drive_workflow(redis, nats, js, project_id, instance_id, &old_meta.input, source, None, None, comm)
+    drive_workflow(redis, nats, js, project_id, instance_id, &old_meta.input, source, None, None, "wf_wake", comm)
         .await?;
     Ok(())
 }
@@ -283,6 +285,7 @@ pub async fn call_handler(
         source,
         Some(handler_name),
         Some(handler_input_json),
+        "wf_handler",
         comm.clone(),
     )
     .await?;
@@ -706,7 +709,7 @@ pub async fn launch_callee_workflow(
         meta.stage_runtime_id,
     )
     .await;
-    drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, comm).await?;
+    drive_workflow(redis, nats, js, project_id, instance_id, input_json, source, None, None, "wf_start", comm).await?;
     Ok(())
 }
 
@@ -726,6 +729,7 @@ pub(crate) async fn drive_workflow(
     source: &str,
     handler_name: Option<&str>,
     handler_input_json: Option<&str>,
+    trigger: &'static str,
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
     if on_actix_arbiter_thread() {
@@ -749,6 +753,7 @@ pub(crate) async fn drive_workflow(
                 &source,
                 handler_name.as_deref(),
                 handler_input_json.as_deref(),
+                trigger,
                 comm,
             )
             .await
@@ -765,6 +770,7 @@ pub(crate) async fn drive_workflow(
         source,
         handler_name,
         handler_input_json,
+        trigger,
         comm,
     )
     .await
@@ -780,6 +786,7 @@ async fn drive_workflow_on_runtime(
     source: &str,
     handler_name: Option<&str>,
     handler_input_json: Option<&str>,
+    trigger: &'static str,
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
     crate::rt_enter!(
@@ -791,6 +798,8 @@ async fn drive_workflow_on_runtime(
     );
     let pid = project_id.to_string();
     let iid = instance_id.to_string();
+
+    let unit_path = comm.source_unit_path.clone();
 
     let (steps, sleeps, promises) = load_execution_context(redis, &pid, &iid).await?;
 
@@ -809,7 +818,7 @@ async fn drive_workflow_on_runtime(
     let redis_clone = redis.clone();
     let nats_clone = nats.clone();
     let source_owned = source.to_string();
-    let comm_for_spawn = comm.for_unit(pid.clone(), String::new(), Some(iid.clone()));
+    let comm_for_spawn = comm.for_unit(pid.clone(), unit_path.clone(), Some(iid.clone()));
     let rid = comm_for_spawn.stage_runtime_id.map(|u| u.to_string());
     let trigger_runtime = if comm_for_spawn.stage_runtime_id.is_some() {
         Some("stage")
@@ -825,10 +834,34 @@ async fn drive_workflow_on_runtime(
     drop(parent_ctx.clone().attach());
 
     crate::rt_step!("wf.drive.run_workflow_handler", instance_id = %iid);
-    let result = crate::libs::runtime_bridge::run_async_on_blocking_pool(async move {
+    let started = Instant::now();
+    let handler_result = crate::libs::runtime_bridge::run_async_on_blocking_pool(async move {
         run_workflow_handler(&source_owned, &wf_ctx, &redis_clone, &nats_clone, comm_for_spawn).await
     })
-    .await?;
+    .await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let usage_outcome = match &handler_result {
+        Ok(WorkflowExecutionResult::Completed(_)) | Ok(WorkflowExecutionResult::HandlerResult(_)) => "ok",
+        Ok(WorkflowExecutionResult::Suspended { .. }) => "suspended",
+        Ok(WorkflowExecutionResult::Failed(_)) => "failed",
+        Err(_) => "error",
+    };
+    usage_meter::log_unit_usage(UnitUsageRecord {
+        project_id: pid.clone(),
+        unit_type: "workflow",
+        unit_path: unit_path.clone(),
+        trigger,
+        duration_ms,
+        memory_mb: comm.usage_meter.workflow,
+        actions: 1,
+        outcome: usage_outcome,
+        instance_id: Some(iid.clone()),
+        run_id: None,
+        actor_id: None,
+        handler: None,
+        attempt: None,
+    });
+    let result = handler_result?;
     crate::rt_step!(
         "wf.drive.run_workflow_handler.done",
         instance_id = %iid,

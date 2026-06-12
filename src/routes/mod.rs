@@ -199,6 +199,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let wq_nats_wake = wq_nats_client.clone();
             let wq_js_wake = wq_jetstream.clone();
             let actor_pg_wake = actor_pg.clone();
+            let usage_meter_wake = settings.usage_meter;
             test_mode_tasks.push(tokio::spawn(async move {
                 if let Err(e) = crate::services::workflow_worker::runner::run_wake_consumer(
                     wr,
@@ -215,6 +216,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     wq_redis_wake,
                     wq_nats_wake,
                     wq_js_wake,
+                    usage_meter_wake,
                 )
                 .await
                 {
@@ -237,6 +239,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let actor_pg_for_wq = actor_pg.clone();
             let stream_name = crate::services::queue_worker_engine::WQ_NATS_WORK_STREAM.to_string();
             let consumer_name = crate::services::queue_worker_engine::WQ_NATS_WORK_CONSUMER.to_string();
+            let usage_meter_wq = settings.usage_meter;
             tracing::info!("[test_mode] starting inline JetStream queue_worker work consumer");
             test_mode_tasks.push(tokio::spawn(async move {
                 if let Err(e) =
@@ -254,6 +257,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         actor_js_for_wq,
                         actor_pg_for_wq,
                         actor_locks_for_wq,
+                        usage_meter_wq,
                     )
                     .await
                 {
@@ -283,6 +287,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let locks = actor_locks.clone();
             let actor_pg_consumer = actor_pg.clone();
             let actor_idle_sweep = std::time::Duration::from_secs(settings.actor_idle_sweep_secs.max(1));
+            let usage_meter_actor = settings.usage_meter;
             tracing::info!("[test_mode] starting inline actor mailbox consumer");
             test_mode_tasks.push(tokio::spawn(async move {
                 if let Err(e) =
@@ -290,7 +295,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                         ar, actor_js, actor_nc, p, rc,
                         wf_redis_for_actor, wq_redis_for_actor, wf_nats_for_actor, wf_js_for_actor,
                         &stream_name, &consumer_name, actor_pg_consumer, locks,
-                        actor_idle_sweep,
+                        actor_idle_sweep, usage_meter_actor,
                     )
                     .await
                 {
@@ -311,6 +316,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
             let wf_js_alarm = wf_jetstream.clone();
             let wq_nats_alarm = wq_nats_client.clone();
             let wq_js_alarm = wq_jetstream.clone();
+            let usage_meter = settings.usage_meter;
             tracing::info!("[test_mode] starting inline actor alarm sweeper");
             test_mode_tasks.push(tokio::spawn(async move {
                 use std::sync::Arc;
@@ -335,6 +341,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
                     resolved_runtime_id: None,
                     sdk_public_host: "localhost".to_string(),
                     sdk_trigger_base_path: String::new(),
+                    usage_meter,
                 });
                 crate::services::actor_worker::alarms::run_alarm_sweeper(comm).await;
             }));

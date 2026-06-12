@@ -8,6 +8,8 @@ use dotenvy::from_filename;
 use dotenvy::from_filename_override;
 use std::env;
 
+use crate::services::usage_meter::UsageMeterMemory;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AppEnvironment {
     #[default]
@@ -98,6 +100,9 @@ pub struct Settings {
     pub actor_lease_ttl_secs: u64,
     pub actor_idle_sweep_secs: u64,
     pub actor_pg_flush_interval_secs: u64,
+
+    // -- Usage metering (compute_gb_ms memory assumptions) --
+    pub usage_meter: UsageMeterMemory,
 
     pub otel_exporter_otlp_endpoint: Option<String>,
 }
@@ -287,6 +292,25 @@ impl Settings {
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(30);
 
+        let usage_meter = UsageMeterMemory {
+            api: env::var("USAGE_METER_MEMORY_MB_API")
+                .expect("USAGE_METER_MEMORY_MB_API must be set")
+                .parse()
+                .expect("USAGE_METER_MEMORY_MB_API must be a valid u64"),
+            actor: env::var("USAGE_METER_MEMORY_MB_ACTOR")
+                .expect("USAGE_METER_MEMORY_MB_ACTOR must be set")
+                .parse()
+                .expect("USAGE_METER_MEMORY_MB_ACTOR must be a valid u64"),
+            queue_worker: env::var("USAGE_METER_MEMORY_MB_QUEUE_WORKER")
+                .expect("USAGE_METER_MEMORY_MB_QUEUE_WORKER must be set")
+                .parse()
+                .expect("USAGE_METER_MEMORY_MB_QUEUE_WORKER must be a valid u64"),
+            workflow: env::var("USAGE_METER_MEMORY_MB_WORKFLOW")
+                .expect("USAGE_METER_MEMORY_MB_WORKFLOW must be set")
+                .parse()
+                .expect("USAGE_METER_MEMORY_MB_WORKFLOW must be a valid u64"),
+        };
+
         let otel_exporter_otlp_endpoint = env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
             .ok()
             .map(|s| s.trim().to_string())
@@ -330,6 +354,7 @@ impl Settings {
             actor_lease_ttl_secs,
             actor_idle_sweep_secs,
             actor_pg_flush_interval_secs,
+            usage_meter,
             otel_exporter_otlp_endpoint,
         })
     }
