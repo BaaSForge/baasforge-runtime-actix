@@ -266,14 +266,23 @@ pub async fn call_handler(
     comm: Arc<SdkCommCtx>,
 ) -> Result<String, String> {
     crate::rt_enter!("wf.call_handler", project_id, instance_id, handler_name);
-    {
-        let meta_key = redis_key(project_id, instance_id, "meta");
-        let mut conn = redis.clone();
-        let meta: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
-        if meta.is_none() {
-            return Err("workflow instance not found".to_string());
-        }
-    }
+    let meta_key = redis_key(project_id, instance_id, "meta");
+    let mut conn = redis.clone();
+    let meta_json: Option<String> = conn.get(&meta_key).await.map_err(|e| e.to_string())?;
+    let meta: WorkflowMeta = match meta_json {
+        Some(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string())?,
+        None => return Err("workflow instance not found".to_string()),
+    };
+
+    let comm = if comm.source_unit_path.is_empty() {
+        comm.for_unit(
+            project_id.to_string(),
+            meta.name.clone(),
+            Some(instance_id.to_string()),
+        )
+    } else {
+        comm
+    };
 
     let handler_result = drive_workflow(
         redis,
@@ -858,7 +867,7 @@ async fn drive_workflow_on_runtime(
         instance_id: Some(iid.clone()),
         run_id: None,
         actor_id: None,
-        handler: None,
+        handler: handler_name.map(|s| s.to_string()),
         attempt: None,
     });
     let result = handler_result?;
