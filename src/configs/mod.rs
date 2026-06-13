@@ -116,6 +116,9 @@ pub struct Settings {
     pub usage_db_max_flush_ms: u64,
 
     pub otel_exporter_otlp_endpoint: Option<String>,
+
+    /// Shared secret for private runtime HTTP surfaces (workflow/actor/queue/ws triggers). API unit triggers stay public.
+    pub runtime_private_api_key: String,
 }
 
 #[derive(Debug, Clone)]
@@ -384,6 +387,8 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let runtime_private_api_key = require_non_empty_env("RUNTIME_PRIVATE_API_KEY")?;
+
         Ok(Settings {
             port,
             app_environment,
@@ -433,6 +438,7 @@ impl Settings {
             usage_db_batch_size,
             usage_db_max_flush_ms,
             otel_exporter_otlp_endpoint,
+            runtime_private_api_key,
         })
     }
 }

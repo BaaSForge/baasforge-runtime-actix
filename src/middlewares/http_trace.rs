@@ -70,6 +70,7 @@ fn is_sensitive_header(name: &str) -> bool {
     name.eq_ignore_ascii_case("authorization")
         || name.eq_ignore_ascii_case("cookie")
         || name.eq_ignore_ascii_case("set-cookie")
+        || name.eq_ignore_ascii_case("x-private-api-key")
 }
 
 fn safe_headers_preview(headers: &HeaderMap) -> String {

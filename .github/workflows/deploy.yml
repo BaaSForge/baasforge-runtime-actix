@@ -32,6 +32,7 @@ env:
     ACTOR_DATABASE_URL DATABASE_URL REDIS_URL NATS_URL
     WF_REDIS_URL WF_NATS_URL WQ_REDIS_URL WQ_NATS_URL
     ACTOR_REDIS_URL ACTOR_NATS_URL OTEL_EXPORTER_OTLP_ENDPOINT
+    RUNTIME_PRIVATE_API_KEY
 
 jobs:
   resolve-meta:
@@ -202,6 +203,7 @@ jobs:
       ACTOR_REDIS_URL: ${{ secrets.ACTOR_REDIS_URL }}
       ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      RUNTIME_PRIVATE_API_KEY: ${{ secrets.RUNTIME_PRIVATE_API_KEY }}
     steps:
       - name: Migrate actors database
         uses: appleboy/ssh-action@v1.2.2
@@ -218,7 +220,7 @@ jobs:
             IMAGE,GITHUB_RUN_ID,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
-            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
+            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT,RUNTIME_PRIVATE_API_KEY
           script: |
             set -euo pipefail
 
@@ -271,6 +273,7 @@ jobs:
       ACTOR_REDIS_URL: ${{ secrets.ACTOR_REDIS_URL }}
       ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      RUNTIME_PRIVATE_API_KEY: ${{ secrets.RUNTIME_PRIVATE_API_KEY }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -293,7 +296,7 @@ jobs:
             IMAGE,CONTAINER_NAME,EXPOSE_PORTS,GHCR_USER,GHCR_TOKEN,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
-            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
+            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT,RUNTIME_PRIVATE_API_KEY
           script: |
             set -euo pipefail
 
@@ -330,6 +333,7 @@ jobs:
               -e "ACTOR_REDIS_URL=$ACTOR_REDIS_URL"
               -e "ACTOR_NATS_URL=$ACTOR_NATS_URL"
               -e "OTEL_EXPORTER_OTLP_ENDPOINT=$OTEL_EXPORTER_OTLP_ENDPOINT"
+              -e "RUNTIME_PRIVATE_API_KEY=$RUNTIME_PRIVATE_API_KEY"
             )
 
             if [ "$EXPOSE_PORTS" = "true" ]; then
@@ -407,6 +411,7 @@ jobs:
       ACTOR_REDIS_URL: ${{ secrets.ACTOR_REDIS_URL }}
       ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      RUNTIME_PRIVATE_API_KEY: ${{ secrets.RUNTIME_PRIVATE_API_KEY }}
     steps:
       - name: Checkout repo for file override
         if: ${{ needs.resolve-meta.outputs.override_repo_file_in_container == 'true' }}
@@ -443,7 +448,7 @@ jobs:
             OVERRIDE_REPO_FILE_IN_CONTAINER,OVERRIDE_HOST_FILE_PATH,OVERRIDE_CONTAINER_FILE_PATH,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
-            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
+            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT,RUNTIME_PRIVATE_API_KEY
           script: |
             set -euo pipefail
 
@@ -501,6 +506,7 @@ jobs:
       ACTOR_REDIS_URL: ${{ secrets.ACTOR_REDIS_URL }}
       ACTOR_NATS_URL: ${{ secrets.ACTOR_NATS_URL }}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
+      RUNTIME_PRIVATE_API_KEY: ${{ secrets.RUNTIME_PRIVATE_API_KEY }}
     steps:
       - name: Roll back actors database migrations
         uses: appleboy/ssh-action@v1.2.2
@@ -517,7 +523,7 @@ jobs:
             IMAGE,GITHUB_RUN_ID,GHCR_USER,GHCR_TOKEN,DEPLOY_SECRET_VARS,
             ACTOR_DATABASE_URL,DATABASE_URL,REDIS_URL,NATS_URL,
             WF_REDIS_URL,WF_NATS_URL,WQ_REDIS_URL,WQ_NATS_URL,
-            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT
+            ACTOR_REDIS_URL,ACTOR_NATS_URL,OTEL_EXPORTER_OTLP_ENDPOINT,RUNTIME_PRIVATE_API_KEY
           script: |
             set -euo pipefail
 

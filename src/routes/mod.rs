@@ -413,6 +413,7 @@ pub async fn start_server() -> Result<(), Box<dyn Error>> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(from_fn(crate::middlewares::private_api_key_middleware))
             .wrap(from_fn(crate::middlewares::trace_request_middleware))
             .wrap(
                 Cors::default()
