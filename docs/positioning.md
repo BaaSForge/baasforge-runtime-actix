@@ -156,7 +156,7 @@ We have plans for the unit-type roadmap (streams, event sourcing, WebSocket unit
 |                            | Today                                                                               | Vision                                                                   |
 | -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | Compute patterns           | api, workflow, queue worker, actor units                                            | + stream, WebSocket, schedule/event triggers, saga/state-machine helpers |
-| Persistence in user code   | Actor state, workflow checkpoints, `ctx.set` — via SDK                              | Full storage patterns as unit types; no external DB product required     |
+| Persistence in user code   | Actor state, workflow checkpoints — via SDK                              | Full storage patterns as unit types; no external DB product required     |
 | End-user auth / files      | Roadmap                                                                             | Platform-native behavior units or SDK tiers — not "go use Supabase Auth" |
 | External Supabase/Postgres | **Not required** for positioning; some teams may still attach one during transition | **Not the target architecture**                                          |
 
@@ -177,7 +177,7 @@ Most competitors give you primitives **or** an AI that writes generic code. BaaS
 | **Runtime-aware codegen**              | Developer agent uses `create_unit` / `modify_unit` / `remove_unit` with gated discovery (must load contexts, units, env keys before mutating). Prompts and examples are per unit type (`api`, `workflow`, `queue_worker`, `actor`).        |
 | **Pre-deploy validation gate**         | No unit row is written until **compiler** (typescript / tsgo) → **lint** (oxc/tsgolint) → **rule check** pass in the `unit_technical_reviewer` worker. LLM output is never trusted blindly.                                                |
 | **Chat-scoped releases**               | Releases are born in chat sessions; stage before prod; session snapshots the production baseline at chat creation with stale-base warnings. Deploy by one click. You have git-like release history and the ability to rollback on history. |
-| **Production/stage debugging via LLM** | **Observability Analyzer** calls `fetch_release_traces` — pulls Traces spans for a release, masks secrets, combines with live unit definitions. Explains what happened when a unit triggered, not just static code review.                 |
+| **Production/stage debugging via LLM** | **Observability Analyzer AI** calls `fetch_release_traces` — pulls Traces spans for a release, masks secrets, combines with live unit definitions. Explains what happened when a unit triggered, not just static code review.                 |
 
 
 ### vs others on AI
