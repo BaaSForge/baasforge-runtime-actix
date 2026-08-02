@@ -2,6 +2,7 @@ use crate::libs::api_response::api_error;
 use crate::libs::unit_slug::{is_valid_slug, normalize_filename_stem_to_slug};
 use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
+use crate::services::project_billing::reject_if_project_billing_frozen;
 use crate::services::project_release::{live_release_and_runtime_ids_for_scope, load_unit_for_path_scoped};
 use crate::telemetry::BaalHttpTriggerTraceIds;
 use crate::services::queue_worker_engine::{
@@ -127,6 +128,10 @@ async fn queue_worker_post_inner(
 
     match parsed.operation {
         QueueWorkerOperation::Enqueue => {
+            if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, project_id).await {
+                return resp;
+            }
+
             let unit_exists = load_unit_for_path_scoped(
                 &ctx.pool,
                 &ctx.redis_conn,

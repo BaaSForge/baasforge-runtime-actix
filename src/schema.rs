@@ -2,6 +2,10 @@
 
 pub mod sql_types {
     #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
+    #[diesel(postgres_type(name = "billing_period_type"))]
+    pub struct BillingPeriodType;
+
+    #[derive(diesel::query_builder::QueryId, diesel::sql_types::SqlType)]
     #[diesel(postgres_type(name = "chat_agent_type"))]
     pub struct ChatAgentType;
 
@@ -92,6 +96,9 @@ diesel::table! {
 }
 
 diesel::table! {
+    use diesel::sql_types::*;
+    use super::sql_types::BillingPeriodType;
+
     payments (id) {
         id -> Uuid,
         user_id -> Uuid,
@@ -108,6 +115,9 @@ diesel::table! {
         gateway_metadata -> Nullable<Jsonb>,
         expires_at -> Nullable<Timestamptz>,
         package_is_tiral -> Bool,
+        billing_period -> BillingPeriodType,
+        created_at -> Timestamptz,
+        cancelled_at -> Nullable<Timestamptz>,
     }
 }
 
@@ -212,6 +222,21 @@ diesel::table! {
         name -> Varchar,
         #[max_length = 255]
         slug -> Varchar,
+        last_cost_calculated_at -> Nullable<Timestamptz>,
+        #[max_length = 255]
+        documentation_share_key -> Nullable<Varchar>,
+        documentation_share_key_expires_at -> Nullable<Timestamptz>,
+        is_billing_frozen -> Bool,
+    }
+}
+
+diesel::table! {
+    top_ups (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        amount -> Float8,
+        gateway_metadata -> Nullable<Jsonb>,
+        created_at -> Timestamptz,
     }
 }
 
@@ -245,6 +270,18 @@ diesel::table! {
         full_name -> Nullable<Varchar>,
         #[max_length = 255]
         email_in_platform -> Nullable<Varchar>,
+        last_subscription_cost_calculated_at -> Nullable<Timestamptz>,
+        is_billing_frozen -> Bool,
+    }
+}
+
+diesel::table! {
+    withdrawals (id) {
+        id -> Uuid,
+        user_id -> Uuid,
+        amount -> Float8,
+        gateway_metadata -> Nullable<Jsonb>,
+        created_at -> Timestamptz,
     }
 }
 
@@ -263,7 +300,9 @@ diesel::joinable!(project_units -> chat_sessions (chat_session_id));
 diesel::joinable!(project_units -> projects (project_id));
 diesel::joinable!(project_usage_entries -> projects (project_id));
 diesel::joinable!(projects -> users (owner_user_id));
+diesel::joinable!(top_ups -> users (user_id));
 diesel::joinable!(user_tokens -> users (user_id));
+diesel::joinable!(withdrawals -> users (user_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     app_settings,
@@ -278,6 +317,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     project_units,
     project_usage_entries,
     projects,
+    top_ups,
     user_tokens,
     users,
+    withdrawals,
 );

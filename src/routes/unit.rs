@@ -9,6 +9,7 @@ use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::{ProjectUnitRow, ProjectUnitType};
 use crate::routes::AppContext;
+use crate::services::project_billing::reject_if_project_billing_frozen;
 use crate::services::project_release::{
     load_live_release_id_scoped, load_production_runtime_id_for_project, load_unit_for_path_production,
     load_unit_for_path_stage, ServiceError,
@@ -127,6 +128,16 @@ pub async fn handle_trigger_api_unit_production(
         }
     };
 
+    if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, params.project_id).await {
+        crate::rt_exit_ok!(
+            "api.trigger.production",
+            status = resp.status().as_u16(),
+            unit_path = %unit_path,
+            billing_frozen = true
+        );
+        return resp;
+    }
+
     let resp = match load_unit_for_path_production(
         &ctx.pool,
         &ctx.redis_conn,
@@ -187,6 +198,17 @@ pub async fn handle_trigger_api_unit_stage(
                 .json(api_error(msg, json!({})));
         }
     };
+
+    if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, params.project_id).await {
+        crate::rt_exit_ok!(
+            "api.trigger.stage",
+            status = resp.status().as_u16(),
+            unit_path = %unit_path,
+            runtime_id = %params.runtime_id,
+            billing_frozen = true
+        );
+        return resp;
+    }
 
     let resp = match load_unit_for_path_stage(
         &ctx.pool,

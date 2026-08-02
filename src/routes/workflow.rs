@@ -4,6 +4,7 @@ use crate::libs::unit_js::modules::sdk::SdkCommCtx;
 use crate::libs::unit_slug::is_valid_slug;
 use crate::models::projects::ProjectUnitType;
 use crate::routes::AppContext;
+use crate::services::project_billing::reject_if_project_billing_frozen;
 use crate::services::project_release::{
     live_release_and_runtime_ids_for_scope, load_unit_for_path_production, load_unit_for_path_stage,
 };
@@ -129,6 +130,10 @@ async fn do_start_workflow(
     body: &[u8],
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
+    if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, project_id).await {
+        return resp;
+    }
+
     let wf_redis = ctx.wf_redis.clone();
 
     let input_json = String::from_utf8_lossy(body).into_owned();
@@ -205,6 +210,10 @@ async fn do_call_handler(
     body: &[u8],
     stage_runtime_id: Option<Uuid>,
 ) -> HttpResponse {
+    if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, project_id).await {
+        return resp;
+    }
+
     let wf_redis = ctx.wf_redis.clone();
 
     let handler_input = String::from_utf8_lossy(body).into_owned();

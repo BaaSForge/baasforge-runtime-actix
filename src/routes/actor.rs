@@ -9,6 +9,7 @@ use crate::services::actor_engine::{
 use crate::services::actor_worker::manager::{
     ActorRunInput, delete_actor, passivate_actor, run_actor_with_lock,
 };
+use crate::services::project_billing::reject_if_project_billing_frozen;
 use crate::services::project_release::live_release_and_runtime_ids_for_scope;
 use crate::telemetry::BaalHttpTriggerTraceIds;
 use crate::libs::unit_js::actor_runner::ActorKind;
@@ -360,6 +361,10 @@ async fn actor_post_inner(
         }
 
         ActorOperation::CallHandler(handler_name) => {
+            if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, project_id).await {
+                return resp;
+            }
+
             if query.await_result {
                 invoke_actor_handler_http(
                     ctx.clone(),
