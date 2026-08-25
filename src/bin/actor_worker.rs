@@ -17,7 +17,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_tracing("actor_worker");
     init_tokio_handle(tokio::runtime::Handle::current());
     baal_runtime_actix::libs::unit_js::bytecode::precompile_static_shims();
-    baal_runtime_actix::libs::unit_js::js_pool::prewarm();
 
     let settings = Settings::new().map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
         e.to_string().into()

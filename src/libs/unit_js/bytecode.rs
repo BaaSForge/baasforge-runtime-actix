@@ -1,18 +1,24 @@
-//! QuickJS ES-module bytecode cache (rquickjs 0.11 `Module::write` / `Module::load`).
+//! In-process QuickJS ES-module bytecode cache (`Module::write` / `Module::load`).
 //!
-//! Bytecode is engine-build specific; keys include [`super::js_flags::engine_id`].
-//! L1 is an in-process map. L2 is optional Redis (`jsbc:{engine}:{sha256}`) when
-//! `REDIS_URL` is set — content-addressed, so deploys of new source miss naturally.
+//! Opt-in via `BAAL_JS_BYTECODE=1` (default off).
 
 use rquickjs::{Ctx, Module, Result as JsResult, WriteOptions};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use super::js_flags;
-use super::js_timings;
 use super::module_shims;
 
 const MAX_CACHE_ENTRIES: usize = 512;
+
+fn bytecode_enabled() -> bool {
+    match std::env::var("BAAL_JS_BYTECODE") {
+        Ok(raw) => matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
 
 fn cache() -> &'static Mutex<HashMap<String, Vec<u8>>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
@@ -24,25 +30,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
     digest.as_ref().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub fn cache_key(name: &str, source: &str) -> String {
-    let mut buf = Vec::with_capacity(64 + name.len() + source.len());
-    buf.extend_from_slice(js_flags::engine_id().as_bytes());
-    buf.push(0);
+fn cache_key(name: &str, source: &str) -> String {
+    let mut buf = Vec::with_capacity(1 + name.len() + source.len());
     buf.extend_from_slice(name.as_bytes());
     buf.push(0);
     buf.extend_from_slice(source.as_bytes());
     sha256_hex(&buf)
 }
 
-fn redis_key(key: &str) -> String {
-    format!("jsbc:{}:{key}", js_flags::engine_id())
-}
-
-fn l1_get(key: &str) -> Option<Vec<u8>> {
+fn lookup(key: &str) -> Option<Vec<u8>> {
     cache().lock().ok()?.get(key).cloned()
 }
 
-fn l1_put(key: String, bytes: Vec<u8>) {
+fn store(key: String, bytes: Vec<u8>) {
     let Ok(mut guard) = cache().lock() else {
         return;
     };
@@ -52,69 +52,19 @@ fn l1_put(key: String, bytes: Vec<u8>) {
     guard.insert(key, bytes);
 }
 
-fn l2_get(key: &str) -> Option<Vec<u8>> {
-    let url = std::env::var("REDIS_URL").ok()?;
-    let client = redis::Client::open(url).ok()?;
-    let mut conn = client.get_connection().ok()?;
-    redis::cmd("GET")
-        .arg(redis_key(key))
-        .query::<Option<Vec<u8>>>(&mut conn)
-        .ok()
-        .flatten()
-}
-
-fn l2_put(key: &str, bytes: &[u8]) {
-    let Ok(url) = std::env::var("REDIS_URL") else {
-        return;
-    };
-    let Ok(client) = redis::Client::open(url) else {
-        return;
-    };
-    let Ok(mut conn) = client.get_connection() else {
-        return;
-    };
-    let _: Result<(), _> = redis::cmd("SET")
-        .arg(redis_key(key))
-        .arg(bytes)
-        .query(&mut conn);
-}
-
-pub fn clear() {
-    if let Ok(mut guard) = cache().lock() {
-        guard.clear();
-    }
-}
-
-fn lookup(key: &str) -> Option<Vec<u8>> {
-    if let Some(bytes) = l1_get(key) {
-        return Some(bytes);
-    }
-    let bytes = l2_get(key)?;
-    l1_put(key.to_string(), bytes.clone());
-    Some(bytes)
-}
-
-fn store(key: String, bytes: Vec<u8>) {
-    l2_put(&key, &bytes);
-    l1_put(key, bytes);
-}
-
-/// Declare a module, using cached bytecode when [`js_flags::bytecode_enabled`].
+/// Declare a module, using cached bytecode when `BAAL_JS_BYTECODE` is on.
 pub fn declare_module<'js>(ctx: &Ctx<'js>, name: &str, source: &str) -> JsResult<Module<'js>> {
-    if !js_flags::bytecode_enabled() {
+    if !bytecode_enabled() {
         return Module::declare(ctx.clone(), name, source.as_bytes());
     }
 
     let key = cache_key(name, source);
     if let Some(bytes) = lookup(&key) {
         match unsafe { Module::load(ctx.clone(), bytes.as_ref()) } {
-            Ok(module) => {
-                js_timings::record_bytecode_hit();
-                return Ok(module);
-            }
+            Ok(module) => return Ok(module),
             Err(err) => {
                 tracing::warn!(
-                    target: "js.cold_start",
+                    target: "js.bytecode",
                     specifier = name,
                     error = %err,
                     "bytecode load failed; falling back to source"
@@ -123,25 +73,16 @@ pub fn declare_module<'js>(ctx: &Ctx<'js>, name: &str, source: &str) -> JsResult
         }
     }
 
-    js_timings::record_bytecode_miss();
     let module = Module::declare(ctx.clone(), name, source.as_bytes())?;
-    match module.write(WriteOptions::default()) {
-        Ok(bytes) => store(key, bytes),
-        Err(err) => {
-            tracing::debug!(
-                target: "js.cold_start",
-                specifier = name,
-                error = %err,
-                "module bytecode write skipped"
-            );
-        }
+    if let Ok(bytes) = module.write(WriteOptions::default()) {
+        store(key, bytes);
     }
     Ok(module)
 }
 
 /// Compile well-known shims once so the first user invoke is a bytecode hit.
 pub fn precompile_static_shims() {
-    if !js_flags::bytecode_enabled() {
+    if !bytecode_enabled() {
         return;
     }
     let Ok(rt) = rquickjs::Runtime::new() else {

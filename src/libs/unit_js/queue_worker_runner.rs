@@ -1,12 +1,10 @@
-use rquickjs::{AsyncContext, CaughtError};
+use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::services::usage_meter::{self, UnitUsageRecord};
 
 use super::error::log_js_failure;
-use super::js_pool;
-use super::js_timings;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
 use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
@@ -41,7 +39,7 @@ pub async fn extract_worker_metadata(source: &str) -> WorkerMetadata {
         let baal = validate_and_prepare_loader(source, None).ok()?;
         let (llrt_resolver, llrt_loader, attachment) =
             llrt_modules::module_builder::ModuleBuilder::default().build();
-        let rt = js_pool::acquire_runtime().await.ok()?;
+        let rt = AsyncRuntime::new().ok()?;
         rt.set_loader(
             (baal.clone(), llrt_resolver),
             (llrt_loader, baal),
@@ -59,7 +57,8 @@ pub async fn extract_worker_metadata(source: &str) -> WorkerMetadata {
         })
         .await;
         drop(ctx);
-        js_pool::release_runtime(rt).await;
+        rt.idle().await;
+        rt.run_gc().await;
         r
     })
     .await;
@@ -146,14 +145,14 @@ pub async fn run_worker_handler(
     let memory_mb = comm.usage_meter.queue_worker;
 
     let execution = async {
-    js_timings::reset();
     let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
 
-    let rt = js_pool::acquire_runtime().await.map_err(|e| {
-        log_js_failure("queue_worker runtime init", &e);
-        e
+    let rt = AsyncRuntime::new().map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("queue_worker runtime init", &msg);
+        msg
     })?;
 
     rt.set_loader(
@@ -174,9 +173,9 @@ pub async fn run_worker_handler(
         let _guard = CommCtxGuard::install(comm);
 
         let outcome: Result<QueueWorkerRunResult, String> = async {
-            let attach_started = Instant::now();
-            super::error::attach_llrt_modules(&ctx, || attachment.attach(&ctx))?;
-            js_timings::set_llrt_attach(attach_started.elapsed());
+            attachment.attach(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
             modules::register_sdk_comm(&ctx).map_err(|e| {
                 CaughtError::from_error(&ctx, e).to_string()
@@ -189,12 +188,9 @@ pub async fn run_worker_handler(
                 .set("__baal_qw_ctx", qw_ctx_val)
                 .map_err(|e| e.to_string())?;
 
-            let boot_started = Instant::now();
             ctx.eval::<(), _>(QUEUE_WORKER_RUNTIME_JS)
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
-            js_timings::set_bootstrap_eval(boot_started.elapsed());
 
-            let handler_started = Instant::now();
             let promise: rquickjs::Promise = ctx
                 .eval("globalThis.__baal_qw_result")
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
@@ -202,7 +198,6 @@ pub async fn run_worker_handler(
                 .into_future::<rquickjs::Value>()
                 .await
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
-            js_timings::set_handler_exec(handler_started.elapsed());
 
             let result_str: String = result_val
                 .as_string()
@@ -223,8 +218,8 @@ pub async fn run_worker_handler(
     .map_err(|e: rquickjs::Error| e.to_string())??;
 
     drop(ctx);
-    js_pool::release_runtime(rt).await;
-    js_timings::emit_trace("js.qw.run_worker_handler");
+    rt.idle().await;
+    rt.run_gc().await;
 
     crate::rt_exit_ok!(
         "js.qw.run_worker_handler",

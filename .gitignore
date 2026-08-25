@@ -2,8 +2,6 @@
 
 /target-local
 
-/.deps
-
 /*.rlib
 
 .DS_Store

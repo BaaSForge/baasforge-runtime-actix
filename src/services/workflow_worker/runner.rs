@@ -35,7 +35,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_tracing("workflow_worker");
     crate::libs::unit_js::module_loader::init_tokio_handle(tokio::runtime::Handle::current());
     crate::libs::unit_js::bytecode::precompile_static_shims();
-    crate::libs::unit_js::js_pool::prewarm();
 
     let settings = Settings::new()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;

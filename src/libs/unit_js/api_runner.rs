@@ -1,12 +1,10 @@
-use rquickjs::{AsyncContext, CaughtError};
+use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
 use std::sync::Arc;
 use std::time::Instant;
 
 use crate::services::usage_meter::{self, UnitUsageRecord};
 
 use super::error::log_js_failure;
-use super::js_pool;
-use super::js_timings;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
 use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
@@ -34,7 +32,6 @@ pub async fn run_unit_handler(
     let memory_mb = comm.as_ref().map(|c| c.usage_meter.api).unwrap_or(0);
 
     let execution = async {
-    js_timings::reset();
     let unit_entry_dir = unit_path
         .and_then(|p| p.rsplit_once('/').map(|(dir, _)| dir.to_string()));
     let baal = validate_and_prepare_loader(source, unit_entry_dir).map_err(|e| e.to_string())?;
@@ -42,9 +39,10 @@ pub async fn run_unit_handler(
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
 
-    let rt = js_pool::acquire_runtime().await.map_err(|e| {
-        log_js_failure("api runtime init", &e);
-        e
+    let rt = AsyncRuntime::new().map_err(|e| {
+        let msg = e.to_string();
+        log_js_failure("api runtime init", &msg);
+        msg
     })?;
 
     rt.set_loader(
@@ -72,12 +70,12 @@ pub async fn run_unit_handler(
         let _comm_guard = comm.map(CommCtxGuard::install);
 
         let outcome: Result<TriggerHttpResponse, String> = async {
-            let attach_started = Instant::now();
-            super::error::attach_llrt_modules(&ctx, || attachment.attach(&ctx))?;
-            js_timings::set_llrt_attach(attach_started.elapsed());
+            attachment.attach(&ctx).map_err(|e| {
+                CaughtError::from_error(&ctx, e).to_string()
+            })?;
 
             modules::register_sdk_comm(&ctx).map_err(|e| {
-                format!("sdk.register: {}", CaughtError::from_error(&ctx, e))
+                CaughtError::from_error(&ctx, e).to_string()
             })?;
 
             ctx.globals()
@@ -92,20 +90,16 @@ pub async fn run_unit_handler(
             ctx.eval::<(), _>(format!("globalThis.__snap = {};", snapshot_json))
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-            let boot_started = Instant::now();
             ctx.eval::<(), _>(API_RUNTIME_JS)
-                .map_err(|e| format!("bootstrap.eval: {}", CaughtError::from_error(&ctx, e)))?;
-            js_timings::set_bootstrap_eval(boot_started.elapsed());
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
-            let handler_started = Instant::now();
             let promise: rquickjs::Promise = ctx
                 .eval("globalThis.__baal_p")
-                .map_err(|e| format!("bootstrap.promise: {}", CaughtError::from_error(&ctx, e)))?;
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
             promise
                 .into_future::<()>()
                 .await
-                .map_err(|e| format!("handler: {}", CaughtError::from_error(&ctx, e)))?;
-            js_timings::set_handler_exec(handler_started.elapsed());
+                .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
 
             let json_str: String = ctx
                 .eval("JSON.stringify(globalThis.__baal_res.__snapshot())")
@@ -126,8 +120,8 @@ pub async fn run_unit_handler(
     .map_err(|e: rquickjs::Error| e.to_string())??;
 
     drop(ctx);
-    js_pool::release_runtime(rt).await;
-    js_timings::emit_trace("js.api.run_unit_handler");
+    rt.idle().await;
+    rt.run_gc().await;
 
     crate::rt_exit_ok!(
         "js.api.run_unit_handler",
@@ -166,7 +160,7 @@ pub async fn import_entry_module_for_meta(
     let baal = validate_and_prepare_loader(source, None).ok()?;
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
-    let rt = js_pool::acquire_runtime().await.ok()?;
+    let rt = AsyncRuntime::new().ok()?;
     rt.set_loader(
         (baal.clone(), llrt_resolver),
         (llrt_loader, baal),
@@ -186,6 +180,7 @@ pub async fn import_entry_module_for_meta(
     })
     .await;
     drop(ctx);
-    js_pool::release_runtime(rt).await;
+    rt.idle().await;
+    rt.run_gc().await;
     result
 }

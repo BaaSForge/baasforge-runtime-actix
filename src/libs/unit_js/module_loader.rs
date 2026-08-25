@@ -124,16 +124,7 @@ impl BaalModules {
     }
 
     fn declare_module<'js>(&self, ctx: &Ctx<'js>, name: &str, source: &str) -> JsResult<Module<'js>> {
-        let started = std::time::Instant::now();
-        let module = super::bytecode::declare_module(ctx, name, source)?;
-        super::js_timings::add_module_declare(started.elapsed(), name);
-        tracing::debug!(
-            target: "js.cold_start",
-            specifier = name,
-            source_bytes = source.len(),
-            "js.module_declare"
-        );
-        Ok(module)
+        super::bytecode::declare_module(ctx, name, source)
     }
 }
 
