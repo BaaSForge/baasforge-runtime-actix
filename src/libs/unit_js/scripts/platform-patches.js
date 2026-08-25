@@ -280,12 +280,10 @@ if (typeof TextEncoderStream === "undefined") {
     this.readable = ts.readable;
     this.writable = ts.writable;
   };
-  try {
-    Object.defineProperty(TextEncoderStream.prototype, "encoding", {
-      get: function() { return "utf-8"; },
-      configurable: true,
-    });
-  } catch (_e) {}
+  Object.defineProperty(TextEncoderStream.prototype, "encoding", {
+    get: function() { return "utf-8"; },
+    configurable: true,
+  });
 }
 
 // ── TextDecoderStream ─────────────────────────────────────────────────────────
@@ -300,11 +298,9 @@ if (typeof TextDecoderStream === "undefined") {
     });
     this.readable = ts.readable;
     this.writable = ts.writable;
-    try {
-      Object.defineProperty(this, "encoding", { value: decoder.encoding, configurable: true });
-      Object.defineProperty(this, "fatal", { value: decoder.fatal, configurable: true });
-      Object.defineProperty(this, "ignoreBOM", { value: decoder.ignoreBOM, configurable: true });
-    } catch (_e) {}
+    Object.defineProperty(this, "encoding", { value: decoder.encoding, configurable: true });
+    Object.defineProperty(this, "fatal", { value: decoder.fatal, configurable: true });
+    Object.defineProperty(this, "ignoreBOM", { value: decoder.ignoreBOM, configurable: true });
   };
 }
 
