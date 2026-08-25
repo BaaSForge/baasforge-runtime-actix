@@ -1,4 +1,4 @@
-use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
+use rquickjs::{AsyncContext, CaughtError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -9,6 +9,8 @@ use std::time::Instant;
 use crate::services::usage_meter::{self, UnitUsageRecord};
 
 use super::error::log_js_failure;
+use super::js_pool;
+use super::js_timings;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
 use super::modules::sdk::{CommCtxGuard, SdkCommCtx};
@@ -159,15 +161,15 @@ async fn run_actor_handler_inner(
     comm: Arc<SdkCommCtx>,
     state_limit_bytes: Option<u64>,
 ) -> Result<ActorOutcome, String> {
+    js_timings::reset();
     let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
 
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
 
-    let rt = AsyncRuntime::new().map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("actor runtime init", &msg);
-        msg
+    let rt = js_pool::acquire_runtime().await.map_err(|e| {
+        log_js_failure("actor runtime init", &e);
+        e
     })?;
 
     rt.set_loader(
@@ -190,9 +192,9 @@ async fn run_actor_handler_inner(
         let _guard = CommCtxGuard::install(comm);
 
         let outcome: Result<ActorOutcome, String> = async {
-            attachment.attach(&ctx).map_err(|e| {
-                CaughtError::from_error(&ctx, e).to_string()
-            })?;
+            let attach_started = Instant::now();
+            super::error::attach_llrt_modules(&ctx, || attachment.attach(&ctx))?;
+            js_timings::set_llrt_attach(attach_started.elapsed());
 
             modules::register_sdk_comm(&ctx).map_err(|e| {
                 CaughtError::from_error(&ctx, e).to_string()
@@ -211,9 +213,12 @@ async fn run_actor_handler_inner(
                 .set("__baal_actor_state_limit_bytes", state_limit)
                 .map_err(|e| e.to_string())?;
 
+            let boot_started = Instant::now();
             ctx.eval::<(), _>(ACTOR_RUNTIME_JS)
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            js_timings::set_bootstrap_eval(boot_started.elapsed());
 
+            let handler_started = Instant::now();
             let promise: rquickjs::Promise = ctx
                 .eval("globalThis.__baal_actor_result")
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
@@ -221,6 +226,7 @@ async fn run_actor_handler_inner(
                 .into_future::<rquickjs::Value>()
                 .await
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            js_timings::set_handler_exec(handler_started.elapsed());
 
             let result_str: String = result_val
                 .as_string()
@@ -241,8 +247,8 @@ async fn run_actor_handler_inner(
     .map_err(|e: rquickjs::Error| e.to_string())??;
 
     drop(ctx);
-    rt.idle().await;
-    rt.run_gc().await;
+    js_pool::release_runtime(rt).await;
+    js_timings::emit_trace("js.actor.run_actor_handler");
 
     Ok(result)
 }
@@ -292,7 +298,7 @@ async fn extract_actor_metadata(source: &str) -> ActorMetadata {
         let baal = validate_and_prepare_loader(source, None).ok()?;
         let (llrt_resolver, llrt_loader, attachment) =
             llrt_modules::module_builder::ModuleBuilder::default().build();
-        let rt = AsyncRuntime::new().ok()?;
+        let rt = js_pool::acquire_runtime().await.ok()?;
         rt.set_loader(
             (baal.clone(), llrt_resolver),
             (llrt_loader, baal),
@@ -312,8 +318,7 @@ async fn extract_actor_metadata(source: &str) -> ActorMetadata {
         })
         .await;
         drop(ctx);
-        rt.idle().await;
-        rt.run_gc().await;
+        js_pool::release_runtime(rt).await;
         r
     })
     .await;

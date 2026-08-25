@@ -117,6 +117,13 @@ pub struct Settings {
 
     pub otel_exporter_otlp_endpoint: Option<String>,
 
+    /// When true, QuickJS module bytecode is cached across invokes (`BAAL_JS_BYTECODE`).
+    pub js_bytecode_enabled: bool,
+    /// When true, `AsyncRuntime` instances are reused (`BAAL_JS_RUNTIME_POOL`).
+    pub js_runtime_pool_enabled: bool,
+    /// Max pooled QuickJS runtimes (`BAAL_JS_POOL_SIZE`).
+    pub js_pool_size: usize,
+
     /// Shared secret for private runtime HTTP surfaces (workflow/actor/queue/ws triggers). API unit triggers stay public.
     pub runtime_private_api_key: String,
 }
@@ -387,6 +394,10 @@ impl Settings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let js_bytecode_enabled = crate::libs::unit_js::js_flags::bytecode_enabled();
+        let js_runtime_pool_enabled = crate::libs::unit_js::js_flags::runtime_pool_enabled();
+        let js_pool_size = crate::libs::unit_js::js_flags::pool_size();
+
         let runtime_private_api_key = require_non_empty_env("RUNTIME_PRIVATE_API_KEY")?;
 
         Ok(Settings {
@@ -438,6 +449,9 @@ impl Settings {
             usage_db_batch_size,
             usage_db_max_flush_ms,
             otel_exporter_otlp_endpoint,
+            js_bytecode_enabled,
+            js_runtime_pool_enabled,
+            js_pool_size,
             runtime_private_api_key,
         })
     }

@@ -31,6 +31,23 @@ pub const BLOCKED_NODE_MODULES: &[&str] = &[
     "node:inspector",
 ];
 
+/// Specifiers compiled into the process-lifetime bytecode cache at startup.
+pub fn static_shim_entries() -> Vec<(&'static str, &'static str)> {
+    let mut entries = vec![
+        ("@sdk", SDK),
+        ("node:querystring", NODE_QUERYSTRING),
+        ("node:stream/consumers", NODE_STREAM_CONSUMERS),
+        ("node:timers/promises", NODE_TIMERS_PROMISES),
+        (BAAL_EXT_CRYPTO_ALIAS, BAAL_EXT_CRYPTO),
+    ];
+    for name in ["zod", "jose", "lodash-es", "qs"] {
+        if let Some(src) = baal_module_source(name) {
+            entries.push((name, src));
+        }
+    }
+    entries
+}
+
 pub fn baal_module_source(name: &str) -> Option<&'static str> {
     if let Some(src) = npm_package_shim_lookup(name) {
         return Some(src);

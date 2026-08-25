@@ -1,9 +1,12 @@
-use rquickjs::{AsyncContext, AsyncRuntime, CaughtError};
+use rquickjs::{AsyncContext, CaughtError};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use super::error::log_js_failure;
+use super::js_pool;
+use super::js_timings;
 use super::module_loader::validate_and_prepare_loader;
 use super::modules;
 use super::modules::sdk::{CommCtxGuard, HostCtxGuard, SdkCommCtx, WorkflowHostCtx};
@@ -54,14 +57,14 @@ pub async fn run_workflow_handler(
         instance_id: wf_ctx.instance_id.clone(),
     });
 
+    js_timings::reset();
     let baal = validate_and_prepare_loader(source, None).map_err(|e| e.to_string())?;
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
 
-    let rt = AsyncRuntime::new().map_err(|e| {
-        let msg = e.to_string();
-        log_js_failure("workflow runtime init", &msg);
-        msg
+    let rt = js_pool::acquire_runtime().await.map_err(|e| {
+        log_js_failure("workflow runtime init", &e);
+        e
     })?;
 
     rt.set_loader(
@@ -83,9 +86,9 @@ pub async fn run_workflow_handler(
         let _cguard = CommCtxGuard::install(comm);
 
         let outcome: Result<WorkflowExecutionResult, String> = async {
-            attachment.attach(&ctx).map_err(|e| {
-                CaughtError::from_error(&ctx, e).to_string()
-            })?;
+            let attach_started = Instant::now();
+            super::error::attach_llrt_modules(&ctx, || attachment.attach(&ctx))?;
+            js_timings::set_llrt_attach(attach_started.elapsed());
 
             modules::register_sdk_comm(&ctx).map_err(|e| {
                 CaughtError::from_error(&ctx, e).to_string()
@@ -102,9 +105,12 @@ pub async fn run_workflow_handler(
                 .set("__baal_workflow_ctx", wf_ctx_val)
                 .map_err(|e| e.to_string())?;
 
+            let boot_started = Instant::now();
             ctx.eval::<(), _>(WORKFLOW_RUNTIME_JS)
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            js_timings::set_bootstrap_eval(boot_started.elapsed());
 
+            let handler_started = Instant::now();
             let promise: rquickjs::Promise = ctx
                 .eval("globalThis.__baal_wf_result")
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
@@ -112,6 +118,7 @@ pub async fn run_workflow_handler(
                 .into_future::<rquickjs::Value>()
                 .await
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
+            js_timings::set_handler_exec(handler_started.elapsed());
 
             let result_str: String = result_val
                 .as_string()
@@ -132,8 +139,8 @@ pub async fn run_workflow_handler(
     .map_err(|e: rquickjs::Error| e.to_string())??;
 
     drop(ctx);
-    rt.idle().await;
-    rt.run_gc().await;
+    js_pool::release_runtime(rt).await;
+    js_timings::emit_trace("js.wf.run_workflow_handler");
 
     crate::rt_exit_ok!(
         "js.wf.run_workflow_handler",
