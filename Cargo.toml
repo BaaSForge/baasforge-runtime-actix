@@ -26,10 +26,6 @@ path = "src/bin/actor_worker.rs"
 name = "usage_ingest_worker"
 path = "src/bin/usage_ingest_worker.rs"
 
-[[bin]]
-name = "js_cold_start_bench"
-path = "src/bin/js_cold_start_bench.rs"
-
 [dependencies]
 # Web Framework & Core
 actix = "0.13.5"

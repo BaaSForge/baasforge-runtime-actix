@@ -12,7 +12,6 @@ async fn main() -> Result<(), actix_web::Error> {
         .expect("Failed to install rustls crypto provider");
 
     init_tokio_handle(tokio::runtime::Handle::current());
-    baal_runtime_actix::libs::unit_js::bytecode::precompile_static_shims();
 
     routes::start_server().await?;
 

@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::module_shims;
 
-const MAX_CACHE_ENTRIES: usize = 512;
+const MAX_CACHE_ENTRIES: usize = 4096;
 
 fn bytecode_enabled() -> bool {
     match std::env::var("BAAL_JS_BYTECODE") {
@@ -46,8 +46,8 @@ fn store(key: String, bytes: Vec<u8>) {
     let Ok(mut guard) = cache().lock() else {
         return;
     };
-    if guard.len() >= MAX_CACHE_ENTRIES {
-        guard.clear();
+    if guard.len() >= MAX_CACHE_ENTRIES && !guard.contains_key(&key) {
+        return;
     }
     guard.insert(key, bytes);
 }
@@ -78,25 +78,6 @@ pub fn declare_module<'js>(ctx: &Ctx<'js>, name: &str, source: &str) -> JsResult
         store(key, bytes);
     }
     Ok(module)
-}
-
-/// Compile well-known shims once so the first user invoke is a bytecode hit.
-pub fn precompile_static_shims() {
-    if !bytecode_enabled() {
-        return;
-    }
-    let Ok(rt) = rquickjs::Runtime::new() else {
-        return;
-    };
-    let Ok(ctx) = rquickjs::Context::full(&rt) else {
-        return;
-    };
-    let _ = ctx.with(|ctx| {
-        for (name, src) in module_shims::static_shim_entries() {
-            let _ = declare_module(&ctx, name, src);
-        }
-        Ok::<_, rquickjs::Error>(())
-    });
 }
 
 #[cfg(test)]
@@ -135,5 +116,47 @@ mod tests {
             let ns = evaluated.namespace().expect("namespace");
             ns.get::<_, i32>("answer").expect("export answer")
         })
+    }
+
+    #[test]
+    fn every_static_shim_declares_and_writes_bytecode() {
+        let started = std::time::Instant::now();
+        let entries = module_shims::static_shim_entries();
+        let mut declare_failures = Vec::new();
+        let mut write_failures = Vec::new();
+
+        let rt = Runtime::new().expect("runtime");
+        let ctx = Context::full(&rt).expect("context");
+        ctx.with(|ctx| {
+            for (name, src) in &entries {
+                match Module::declare(ctx.clone(), *name, src.as_bytes()) {
+                    Ok(module) => match module.write(WriteOptions::default()) {
+                        Ok(bytes) if !bytes.is_empty() => {}
+                        Ok(_) => write_failures.push(format!("{name}: empty bytecode")),
+                        Err(err) => write_failures.push(format!("{name}: {err}")),
+                    },
+                    Err(err) => declare_failures.push(format!("{name}: {err}")),
+                }
+            }
+        });
+
+        // `__baal_ext_crypto` re-exports LLRT `node:crypto`; declare without that
+        // native module fails. The loader attaches it on real invokes.
+        assert!(
+            declare_failures
+                .iter()
+                .all(|f| f.starts_with("__baal_ext_crypto:")),
+            "unexpected Module::declare failures: {declare_failures:?}"
+        );
+        assert!(
+            write_failures.is_empty(),
+            "Module::write failed for {} shims: {write_failures:?}",
+            write_failures.len()
+        );
+        assert!(
+            started.elapsed().as_secs() < 30,
+            "compiling all static shims took {:?}",
+            started.elapsed()
+        );
     }
 }
