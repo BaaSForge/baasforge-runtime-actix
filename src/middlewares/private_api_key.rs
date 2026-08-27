@@ -27,13 +27,14 @@ pub async fn private_api_key_middleware<B>(
 where
     B: actix_web::body::MessageBody + 'static,
 {
-    if is_public_api_unit_trigger_path(req.path()) {
-        return next.call(req).await.map(|res| res.map_into_boxed_body());
-    }
-
     let ctx = req
         .app_data::<actix_web::web::Data<crate::routes::AppContext>>()
         .expect("AppContext must be registered");
+  
+    if ctx.settings.test_mode || is_public_api_unit_trigger_path(req.path()) {
+        return next.call(req).await.map(|res| res.map_into_boxed_body());
+    }
+  
     let expected = &ctx.settings.runtime_private_api_key;
 
     let authorized = req

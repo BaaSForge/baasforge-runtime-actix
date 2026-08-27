@@ -399,6 +399,10 @@ jobs:
             test_script: ./units/runtime-check/test.sh
             repo_file_path: units/runtime-check/index.ts
             ssh_timeout: 10m
+          - suite: runtime-check-packages-tests
+            test_script: ./units/runtime-check/packages/test.sh
+            repo_file_path: units/runtime-check/packages/test.sh
+            ssh_timeout: 15m
     env:
       ACTOR_DATABASE_URL: ${{ secrets.ACTOR_DATABASE_URL }}
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
