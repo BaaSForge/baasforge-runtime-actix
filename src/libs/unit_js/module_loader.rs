@@ -124,7 +124,7 @@ impl BaalModules {
     }
 
     fn declare_module<'js>(&self, ctx: &Ctx<'js>, name: &str, source: &str) -> JsResult<Module<'js>> {
-        Module::declare(ctx.clone(), name, source.as_bytes())
+        super::bytecode::declare_module(ctx, name, source)
     }
 }
 

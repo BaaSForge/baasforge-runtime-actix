@@ -2,6 +2,7 @@
 mod runtime_bootstrap;
 
 pub mod actor_runner;
+pub mod bytecode;
 pub mod common_imports;
 mod module_shims;
 pub mod module_loader;

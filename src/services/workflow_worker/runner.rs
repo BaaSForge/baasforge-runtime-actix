@@ -33,6 +33,7 @@ const EXEC_LOCK_BUSY_NAK: std::time::Duration = std::time::Duration::from_millis
 
 pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     init_tracing("workflow_worker");
+    crate::libs::unit_js::module_loader::init_tokio_handle(tokio::runtime::Handle::current());
 
     let settings = Settings::new()
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.to_string().into() })?;
