@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::module_shims;
 
-const MAX_CACHE_ENTRIES: usize = 4096;
+const MAX_CACHE_ENTRIES: usize = 8192;
 
 fn bytecode_enabled() -> bool {
     match std::env::var("BAAL_JS_BYTECODE") {
