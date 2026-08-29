@@ -127,8 +127,14 @@ pub async fn handle_trigger_api_unit_production(
                 .json(api_error(msg, json!({})));
         }
     };
+    let lat = crate::api_lat::from_request(&http_req);
+    if let Some(ref l) = lat {
+        l.set_unit_path(&unit_path);
+    }
+    crate::api_lat::mark_opt(&lat, "handler.parse_path");
 
     if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, params.project_id).await {
+        crate::api_lat::mark_opt(&lat, "pg.billing_frozen_check");
         crate::rt_exit_ok!(
             "api.trigger.production",
             status = resp.status().as_u16(),
@@ -137,6 +143,7 @@ pub async fn handle_trigger_api_unit_production(
         );
         return resp;
     }
+    crate::api_lat::mark_opt(&lat, "pg.billing_frozen_check");
 
     let resp = match load_unit_for_path_production(
         &ctx.pool,
@@ -148,16 +155,21 @@ pub async fn handle_trigger_api_unit_production(
     .await
     {
         Ok(Some(unit)) => {
+            crate::api_lat::mark_opt(&lat, "redis_pg.load_unit");
             crate::rt_step!("api.trigger.production.unit_loaded", unit_path = %unit_path, unit_id = %unit.id);
             let port = ctx.settings.port.parse::<u16>().unwrap_or(1500);
             let project_id_str = params.project_id.to_string();
             respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path, None).await
         }
         Ok(None) => {
+            crate::api_lat::mark_opt(&lat, "redis_pg.load_unit");
             crate::rt_step!("api.trigger.production.unit_not_found", unit_path = %unit_path);
             HttpResponse::NotFound().json(api_error("unit not found", json!({})))
         }
-        Err(e) => map_service_err(e),
+        Err(e) => {
+            crate::api_lat::mark_opt(&lat, "redis_pg.load_unit");
+            map_service_err(e)
+        }
     };
     crate::rt_exit_ok!(
         "api.trigger.production",
@@ -198,8 +210,14 @@ pub async fn handle_trigger_api_unit_stage(
                 .json(api_error(msg, json!({})));
         }
     };
+    let lat = crate::api_lat::from_request(&http_req);
+    if let Some(ref l) = lat {
+        l.set_unit_path(&unit_path);
+    }
+    crate::api_lat::mark_opt(&lat, "handler.parse_path");
 
     if let Err(resp) = reject_if_project_billing_frozen(&ctx.pool, params.project_id).await {
+        crate::api_lat::mark_opt(&lat, "pg.billing_frozen_check");
         crate::rt_exit_ok!(
             "api.trigger.stage",
             status = resp.status().as_u16(),
@@ -209,6 +227,7 @@ pub async fn handle_trigger_api_unit_stage(
         );
         return resp;
     }
+    crate::api_lat::mark_opt(&lat, "pg.billing_frozen_check");
 
     let resp = match load_unit_for_path_stage(
         &ctx.pool,
@@ -221,6 +240,7 @@ pub async fn handle_trigger_api_unit_stage(
     .await
     {
         Ok(Some(unit)) => {
+            crate::api_lat::mark_opt(&lat, "redis_pg.load_unit");
             crate::rt_step!(
                 "api.trigger.stage.unit_loaded",
                 unit_path = %unit_path,
@@ -232,10 +252,14 @@ pub async fn handle_trigger_api_unit_stage(
             respond_trigger_unit(unit, &http_req, body, port, &ctx, &project_id_str, &unit_path, Some(params.runtime_id)).await
         }
         Ok(None) => {
+            crate::api_lat::mark_opt(&lat, "redis_pg.load_unit");
             crate::rt_step!("api.trigger.stage.unit_not_found", unit_path = %unit_path);
             HttpResponse::NotFound().json(api_error("unit not found", json!({})))
         }
-        Err(e) => map_service_err(e),
+        Err(e) => {
+            crate::api_lat::mark_opt(&lat, "redis_pg.load_unit");
+            map_service_err(e)
+        }
     };
     crate::rt_exit_ok!(
         "api.trigger.stage",
@@ -332,6 +356,8 @@ async fn invoke_api_unit(
         Ok(s) => s,
         Err(msg) => return HttpResponse::PayloadTooLarge().json(api_error(msg, json!({}))),
     };
+    let lat = crate::api_lat::from_request(&http_req);
+    crate::api_lat::mark_opt(&lat, "invoke.snapshot");
     let project_uuid = match Uuid::parse_str(&project_id_str) {
         Ok(u) => u,
         Err(_) => {
@@ -346,6 +372,7 @@ async fn invoke_api_unit(
             .ok()
             .flatten(),
     };
+    crate::api_lat::mark_opt(&lat, "pg.load_production_runtime_id");
     let live_release_id = load_live_release_id_scoped(
         &ctx.pool,
         &ctx.redis_conn,
@@ -355,6 +382,7 @@ async fn invoke_api_unit(
     .await
     .ok()
     .flatten();
+    crate::api_lat::mark_opt(&lat, "redis_pg.load_live_release_id");
     span.record("baal.project.id", project_id_str.as_str());
     span.record(
         "baal.app.environment",
@@ -408,18 +436,22 @@ async fn invoke_api_unit(
     let code = match unit_js::prepare_source_for_comm(&code, &comm).await {
         Ok(s) => s,
         Err(PrepareError::WrongImport) => {
+            crate::api_lat::mark_opt(&lat, "prepare_source");
             return HttpResponse::InternalServerError().json(api_error(WRONG_IMPORT_MSG, json!({})));
         }
         Err(PrepareError::UnnamedImport) => {
+            crate::api_lat::mark_opt(&lat, "prepare_source");
             return HttpResponse::InternalServerError()
                 .json(api_error(UNNAMED_IMPORT_MSG, json!({})));
         }
         Err(unit_js::PrepareError::Load(e)) => {
+            crate::api_lat::mark_opt(&lat, "prepare_source");
             tracing::error!(error = %e, "trigger unit: common import resolution failed");
             return HttpResponse::InternalServerError()
                 .json(api_error("failed to resolve common imports", json!({ "detail": e })));
         }
     };
+    crate::api_lat::mark_opt(&lat, "prepare_source");
     let unit_id = unit.id.clone();
     let revision = unit.revision;
     let rid_owned = resolved_runtime_id.map(|u| u.to_string());
@@ -448,7 +480,12 @@ async fn invoke_api_unit(
     // Shared DbPool / Redis / NATS handles in SdkCommCtx are cloned per request; I/O is async on
     // the same runtime while only the QuickJS thread blocks.
     let unit_path_for_js = unit_path.clone();
+    let lat_js = lat.clone();
+    crate::api_lat::mark_opt(&lat, "js.web_block_submit");
     let block_future = actix_web::web::block(move || {
+        let _tls = lat_js
+            .as_ref()
+            .map(|l| crate::api_lat::TlsGuard::install(l.clone()));
         let handle = crate::libs::unit_js::module_loader::get_tokio_handle()
             .expect("tokio handle not initialized; call init_tokio_handle at startup");
         let _otel = parent_ctx_for_js.attach();
@@ -457,11 +494,16 @@ async fn invoke_api_unit(
             &snapshot,
             Some(comm),
             Some(unit_path_for_js.as_str()),
+            lat_js,
         ))
     });
     let run_result = match tokio::time::timeout(timeout_dur, block_future).await {
-        Ok(Ok(Ok(r))) => r,
+        Ok(Ok(Ok(r))) => {
+            crate::api_lat::mark_opt(&lat, "js.web_block_join");
+            r
+        }
         Ok(Ok(Err(e))) => {
+            crate::api_lat::mark_opt(&lat, "js.web_block_join");
             crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = %e);
             tracing::error!(
                 unit_id = %unit_id,
@@ -475,6 +517,7 @@ async fn invoke_api_unit(
             ));
         }
         Ok(Err(_)) => {
+            crate::api_lat::mark_opt(&lat, "js.web_block_join");
             crate::rt_exit_err!("api.invoke_unit", unit_path = %unit_path, error = "blocking task cancelled");
             return HttpResponse::InternalServerError().json(api_error(
                 "javascript execution interrupted",
@@ -482,6 +525,7 @@ async fn invoke_api_unit(
             ));
         }
         Err(_) => {
+            crate::api_lat::mark_opt(&lat, "js.web_block_join");
             crate::rt_exit_err!(
                 "api.invoke_unit",
                 unit_path = %unit_path,
