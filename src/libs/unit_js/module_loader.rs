@@ -255,6 +255,7 @@ fn load_common_unit_blocking(
         .clone();
 
     let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<String, String>>(1);
+    let load_started = std::time::Instant::now();
 
     handle.spawn(async move {
         let result: std::result::Result<String, String> = async {
@@ -277,9 +278,18 @@ fn load_common_unit_blocking(
         let _ = tx.send(result);
     });
 
-    rx.recv()
+    let out = rx
+        .recv()
         .map_err(|_| PrepareError::Load("module loader task disconnected".to_string()))?
-        .map_err(PrepareError::Load)
+        .map_err(PrepareError::Load);
+    if let Some(lat) = crate::api_lat::current() {
+        lat.add("js.common_unit_load_n", 1);
+        lat.add(
+            "js.common_unit_load_us",
+            load_started.elapsed().as_micros() as u64,
+        );
+    }
+    out
 }
 
 fn normalize_module_path(path: &str) -> String {
