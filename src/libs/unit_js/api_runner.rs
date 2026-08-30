@@ -17,7 +17,6 @@ pub async fn run_unit_handler(
     snapshot: &TriggerHttpSnapshot,
     comm: Option<Arc<SdkCommCtx>>,
     unit_path: Option<&str>,
-    lat: Option<crate::api_lat::ApiLat>,
 ) -> Result<TriggerHttpResponse, String> {
     crate::rt_enter!(
         "js.api.run_unit_handler",
@@ -26,10 +25,6 @@ pub async fn run_unit_handler(
         trigger_path = %snapshot.trigger_path,
         body_bytes = snapshot.body_text.len()
     );
-    crate::api_lat::mark_opt(&lat, "js.entered");
-    let _tls = lat
-        .as_ref()
-        .map(|l| crate::api_lat::TlsGuard::install(l.clone()));
     let started = Instant::now();
     let project_id = comm.as_ref().map(|c| c.project_id.clone()).unwrap_or_default();
     let project_id_for_js = project_id.clone();
@@ -40,32 +35,27 @@ pub async fn run_unit_handler(
     let unit_entry_dir = unit_path
         .and_then(|p| p.rsplit_once('/').map(|(dir, _)| dir.to_string()));
     let baal = validate_and_prepare_loader(source, unit_entry_dir).map_err(|e| e.to_string())?;
-    crate::api_lat::mark_opt(&lat, "js.validate_loader");
 
     let (llrt_resolver, llrt_loader, attachment) =
         llrt_modules::module_builder::ModuleBuilder::default().build();
-    crate::api_lat::mark_opt(&lat, "js.llrt_builder");
 
     let rt = AsyncRuntime::new().map_err(|e| {
         let msg = e.to_string();
         log_js_failure("api runtime init", &msg);
         msg
     })?;
-    crate::api_lat::mark_opt(&lat, "js.runtime_new");
 
     rt.set_loader(
         (baal.clone(), llrt_resolver),
         (llrt_loader, baal),
     )
     .await;
-    crate::api_lat::mark_opt(&lat, "js.set_loader");
 
     let ctx = AsyncContext::full(&rt).await.map_err(|e| {
         let msg = e.to_string();
         log_js_failure("api context init", &msg);
         msg
     })?;
-    crate::api_lat::mark_opt(&lat, "js.context_full");
 
     let self_host = snapshot
         .header_pairs
@@ -75,9 +65,7 @@ pub async fn run_unit_handler(
         .unwrap_or_else(|| "localhost".to_string());
     let trigger_path = snapshot.trigger_path.clone();
     let snapshot_json = serde_json::to_string(snapshot).map_err(|e| e.to_string())?;
-    crate::api_lat::mark_opt(&lat, "js.snapshot_json");
 
-    let lat_js = lat.clone();
     let result = rquickjs::async_with!(ctx => |ctx| {
         let _comm_guard = comm.map(CommCtxGuard::install);
 
@@ -85,12 +73,10 @@ pub async fn run_unit_handler(
             attachment.attach(&ctx).map_err(|e| {
                 CaughtError::from_error(&ctx, e).to_string()
             })?;
-            crate::api_lat::mark_opt(&lat_js, "js.llrt_attach");
 
             modules::register_sdk_comm(&ctx).map_err(|e| {
                 CaughtError::from_error(&ctx, e).to_string()
             })?;
-            crate::api_lat::mark_opt(&lat_js, "js.register_sdk");
 
             ctx.globals()
                 .set("__triggerBasePath", trigger_path.as_str())
@@ -103,11 +89,9 @@ pub async fn run_unit_handler(
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
             ctx.eval::<(), _>(format!("globalThis.__snap = {};", snapshot_json))
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
-            crate::api_lat::mark_opt(&lat_js, "js.eval_snap_globals");
 
             ctx.eval::<(), _>(API_RUNTIME_JS)
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
-            crate::api_lat::mark_opt(&lat_js, "js.eval_runtime_and_modules");
 
             let promise: rquickjs::Promise = ctx
                 .eval("globalThis.__baal_p")
@@ -116,7 +100,6 @@ pub async fn run_unit_handler(
                 .into_future::<()>()
                 .await
                 .map_err(|e| CaughtError::from_error(&ctx, e).to_string())?;
-            crate::api_lat::mark_opt(&lat_js, "js.handleRequest");
 
             let json_str: String = ctx
                 .eval("JSON.stringify(globalThis.__baal_res.__snapshot())")
@@ -124,7 +107,6 @@ pub async fn run_unit_handler(
 
             let raw: JsResponseRaw =
                 serde_json::from_str(&json_str).map_err(|e| e.to_string())?;
-            crate::api_lat::mark_opt(&lat_js, "js.serialize_response");
             Ok(raw.into())
         }
         .await;
@@ -140,7 +122,6 @@ pub async fn run_unit_handler(
     drop(ctx);
     rt.idle().await;
     rt.run_gc().await;
-    crate::api_lat::mark_opt(&lat, "js.idle_gc");
 
     crate::rt_exit_ok!(
         "js.api.run_unit_handler",

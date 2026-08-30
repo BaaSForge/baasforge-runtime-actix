@@ -55,29 +55,13 @@ fn store(key: String, bytes: Vec<u8>) {
 /// Declare a module, using cached bytecode when `BAAL_JS_BYTECODE` is on.
 pub fn declare_module<'js>(ctx: &Ctx<'js>, name: &str, source: &str) -> JsResult<Module<'js>> {
     if !bytecode_enabled() {
-        let started = std::time::Instant::now();
-        let module = Module::declare(ctx.clone(), name, source.as_bytes())?;
-        if let Some(lat) = crate::api_lat::current() {
-            lat.add("bytecode.off_declare_n", 1);
-            lat.add(
-                "bytecode.off_declare_us",
-                started.elapsed().as_micros() as u64,
-            );
-        }
-        return Ok(module);
+        return Module::declare(ctx.clone(), name, source.as_bytes());
     }
 
     let key = cache_key(name, source);
     if let Some(bytes) = lookup(&key) {
-        let started = std::time::Instant::now();
         match unsafe { Module::load(ctx.clone(), bytes.as_ref()) } {
-            Ok(module) => {
-                if let Some(lat) = crate::api_lat::current() {
-                    lat.add("bytecode.hit_n", 1);
-                    lat.add("bytecode.hit_us", started.elapsed().as_micros() as u64);
-                }
-                return Ok(module);
-            }
+            Ok(module) => return Ok(module),
             Err(err) => {
                 tracing::warn!(
                     target: "js.bytecode",
@@ -89,14 +73,9 @@ pub fn declare_module<'js>(ctx: &Ctx<'js>, name: &str, source: &str) -> JsResult
         }
     }
 
-    let started = std::time::Instant::now();
     let module = Module::declare(ctx.clone(), name, source.as_bytes())?;
     if let Ok(bytes) = module.write(WriteOptions::default()) {
         store(key, bytes);
-    }
-    if let Some(lat) = crate::api_lat::current() {
-        lat.add("bytecode.miss_n", 1);
-        lat.add("bytecode.miss_us", started.elapsed().as_micros() as u64);
     }
     Ok(module)
 }

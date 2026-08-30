@@ -1,5 +1,4 @@
 pub mod nats;
-pub mod api_lat;
 pub mod runtime_trace;
 pub mod actor_schema;
 pub mod configs;

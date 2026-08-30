@@ -375,23 +375,11 @@ pub async fn trace_request_middleware<B: MessageBody + 'static>(
     };
 
     let api_v1 = path.starts_with("/api/v1/");
-    let api_lat = if crate::api_lat::enabled() && trigger_entry == "api_unit" {
-        Some(crate::api_lat::ApiLat::start())
-    } else {
-        None
-    };
-    if let Some(ref lat) = api_lat {
-        lat.mark("http.middleware.enter");
-    }
     let (req, meta) = if api_v1 {
         prepare_api_v1_request(req).await?
     } else {
         (req, ApiV1TraceMeta::default())
     };
-    if let Some(ref lat) = api_lat {
-        lat.mark("http.middleware.body_buffered");
-        req.extensions_mut().insert(lat.clone());
-    }
 
     async move {
         let _guard = parent.attach();
@@ -438,28 +426,9 @@ pub async fn trace_request_middleware<B: MessageBody + 'static>(
                 }
             }
         }
-        if let Some(ref lat) = api_lat {
-            lat.mark("http.middleware.handler_start");
-        }
         let res = next.call(req).instrument(span.clone()).await?;
-        if let Some(ref lat) = api_lat {
-            lat.mark("http.handler");
-        }
         if api_v1 {
-            let mut res = finish_api_v1_response(span, meta, res).await?;
-            if let Some(lat) = api_lat {
-                lat.mark("http.response_buffer");
-                if let Ok(value) =
-                    actix_web::http::header::HeaderValue::from_str(&lat.server_timing())
-                {
-                    res.headers_mut().insert(
-                        actix_web::http::header::HeaderName::from_static("server-timing"),
-                        value,
-                    );
-                }
-                lat.finish(res.status().as_u16());
-            }
-            Ok(res)
+            finish_api_v1_response(span, meta, res).await
         } else {
             let mut res = res.map_into_boxed_body();
             crate::telemetry::inject_trace_response_headers_for_span(&span, res.headers_mut());
