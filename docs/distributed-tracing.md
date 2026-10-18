@@ -124,7 +124,7 @@ flowchart LR
 ## Dashboard and “bring your own UI”
 
 - Persist/query using the **backend’s native trace model** (Tempo/Jaeger/vendor JSON). Your dashboard service calls those APIs with `trace_id` (or TraceQL) scoped by **resource attributes** you set (`service.namespace` = project, `deployment.environment` = runtime, etc.—all standard attribute keys).
-- Avoid introducing a parallel “BAAL trace JSON” unless it is a thin projection of OTLP/Jaeger for one screen; the source of truth remains OTel-compatible blobs/APIs.
+- Avoid introducing a parallel “BaaSForge trace JSON” unless it is a thin projection of OTLP/Jaeger for one screen; the source of truth remains OTel-compatible blobs/APIs.
 
 ## Relationship to existing `tracing::` calls
 
@@ -134,7 +134,7 @@ flowchart LR
 ## Key risks to decide explicitly (not implementation detail, but policy)
 
 - **PII / payload logging**: default to size + type + ids; opt-in redaction lists or “never log body” for production.
-- **Context across durable workflow suspend/resume**: Baal’s default is **same trace** via `traceparent` on wake messages. If you need a **separate** consumer trace (e.g. cap tree size), set `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` — consumer becomes a new root with an OTel **link** to the producer span; the dashboard must pass `links` when explaining causality to an LLM.
+- **Context across durable workflow suspend/resume**: BaaSForge's default is **same trace** via `traceparent` on wake messages. If you need a **separate** consumer trace (e.g. cap tree size), set `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` — consumer becomes a new root with an OTel **link** to the producer span; the dashboard must pass `links` when explaining causality to an LLM.
 - **Multi-binary deployment** ([`src/bin/actor_worker.rs`](src/bin/actor_worker.rs), [`queue_worker_worker.rs`](src/bin/queue_worker_worker.rs), etc.): each binary initializes the same OTel resource (`service.name` per binary) + shared attribute `baal.project_id` so traces stitch in the backend.
 
 ## Summary decision
@@ -148,7 +148,7 @@ flowchart LR
 
 Industry practice (OpenTelemetry, Temporal-style systems):
 
-| Approach | Use when | Baal default |
+| Approach | Use when | BaaSForge default |
 |----------|----------|----------------|
 | **Same `trace_id` + parent/child** | You propagate W3C context across async delivery (HTTP → JetStream wake → `drive_workflow` → SDK). One narrative for humans and **LLM** tools. | **Yes** — wake/start payloads include `traceparent` when the publisher had an active context. |
 | **Span links** (`links[]` in OTLP) | Producer span ended, fan-in batches, or you **choose** a new consumer trace but need causality to the producer. | **Optional** — set `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` (see below). |

@@ -4850,7 +4850,7 @@ async function runHealthCheck(
   tests: TestResult[];
 }> {
   const host = req.headers.host ?? "localhost";
-  // __triggerBasePath is injected by the BAAL runner (e.g. /api/v1/trigger/.../check).
+  // __triggerBasePath is injected by the BaaSForge runner (e.g. /api/v1/trigger/.../check).
   // Self-referential fetch calls must hit the full trigger URL, not just the origin.
   const selfPath: string = ((globalThis as Record<string, unknown>)["__triggerBasePath"] as string) ?? "";
   const baseUrl = `http://${host}${selfPath}`;

@@ -1,133 +1,201 @@
-# Running in Production
+# Production and self-hosting
 
-## Prerequisites
+## Required services
 
-- PostgreSQL
-- Redis (used for both cache and workflow state — can point to the same instance)
-- NATS with JetStream enabled
+Run persistent instances of:
 
-** JetStream data must be persisted on disk (take a look at compose.yml)
+- the backend-owned PostgreSQL database
+- a separate Actor PostgreSQL database
+- Redis
+- NATS with JetStream
 
-## Required env vars
+The runtime also requires a running [BaaSForge backend](https://github.com/BaaSForge/baasforge-backend-actix). See [Architecture](architecture.md) for the connection contract.
 
-Copy `.env` and fill in real values. Key variables:
+Enable persistence for Redis state and JetStream data. Do not use a Redis eviction policy that can remove workflow or Actor state.
 
-```
-PORT=1501
-DATABASE_URL=postgres://...
-DATABASE_POOL_SIZE=...
-API_WORKER_MAX_BLOCKING_THREADS=512
-REDIS_URL=redis://...
-WF_REDIS_URL=redis://...
-WF_NATS_URL=nats://...
-```
+## Processes and images
 
-`API_WORKER_MAX_BLOCKING_THREADS` caps concurrent API unit JS runs on the Tokio blocking pool (`web::block`). Raise it for high parallel trigger load.
+A complete deployment runs six containers:
 
-`WF_REDIS_URL` and `WF_NATS_URL` can point to the same Redis/NATS instances as `REDIS_URL` / `NATS_URL` — they are logically separate connection pools.
+| Process | Dockerfile | Public port |
+| --- | --- | --- |
+| `baal-runtime-actix` | `Dockerfile` | `1501` |
+| `workflow_worker` | `docker/Dockerfile.workflow_worker` | none |
+| `runtime_cache_listener` | `docker/Dockerfile.runtime_cache_listener` | none |
+| `queue_worker_worker` | `docker/Dockerfile.queue_worker_worker` | none |
+| `actor_worker` | `docker/Dockerfile.actor_worker` | none |
+| `usage_ingest_worker` | `docker/Dockerfile.usage_ingest_worker` | none |
 
-## Binaries
+Build the API image with `Dockerfile`. Build each worker with its named Dockerfile. Pass `APP_ENV=PROD` or `APP_ENV=STAGE` as a build argument.
 
-Run all five processes. Each is an independent binary from the same crate.
+The API image contains the Diesel CLI and Actor migrations because CI uses it for migration jobs. Worker images contain only their worker binary and runtime dependencies.
 
-### 1. HTTP API server
+The API image has an HTTP health check on port `1501`. The worker images do not define health checks.
 
-Serves all HTTP endpoints (API units, workflow triggers, actor triggers, queue worker triggers, WebSocket).
+## Manual Docker deployment
 
-```sh
-cargo run --release
-# or after build:
-./target/release/baal-runtime-actix
-```
-
-### 2. Workflow worker
-
-Consumes the JetStream `WF_WAKE` stream and resumes suspended workflows (sleeps, promises, step retries).
+Build all images from the same commit:
 
 ```sh
-cargo run --release --bin workflow_worker
-# or:
-./target/release/workflow_worker
+docker build --build-arg APP_ENV=PROD -t baasforge-runtime:VERSION .
+docker build -f docker/Dockerfile.workflow_worker --build-arg APP_ENV=PROD -t baasforge-workflow-worker:VERSION .
+docker build -f docker/Dockerfile.runtime_cache_listener --build-arg APP_ENV=PROD -t baasforge-cache-listener:VERSION .
+docker build -f docker/Dockerfile.queue_worker_worker --build-arg APP_ENV=PROD -t baasforge-queue-worker:VERSION .
+docker build -f docker/Dockerfile.actor_worker --build-arg APP_ENV=PROD -t baasforge-actor-worker:VERSION .
+docker build -f docker/Dockerfile.usage_ingest_worker --build-arg APP_ENV=PROD -t baasforge-usage-ingest-worker:VERSION .
 ```
 
-Requires `WF_REDIS_URL` and `WF_NATS_URL`.
-
-### 3. Queue worker worker
-
-Consumes the JetStream `WQ_WORK` stream and executes queue worker units (including retries, dead-letter, and batch dispatch).
+Create a protected env file outside the repository. Make its database, Redis, and NATS hosts reachable from the containers. Then:
 
 ```sh
-cargo run --release --bin queue_worker_worker
-# or:
-./target/release/queue_worker_worker
+docker network create baasforge
+
+docker run --rm --network baasforge --env-file /secure/runtime.env \
+  baasforge-runtime:VERSION sh -lc \
+  'diesel migration run --config-file diesel-actors.toml --migration-dir migrations/actors --database-url "$ACTOR_DATABASE_URL"'
+
+docker run -d --name baasforge-runtime --restart unless-stopped \
+  --network baasforge --env-file /secure/runtime.env -p 1501:1501 \
+  baasforge-runtime:VERSION
+docker run -d --name baasforge-workflow-worker --restart unless-stopped \
+  --network baasforge --env-file /secure/runtime.env baasforge-workflow-worker:VERSION
+docker run -d --name baasforge-cache-listener --restart unless-stopped \
+  --network baasforge --env-file /secure/runtime.env baasforge-cache-listener:VERSION
+docker run -d --name baasforge-queue-worker --restart unless-stopped \
+  --network baasforge --env-file /secure/runtime.env baasforge-queue-worker:VERSION
+docker run -d --name baasforge-actor-worker --restart unless-stopped \
+  --network baasforge --env-file /secure/runtime.env baasforge-actor-worker:VERSION
+docker run -d --name baasforge-usage-ingest-worker --restart unless-stopped \
+  --network baasforge --env-file /secure/runtime.env baasforge-usage-ingest-worker:VERSION
 ```
 
-Requires `WQ_REDIS_URL` and `WQ_NATS_URL`.
+Replace `VERSION` with one immutable release version. On an existing host, remove or rename old containers before reusing these names. Use an orchestrator when you need rolling replacement, health-based recovery, or multiple replicas.
 
-The `PORT` env var must match the running API server so SDK callbacks resolve correctly (`http://127.0.0.1:{PORT}`).
+## Environment
 
-### 4. Actor worker
+At build time, the Dockerfiles copy `.env.prod` or `.env.stage` to `.env` in the image. At runtime, process environment variables take precedence over values loaded from that file.
 
-Consumes the JetStream `ACTOR_MAIL` stream and dispatches actor mailbox messages.
+The included GitHub Actions workflow overrides:
+
+- database URLs
+- Redis URLs
+- NATS URLs
+- the OTLP endpoint
+- `RUNTIME_PRIVATE_API_KEY`
+
+Review all other settings before deployment. Do not depend on a tracked fallback value.
+
+> **Security: All credentials, private keys, and connection URLs in tracked environment and Compose files are local-development defaults. Override them in staging and production. Never deploy the tracked credentials.**
+
+Required configuration includes:
+
+- `DATABASE_URL` and its pool settings
+- `ACTOR_DATABASE_URL` and its pool settings
+- cache, workflow, queue-worker, and Actor Redis URLs
+- general, workflow, queue-worker, Actor, release, runtime-environment, and usage NATS settings
+- `RUNTIME_PRIVATE_API_KEY`
+- `PORT=1501` for the API
+
+Use a secrets manager or protected CI environment. Do not commit production values.
+
+## Reverse proxy and TLS
+
+Expose only the API container. Put a production reverse proxy or load balancer in front of port `1501` and configure:
+
+- TLS termination
+- WebSocket upgrades
+- request and idle timeouts suitable for unit execution
+- health checks and connection limits
+
+`nginx.dev.conf` is not a production configuration. It routes to host ports `1501` and `1502` and does not configure TLS. This repository does not provide production nginx, DNS, or certificate automation.
+
+## Actor migrations
+
+Actor PostgreSQL is the only database migrated by this repository:
 
 ```sh
-cargo run --release --bin actor_worker
-# or:
-./target/release/actor_worker
+./actors-migration-up.sh
 ```
 
-Requires `ACTOR_REDIS_URL` (or `WQ_REDIS_URL` as fallback) and `ACTOR_NATS_URL` (or `WQ_NATS_URL` as fallback).
+Run migrations before new application and worker containers. Do not run these migrations against `DATABASE_URL`.
 
-The `PORT` env var must match the running API server (same reason as queue worker worker above).
-
-Optional: `ACTOR_NATS_JETSTREAM_STREAM`, `ACTOR_NATS_JETSTREAM_CONSUMER` to override defaults.
-
-### 5. Release listener
-
-Listens for deploy events and invalidates the unit cache so newly deployed code is picked up without a restart.
+To revert the most recent Actor migration:
 
 ```sh
-cargo run --release --bin runtime_cache_listener
-# or:
-./target/release/runtime_cache_listener
+./actors-migration-down.sh
 ```
 
-## Redis (`WF_REDIS_URL`)
+A schema rollback can destroy or make newer data unreadable. Stop affected writers, verify the `down.sql`, back up the database, and coordinate the image rollback.
 
-- **Persistence must be enabled.** Workflow state (steps, sleeps, promises) lives in Redis. If it is wiped while a workflow is `suspended`, that instance can never resume. Use AOF (`appendonly yes`) or at minimum RDB snapshots (`save 60 1`).
-- **Keys are never auto-deleted.** There is no TTL or cleanup job. Redis will grow over time. See [workflow-internals.md](workflow-internals.md#redis-cleanup) for cleanup options.
-- **Do not set `maxmemory-policy allkeys-lru`** on the workflow Redis — evicting a suspended workflow's keys breaks resume.
+See [Database migrations](db-migrations.md).
 
-## OpenTelemetry (optional)
+## Included CI/CD
 
-Local trace backend (Jaeger all-in-one, OTLP gRPC on `4317`):
+`.github/workflows/deploy.yml` runs for tags matching:
+
+- `vX.Y.Z-prod.N`
+- `vX.Y.Z-stage.N`
+
+It also supports manual deployment of an existing matching tag.
+
+The workflow:
+
+1. Resolves the target GitHub Environment.
+2. Builds and pushes the API and five worker images to GHCR.
+3. Runs pending Actor migrations on the deployment host.
+4. Replaces the six containers sequentially over SSH.
+5. Optionally runs integration suites in the API image.
+6. Reverts Actor migrations applied by that run if deployment or enabled integration tests fail.
+
+Deployment targets and credentials come from GitHub Environment secrets. The current workflow is written for its configured remote Docker host. Adapt the SSH and host settings for another server.
+
+### Checks that CI runs
+
+- Docker release builds run by default.
+- Actor migrations run by default.
+- Integration tests are present but `RUN_TESTS` defaults to `false`.
+
+### Checks that CI does not run
+
+- `cargo fmt --check`
+- `cargo clippy`
+- `cargo test`
+- repository-wide Prettier
+- a repository-wide TypeScript type check
+- pull-request checks
+
+Run local quality checks before creating a release tag.
+
+### Rollback limits
+
+The workflow can revert Actor migrations applied during its run. It does not:
+
+- restore the previous application or worker images
+- provide blue/green deployment
+- make a failed container replacement atomic
+- migrate or roll back the backend-owned main database
+
+Keep the previous image tag and a tested container command available. An operator must redeploy that tag when application rollback is required.
+
+## Observability
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to an OTLP collector. `deploy/otel-collector.yaml` is an example collector-to-Jaeger configuration.
+
+For a local example only:
 
 ```sh
-docker compose -f docker-compose.telemetry.yml up -d
+docker compose -f compose.telemetry.yml up -d
 ```
 
-If `OTEL_EXPORTER_OTLP_ENDPOINT` is **unset**, the API and workers default to `http://127.0.0.1:4317` (no env needed for local Jaeger). Override or disable when needed:
+See [Distributed tracing](distributed-tracing.md) for trace behavior and attributes.
 
-- `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317` (or your collector URL)
-- `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — used if the generic endpoint is unset
-- `OTEL_SDK_DISABLED=true` or `OTEL_TRACES_EXPORTER=none` — no OTLP export (stderr `tracing` only)
-- `CI=true` — skips the default endpoint so tests do not open OTLP connections
+## Release checklist
 
-```
-OTEL_SERVICE_NAME=baal-runtime-actix
-```
-
-Optional: `DEPLOYMENT_ENVIRONMENT=staging`, `OTEL_SERVICE_NAME` overrides the default per-binary name. An example OpenTelemetry Collector config that forwards OTLP to Jaeger is in `deploy/otel-collector.yaml` if you run the collector separately.
-
-Correlation for workflows, NATS consumers, and LLM-friendly export (same trace vs split + links, attribute vocabulary, dashboard JSON guidance): [distributed-tracing.md](distributed-tracing.md). Optional: `BAAL_OTEL_ASYNC_CONSUMER_TRACE_MODE=split` — new trace per async consumer with an OTel link to the producer span.
-
-Jaeger UI: `http://127.0.0.1:16686`. Search for service `baal-runtime-actix` (or your `OTEL_SERVICE_NAME`). Every `/api/v1/…` request is one root **`http.server.request`** span from the Actix trace middleware. `/api/v1/trigger/wf|actor|workerQueue|…` sets `baal.trigger.entry` on that span; **`/api/v1/trigger/…` API unit** handlers record `baal.unit.path`, `baal.unit.id`, `baal.unit.revision`, `baal.project.id`, `baal.app.environment`, `baal.runtime.id`, and `baal.release.id` on the **same** `http.server.request` span (no separate `unit.invoke` child).
-
-**HTTP span attributes for `/api/v1/*`:** Middleware fills `http.url` (reconstructed with `http://`), `url.query`, `baal.path_params`, `baal.request.headers` (truncated; `authorization` / `cookie` / `set-cookie` redacted), `http.request.header.content_type`, `user_agent.original`, `baal.request.body.bytes` / `preview` / `note`, `http.response.status_code`, `http.response.header.content_type`, `baal.response.body.bytes` / `preview` / `note`. Bodies are captured only when `Content-Length` is present and ≤256 KiB (see notes above). Previews are capped (~8k chars). Other unit types or SDK layers may add **child** spans under that root where instrumented.
-
-## Stopping
-
-```sh
-./dev-stop.sh   # development helper — kills all three processes and frees ports
-```
-
+1. Run formatting, Clippy, Rust tests, and affected `units/` suites.
+2. Back up Actor PostgreSQL before a destructive migration.
+3. Confirm that all production secrets override tracked values.
+4. Confirm Redis and JetStream persistence.
+5. Confirm the reverse proxy supports WebSockets.
+6. Deploy and verify the API health check.
+7. Verify all worker containers and message consumers.
+8. Inspect integration JSON reports when tests are enabled.

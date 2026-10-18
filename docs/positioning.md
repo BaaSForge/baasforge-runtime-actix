@@ -84,7 +84,7 @@ flowchart TB
         Web["Web, mobile, partners"]
     end
 
-    subgraph baal [BaaSForge execution runtime unit types]
+    subgraph runtime [BaaSForge execution runtime unit types]
         API[API units]
         WF[Workflow units]
         WQ[Queue Worker units]
@@ -97,8 +97,8 @@ flowchart TB
     end
 
     Chat --> Rel
-    Rel --> baal
-    Obs --> baal
+    Rel --> runtime
+    Obs --> runtime
     Web --> API
     API --> WF
     API --> WQ
